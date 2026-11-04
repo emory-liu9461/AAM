@@ -1,0 +1,103 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish this build as a GitHub Release (tag v<version>)"
+        type: boolean
+        default: false
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pyinstaller pytest reportlab
+          # OCR only needs OpenCV's image functions: use the smaller headless build
+          pip uninstall -y opencv-python
+          pip install opencv-python-headless
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          python -X faulthandler -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "pytest exited with code $LASTEXITCODE" }
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "version=$(python -c 'import am_accounting; print(am_accounting.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Build the app with PyInstaller
+        run: pyinstaller packaging/am_accounting.spec --noconfirm
+
+      - name: Self-test the built .exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\AM Accounting\AM Accounting.exe" -ArgumentList "--selftest", "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+
+      - name: Build the installer with Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+      - name: Make the portable zip
+        shell: pwsh
+        run: Compress-Archive -Path "dist\AM Accounting" -DestinationPath "installer\AM-Accounting-Portable-${{ steps.version.outputs.version }}.zip"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AM-Accounting-Setup-${{ steps.version.outputs.version }}
+          path: installer/AM-Accounting-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AM-Accounting-Portable-${{ steps.version.outputs.version }}
+          path: installer/AM-Accounting-Portable-*.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (version tags, or when requested)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          NOTES="Download **AM-Accounting-Setup-${VERSION}.exe** below and run it to install (no administrator needed).
+          Windows may say \"Windows protected your PC\" because the installer isn't code-signed: choose More info → Run anyway.
+          The Portable zip runs without installing. Your company files are never touched by installing or uninstalling."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" installer/* --clobber
+          else
+            gh release create "$TAG" installer/* --target "$GITHUB_SHA" --title "AM Accounting ${VERSION}" --notes "$NOTES"
+          fi
