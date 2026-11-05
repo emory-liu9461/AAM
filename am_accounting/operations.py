@@ -1033,3 +1033,33 @@ def master_cash_flow(pf, perf, end: date | None = None, back: int = 12, forward:
     rows += [net, CFRow("Starting balance", 0, "balance", start_p, start_a),
              CFRow("Ending balance", 0, "total", end_p, end_a)]
     return MasterCashFlow(months, past, rows)
+
+
+def operating_rows(f: MasterCashFlow, rent_roll: list[Unit] | None = None, st: Settings | None = None) -> list[CFRow]:
+    """The operating statement from the master cash flow: revenue, operating expenses, NOI, then debt service, cash
+    flow after debt service and DSCR (each with Pro-Forma and Actual), and the rent roll's scheduled rent."""
+    n = len(f.months)
+    labels = [r.label for r in f.rows]
+    a, b = labels.index("Revenue"), labels.index("Net operating income")
+    rows = [r for r in f.rows[a:b + 1]]
+    by = {r.label: r for r in f.rows}
+    noi, pay = by["Net operating income"], by["Debt payment"]
+    after = CFRow("Cash flow after debt service", 0, "total",
+                  [noi.pro_forma[i] + pay.pro_forma[i] for i in range(n)],
+                  [(noi.actual[i] + pay.actual[i]) if f.past[i] else None for i in range(n)])
+
+    def ratio(x, d):
+        return (x / -d) if (x is not None and d) else None
+
+    dscr = CFRow("DSCR", 0, "ratio", [ratio(noi.pro_forma[i], pay.pro_forma[i]) for i in range(n)],
+                 [ratio(noi.actual[i], pay.actual[i]) if f.past[i] else None for i in range(n)])
+    rows += [CFRow("", 0, "gap", [None] * n, [None] * n),
+             CFRow("Debt service", 1, "line", pay.pro_forma, pay.actual), after, dscr]
+    if rent_roll:
+        st = st or Settings()
+        rows += [CFRow("", 0, "gap", [None] * n, [None] * n),
+                 CFRow("Scheduled rent (rent roll)", 1, "line",
+                       # today's rent roll looks ahead: from the current month on
+                       [scheduled_rent(rent_roll, m, st) if (not f.past[i] or i + 1 == n or not f.past[i + 1])
+                        else None for i, m in enumerate(f.months)], [None] * n)]
+    return rows

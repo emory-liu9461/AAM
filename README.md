@@ -375,8 +375,9 @@ bar at the top rather than a tab:
     workbook or CSV.
   - Figures: units, occupancy, in-place rent, average vs market rent, loss to
     lease, MTM leases and those expiring in 90 days, NOI and DSCR.
-  - **Unit Mix**, plus a **Monthly Operating Statement** with months across
-    and categories down. Past months are the books, account by account. The
+  - **Unit Mix**, plus a **Monthly Operating Statement** laid out like the Cash
+    Flow: one clean page, months across ("Nov 25"), each with Pro-Forma and
+    Actual columns (or either one), categories down. Past months are the books, account by account. The
     next 12 months are projected: rent from the rent roll, going up by the
     annual increase on each move-in anniversary, less the vacancy allowance.
     Other lines use the same month last year, so seasonal costs stay seasonal.

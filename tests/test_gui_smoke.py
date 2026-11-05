@@ -1608,6 +1608,7 @@ def test_company_columns_fit_numbers_and_long_names_wrap(app):
 
 def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     import csv
+    import re
     from datetime import date
 
     from am_accounting.books import CompanyProfile, ParsedTransaction
@@ -1638,10 +1639,12 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     assert ops.roll.rowCount() == 3 and ops.roll.item(2, 5).text() == "$1,200.00"
     assert ops.cards["units"].value.text() == "2" and ops.cards["occupancy"].value.text() == "50.0%"
     assert ops.cards["ltl"].value.text() == "$600.00"
-    heads = [ops.stmt.horizontalHeaderItem(c).text() for c in range(ops.stmt.columnCount())]
-    assert heads[-2:] == ["Last 12\nactual", "Next 12\nprojected"] and "proj." in heads[13]
-    labels = [ops.stmt.item(r, 0).text() for r in range(ops.stmt.rowCount())]
-    assert "Rental revenue" in labels and "Net operating income" in labels and "DSCR" in labels
+    text = ops.stmt.toPlainText()                    # one clean page: months across, Pro-Forma / Actual
+    assert date.today().strftime("%b %y") in text and "Pro-Forma" in text and "Actual" in text
+    for label in ("Rental income", "Total revenue", "Net operating income", "Debt service", "DSCR",
+                  "Scheduled rent (rent roll)"):
+        assert label in text
+    assert set(re.findall(r'border="(\d+)"', ops.stmt.toHtml())) <= {"0"}
     assert ops.mix.rowCount() == 2
     dash = v.dash_page
     v.tabs.setCurrentWidget(dash)                # opening the tab shows the latest figures
