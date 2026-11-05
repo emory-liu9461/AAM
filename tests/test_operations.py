@@ -140,3 +140,36 @@ def test_cash_flow_reconciles_to_the_bank_and_projects_forward(tmp_path):
     assert line["Equity injections"].values[7] == 50_000_00                        # August
     assert line["Ending cash"].values[6] == line["Ending cash"].values[5] + line["Net cash flow"].values[6]
     pf.close()
+
+
+def test_master_cash_flow_pro_forma_and_actual(tmp_path):
+    b = Books.open(tmp_path / "op.amdb", create=True)
+    bank = b.account_by_code("1000").id
+    rent = b.add_account("4010", "Rental Income", "income", "operating").id
+    gas = b.add_account("6120", "Gas", "expense", "operating").id
+    mort = b.add_account("2610", "Mortgage Payable", "liability", "long_term").id
+    b.set_opening_balance(bank, "2025-12-31", 10_000_00)
+    b.set_opening_balance(mort, "2025-12-31", 100_000_00)
+    txs = [ParsedTransaction(date(2026, m, 3), "RENTS", 5_000_00) for m in range(1, 4)]
+    txs += [ParsedTransaction(date(2026, m, 15), "ENBRIDGE", -1_000_00) for m in range(1, 4)]
+    txs += [ParsedTransaction(date(2026, 2, 1), "MORTGAGE PMT", -2_000_00)]
+    b.import_transactions(bank, txs)
+    for t in b.transactions():
+        cat = {"RENTS": rent, "ENBRIDGE": gas, "MORTGAGE PMT": mort}[t.description]
+        b.set_category(t.id, cat, source="manual")
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=str(tmp_path / "op.amdb"))
+    pf.save_holding(h)
+    perf = pfm.performance(pf, h, date(2026, 3, 31))
+    f = op.master_cash_flow(pf, perf, date(2026, 3, 31), back=3, forward=2)
+    assert [m.strftime("%b %y") for m in f.months] == ["Jan 26", "Feb 26", "Mar 26", "Apr 26", "May 26"]
+    assert f.past == [True, True, True, False, False]
+    r = {x.label: x for x in f.rows}
+    assert r["Rental income"].actual[:3] == [5_000_00] * 3 and r["Rental income"].actual[3] is None
+    assert r["Debt payment"].actual[1] == -2_000_00                 # principal paid to the mortgage
+    assert r["Ending balance"].actual[2] == 10_000_00 + 3 * 4_000_00 - 2_000_00   # the bank balance
+    assert r["Other / timing"].actual == [0, 0, 0, None, None]       # everything explained
+    assert r["Starting cash"].pro_forma[3] == r["Ending balance"].actual[2]    # projection starts from the bank
+    assert r["Ending balance"].pro_forma[4] == r["Ending balance"].pro_forma[3] + r["Net property cash flow"].pro_forma[4]
+    pf.close()

@@ -814,3 +814,222 @@ def by_unit_type(rows: list[Unit]) -> list[TypeStatus]:
     avg = lambda xs: round(sum(xs) / len(xs)) if xs else 0  # noqa: E731
     return [TypeStatus(k, len(g["old"]), avg(g["old"]), len(g["new"]), avg(g["new"]), g["vacant"], avg(g["market"]))
             for k, g in sorted(groups.items())]
+
+
+# ---------------------------------------------------------------------------
+# Master cash flow: Pro-Forma and Actual side by side, month by month
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CFRow:
+    label: str
+    level: int = 1                    # 0 section / total, 1 line, 2 sub-line
+    kind: str = "line"                # line | total | head | gap | balance
+    pro_forma: list = field(default_factory=list)   # cents or None, per month
+    actual: list = field(default_factory=list)
+
+
+@dataclass
+class MasterCashFlow:
+    months: list[date]
+    past: list[bool]                  # months with actual figures (up to the as-of month)
+    rows: list[CFRow]
+
+
+def _balances_by_month(company_path: str, account_ids: list[int], month_ends: list[date]) -> list[int]:
+    """Debit-minus-credit balance of a set of accounts at each month end."""
+    if not account_ids:
+        return [0] * len(month_ends)
+    conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
+    try:
+        q = ",".join("?" * len(account_ids))
+        return [conn.execute(f"SELECT COALESCE(SUM(l.debit_cents - l.credit_cents), 0) FROM journal_lines l "
+                             f"JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_id IN ({q}) AND e.date <= ?",
+                             [*account_ids, d.isoformat()]).fetchone()[0] for d in month_ends]
+    finally:
+        conn.close()
+
+
+def _account_ids(company_path: str) -> dict[str, list[int]]:
+    """Receivable, payable, debt and interest-expense accounts in a company's books."""
+    from . import receivables as rx
+    from .books import Books
+    from .portfolio import DEBT_WORDS
+
+    books = Books.open(company_path, create=False)
+    try:
+        ar = sorted(rx.control_ids(books, "invoice")) if books._has_table("documents") else []
+        ap = sorted(rx.control_ids(books, "bill")) if books._has_table("documents") else []
+        if not ar:
+            ar = [a.id for a in books.accounts() if a.type == "asset" and "receivable" in a.name.lower()]
+        if not ap:
+            ap = [a.id for a in books.accounts() if a.type == "liability" and "payable" in a.name.lower()
+                  and not any(w in a.name.lower() for w in DEBT_WORDS)]
+        debt = [a.id for a in books.accounts() if a.type == "liability" and a.id not in ap
+                and (a.subtype == "long_term" or any(w in a.name.lower() for w in DEBT_WORDS))]
+        interest = [a.id for a in books.accounts() if a.type == "expense" and "interest" in a.name.lower()]
+        return {"ar": ar, "ap": ap, "debt": debt, "interest": interest}
+    finally:
+        books.close()
+
+
+def _monthly_moves(company_path: str, account_ids: list[int], start: date, end: date) -> dict[str, tuple[int, int]]:
+    """{'YYYY-MM': (debits, credits)} posted to these accounts (opening balances left out)."""
+    if not account_ids:
+        return {}
+    conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
+    try:
+        q = ",".join("?" * len(account_ids))
+        return {ym: (d, c) for ym, d, c in conn.execute(
+            f"SELECT substr(e.date, 1, 7), SUM(l.debit_cents), SUM(l.credit_cents) FROM journal_lines l "
+            f"JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_id IN ({q}) AND e.kind != 'opening' "
+            f"AND e.date >= ? AND e.date <= ? GROUP BY substr(e.date, 1, 7)",
+            [*account_ids, start.isoformat(), end.isoformat()])}
+    finally:
+        conn.close()
+
+
+def master_cash_flow(pf, perf, end: date | None = None, back: int = 12, forward: int = 12) -> MasterCashFlow:
+    """Each month's Pro-Forma (the projection: rent from the rent roll ahead, other lines as the same month a year
+    earlier, scheduled debt payments, capex to complete spread over the coming months) next to its Actual (the
+    books: revenue and expenses by account, capex, changes in receivables and payables, loan payments and advances,
+    equity, and the bank balance)."""
+    from . import capex as cx
+    from . import portfolio as pfm
+
+    end = end or date.today()
+    h = perf.holding
+    months = _month_starts(end, back, forward)
+    this_month = date(end.year, end.month, 1)
+    past = [m <= this_month for m in months]
+    keys = [m.strftime("%Y-%m") for m in months]
+    n = len(months)
+    ends = [date(m.year, m.month, calendar.monthrange(m.year, m.month)[1]) for m in months]
+    has_books = bool(h.company_path and Path(h.company_path).exists())
+    books: dict = {}
+    if has_books:
+        books, _ = _book_months(h.company_path, date(months[0].year - 1, months[0].month, 1), ends[-1])
+    books_start = min((ym for v in books.values() for ym in v), default=None)
+    rows_ = units(pf, h.id) if h.id else []
+    st = settings(pf, h.id) if h.id else Settings()
+    nonop = lambda name: any(w in name.lower() for w in NON_OPERATING)  # noqa: E731
+    rev_accts = sorted(k for k in books if k[1] == "income" and not nonop(k[0]))
+    exp_accts = sorted(k for k in books if k[1] == "expense" and not nonop(k[0]))
+    rent_accts = [k for k in rev_accts if "rent" in k[0].lower() and "parking" not in k[0].lower()]
+    past_keys = [k for k, p in zip(keys, past) if p and k <= end.strftime("%Y-%m")]
+
+    def act(acct_keys, ym):
+        return sum(books.get(k, {}).get(ym, 0) for k in acct_keys)
+
+    def pro(acct_keys, m: date) -> int:
+        ly = f"{m.year - 1:04d}-{m.month:02d}"
+        if books_start is not None and books_start <= ly:
+            return act(acct_keys, ly)
+        return round(sum(act(acct_keys, k) for k in past_keys) / len(past_keys)) if past_keys else 0
+
+    def account_row(label, acct_keys, level=1) -> CFRow:
+        return CFRow(label, level, "line", [pro(acct_keys, m) for m in months],
+                     [act(acct_keys, k) if p else None for k, p in zip(keys, past)])
+
+    rows: list[CFRow] = []
+    gap = lambda: CFRow("", 0, "gap", [None] * n, [None] * n)  # noqa: E731
+    # revenue
+    rows.append(CFRow("Revenue", 0, "head", [None] * n, [None] * n))
+    rent = CFRow("Rental income", 1, "line", [], [])
+    for m, k, p in zip(months, keys, past):
+        if rows_ and m >= this_month:
+            rent.pro_forma.append(round(scheduled_rent(rows_, m, st) * (1 - st.vacancy_pct / 100)))
+        else:
+            rent.pro_forma.append(pro(rent_accts, m))
+        rent.actual.append(act(rent_accts, k) if p else None)
+    rev_rows = [rent] + [account_row(k[0], [k]) for k in rev_accts if k not in rent_accts]
+    rows += rev_rows
+
+    def total(label, parts, kind="total", level=0) -> CFRow:
+        return CFRow(label, level, kind,
+                     [sum(r.pro_forma[i] or 0 for r in parts) for i in range(n)],
+                     [sum(r.actual[i] or 0 for r in parts) if past[i] else None for i in range(n)])
+
+    t_rev = total("Total revenue", rev_rows)
+    rows += [t_rev, gap(), CFRow("Operating expenses", 0, "head", [None] * n, [None] * n)]
+    exp_rows = [account_row(k[0], [k]) for k in exp_accts]
+    rows += exp_rows
+    t_exp = total("Total operating expenses", exp_rows)
+    noi = CFRow("Net operating income", 0, "total", [r - e for r, e in zip(t_rev.pro_forma, t_exp.pro_forma)],
+                [(r - e) if past[i] else None for i, (r, e) in enumerate(zip(t_rev.actual, t_exp.actual))])
+    rows += [t_exp, gap(), noi, gap()]
+    # capex
+    lines_ = cx.lines(pf, h, end) if h.id else []
+    spent = cx.monthly_outflows(lines_, keys)
+    ctc = max(0, cx.totals(lines_).to_complete) if lines_ else 0
+    future = [not p for p in past]
+    nf = sum(future)
+    capex = CFRow("Capital expenditure", 1, "line",
+                  [round(ctc / nf) if f and nf else 0 for f in future],
+                  [spent[k] if p else None for k, p in zip(keys, past)])
+    rows += [CFRow("Capex", 0, "head", [None] * n, [None] * n), capex, total("Total capex", [capex]), gap()]
+    # cash adjustments, financing, equity (actuals from the books)
+    ids = _account_ids(h.company_path) if has_books else {"ar": [], "ap": [], "debt": [], "interest": []}
+    prev_end = date.fromordinal(months[0].toordinal() - 1)
+    ar_bal = _balances_by_month(h.company_path, ids["ar"], [prev_end] + ends) if has_books else [0] * (n + 1)
+    ap_bal = _balances_by_month(h.company_path, ids["ap"], [prev_end] + ends) if has_books else [0] * (n + 1)
+    ar = CFRow("Accounts receivable", 1, "line", [0] * n,
+               [-(ar_bal[i + 1] - ar_bal[i]) if past[i] else None for i in range(n)])
+    ap = CFRow("Accounts payable", 1, "line", [0] * n,
+               [-(ap_bal[i + 1] - ap_bal[i]) if past[i] else None for i in range(n)])   # liability: credit = cash kept
+    debt_moves = _monthly_moves(h.company_path, ids["debt"], months[0], ends[-1]) if has_books else {}
+    int_moves = _monthly_moves(h.company_path, ids["interest"], months[0], ends[-1]) if has_books else {}
+    loans = pfm.loans(pf, h, end, with_books=False) if h.id else []
+    sched_pay, sched_fund = [0] * n, [0] * n
+    for ln in loans:
+        for i, m in enumerate(months):
+            if ln.start_date and ln.start_date[:7] == keys[i] and ln.principal_cents:
+                sched_fund[i] += ln.principal_cents
+            if ln.start_date and m < date.fromisoformat(ln.start_date[:7] + "-01"):
+                continue
+            if ln.maturity_date and m > date.fromisoformat(ln.maturity_date):
+                continue
+            sched_pay[i] += round(ln.annual_debt_service / 12)
+    pay = CFRow("Debt payment", 1, "line", [-x for x in sched_pay],
+                [-(debt_moves.get(k, (0, 0))[0] + int_moves.get(k, (0, 0))[0] - int_moves.get(k, (0, 0))[1])
+                 if p else None for k, p in zip(keys, past)])
+    fund = CFRow("Debt funding", 1, "line", sched_fund,
+                 [debt_moves.get(k, (0, 0))[1] if p else None for k, p in zip(keys, past)])
+    equity = [0] * n
+    for x in (pfm.cap_table(pf, perf) if h.id else []):
+        if x.funded_date and x.funded and x.funded_date[:7] in keys:
+            equity[keys.index(x.funded_date[:7])] += x.funded
+    eq = CFRow("Equity injection", 0, "line", equity, [e if p else None for e, p in zip(equity, past)])
+    dist = _distributions(h.company_path, months[0], ends[-1]) if has_books else {}
+    dis = CFRow("Distributions", 0, "line", [0] * n, [-dist.get(k, 0) if p else None for k, p in zip(keys, past)])
+    # bank balance and what the lines above don't explain
+    bank = _bank_balances(h.company_path, [prev_end] + ends) if has_books else None
+    known = [noi.actual[i] - (capex.actual[i] or 0) + (ar.actual[i] or 0) + (ap.actual[i] or 0) +
+             (pay.actual[i] or 0) + (fund.actual[i] or 0) + (eq.actual[i] or 0) + (dis.actual[i] or 0)
+             if past[i] else None for i in range(n)]
+    other = CFRow("Other / timing", 1, "line", [0] * n,
+                  [(bank[i + 1] - bank[i] - known[i]) if (bank and past[i]) else (0 if past[i] else None)
+                   for i in range(n)])
+    adj = total("Total cash adjustments", [ar, ap, other])
+    fin = total("Total financing", [pay, fund])
+    rows += [CFRow("Cash adjustments", 0, "head", [None] * n, [None] * n), ar, ap, other, adj, gap(),
+             CFRow("Financing", 0, "head", [None] * n, [None] * n), pay, fund, fin, eq, dis, gap()]
+    net = CFRow("Net property cash flow", 0, "total",
+                [noi.pro_forma[i] - capex.pro_forma[i] + fin.pro_forma[i] + eq.pro_forma[i] for i in range(n)],
+                [(noi.actual[i] - (capex.actual[i] or 0) + adj.actual[i] + fin.actual[i] + eq.actual[i]
+                  + dis.actual[i]) if past[i] else None for i in range(n)])
+    start_a = [bank[i] if (bank and past[i]) else None for i in range(n)]
+    end_a = [bank[i + 1] if (bank and past[i]) else None for i in range(n)]
+    start_p, end_p = [], []
+    prev = bank[0] if bank else 0
+    for i in range(n):
+        if i and past[i - 1] and bank:
+            prev = bank[i]          # each pro-forma month starts from the actual cash where there is one
+        start_p.append(prev)
+        prev = prev + net.pro_forma[i]
+        end_p.append(prev)
+    rows.insert(0, CFRow("Starting cash", 0, "balance", start_p, start_a))
+    rows += [net, CFRow("Starting balance", 0, "balance", start_p, start_a),
+             CFRow("Ending balance", 0, "total", end_p, end_a)]
+    return MasterCashFlow(months, past, rows)

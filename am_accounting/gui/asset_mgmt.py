@@ -1454,6 +1454,13 @@ class AssetManagementView(QWidget):
         f.setBold(True)
         title.setFont(f)
         bar.addWidget(title)
+        bar.addSpacing(10)
+        self.summary_btn = QPushButton("Portfolio Summary")
+        self.summary_btn.setCheckable(True)
+        self.summary_btn.setObjectName("primary")
+        self.summary_btn.setToolTip("The whole portfolio (or the group picked under Viewing) at a glance")
+        self.summary_btn.clicked.connect(self.show_summary)
+        bar.addWidget(self.summary_btn)
         bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
@@ -1522,6 +1529,9 @@ class AssetManagementView(QWidget):
         osplit.setSizes([500, 380])
         ol.addWidget(osplit, 1)
         self.tabs.addTab(_scroll(ov), "Portfolio Summary")
+        self.tabs.setTabVisible(0, False)  # opened with the Portfolio Summary button at the top, not a tab
+        self.tabs.currentChanged.connect(lambda i: self.summary_btn.setChecked(i == 0))
+        self.summary_btn.setChecked(self.tabs.currentIndex() == 0)
 
         # Company overview (one operating company)
         co = QWidget()
@@ -1776,6 +1786,10 @@ class AssetManagementView(QWidget):
                   if want and self.viewing.itemData(k) and tuple(self.viewing.itemData(k)) == want), 0)
         self.viewing.setCurrentIndex(i)
         self.viewing.blockSignals(False)
+
+    def show_summary(self) -> None:
+        self.tabs.setCurrentIndex(0)
+        self.summary_btn.setChecked(True)
 
     def _filter(self) -> dict:
         v = self.viewing.currentData()

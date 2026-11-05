@@ -1150,6 +1150,11 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     vd.save()
     v.refresh()
     assert v.tabs.tabText(0) == "Portfolio Summary" and v.tabs.tabText(1) == "Company Overview"
+    assert not v.tabs.isTabVisible(0)                     # a button at the top, not a tab
+    v.tabs.setCurrentIndex(1)
+    assert not v.summary_btn.isChecked()
+    v.summary_btn.click()
+    assert v.tabs.currentIndex() == 0 and v.summary_btn.isChecked()
     t = v.overview_table
     # vertical: one column per company (+ portfolio), one row per figure
     assert t.horizontalHeaderItem(1).toolTip() == "Lakeshore Apartments LP"      # full name on hover
@@ -1657,7 +1662,11 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     assert "Show unit painted" in dash.page.toPlainText()
     cash = v.cash_page
     assert cash.pick.currentText() == "Maple Court Ltd" and cash.cards["cash"].value.text() == "$3,000.00"
-    assert cash.table.item(0, 0).text() == "Total revenue"
+    page = cash.page.toPlainText()
+    assert "Pro-Forma" in page and "Actual" in page and "Net property cash flow" in page
+    assert date.today().strftime("%b %y") in page                                 # months as "Mmm yy"
+    cash.show_cols.setCurrentIndex(cash.show_cols.findData("actual"))
+    assert cash.page.toPlainText().count("Pro-Forma") == 1                         # only in the note
     cap = v.capex_page
     d = ot.CapexLineDialog(v.pf, cap.perf().holding, parent=cap)
     d.item.setText("Roofing")

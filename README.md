@@ -350,7 +350,8 @@ those back, untick and re-tick the box. Holding companies and asset managers
 are never added as holdings.
 
 **Property pages.** For each operating company, Asset Management has these
-tabs, kept in step with its books:
+tabs, kept in step with its books. **Portfolio Summary** is a button on the
+bar at the top rather than a tab:
 
 - **Dashboard** — one page, no boxes or grid lines, every figure right-aligned
   in its column. **Details…** sets the address and exit date, **Timeline…**
@@ -381,13 +382,18 @@ tabs, kept in step with its books:
     Other lines use the same month last year, so seasonal costs stay seasonal.
   - Below: NOI, debt service (from the loans), cash flow after debt service
     and DSCR.
-- **Cash Flow**
-  - Monthly: NOI, capex, debt service, loan advances, equity injections (from
-    the cap table's funding dates), distributions, net cash flow, and opening
-    and ending cash.
-  - Actual months end at the bank balance in the books. Receivables, payables
-    and timing differences show as *Other / working capital*. Projected months
-    carry the balance forward and spread the capex cost to complete evenly.
+- **Cash Flow** — one clean page like the Dashboard: months across (headed
+  "Nov 25"), each with a **Pro-Forma** and an **Actual** column (or just one of
+  the two, from **Show**), and categories down.
+  - Rows: starting cash; revenue by line and total revenue; operating expenses
+    by line and the total; NOI; capex; cash adjustments (accounts receivable,
+    accounts payable, other / timing); financing (debt payment, debt funding);
+    equity injection and distributions; net property cash flow; starting and
+    ending balance. Whole dollars, negatives in brackets.
+  - **Actual** is the books, and the ending balance is the bank balance.
+    **Pro-Forma** is the projection: rent from the rent roll ahead, other lines
+    as the same month a year earlier, scheduled debt payments, and capex to
+    complete spread over the coming months.
 - **CapEx**
   - A capital budget by group: hard costs, fees, soft costs, closing costs,
     acquisition and interest. Each line has a budget, cost to date, cost to

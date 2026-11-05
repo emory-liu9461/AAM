@@ -679,15 +679,36 @@ class CapexPage(_CompanyPage):
 # ---------------------------------------------------------------------------
 
 
+def _whole(cents) -> str:
+    """Whole dollars, negatives in brackets, nothing as a dash."""
+    if cents is None:
+        return ""
+    d = round(cents / 100)
+    if d == 0:
+        return "–"
+    return f"({abs(d):,})" if d < 0 else f"{d:,}"
+
+
 class CashFlowPage(_CompanyPage):
+    """The master cash flow: months across (each with Pro-Forma and Actual), categories down — one clean page."""
+
     def __init__(self, view):
         super().__init__(view)
+        from PySide6.QtWidgets import QTextBrowser
+
         from .asset_mgmt import Card
 
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
         row.addWidget(QLabel("Company:"))
         row.addWidget(self.pick)
+        row.addSpacing(12)
+        row.addWidget(QLabel("Show:"))
+        self.show_cols = QComboBox()
+        for label, key in (("Pro-Forma & Actual", "both"), ("Actual", "actual"), ("Pro-Forma", "pro_forma")):
+            self.show_cols.addItem(label, key)
+        self.show_cols.currentIndexChanged.connect(lambda *_: self.fill())
+        row.addWidget(self.show_cols)
         row.addStretch(1)
         lay.addLayout(row)
         cards = QHBoxLayout()
@@ -698,46 +719,98 @@ class CashFlowPage(_CompanyPage):
             self.cards[k] = c
             cards.addWidget(c)
         lay.addLayout(cards)
-        self.note = QLabel()
-        self.note.setObjectName("hint")
-        self.note.setWordWrap(True)
-        lay.addWidget(self.note)
-        self.table = _table([""])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
-        lay.addWidget(self.table, 1)
+        self.page = QTextBrowser()
+        self.page.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.page.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        lay.addWidget(self.page, 1)
+        self.flow: op.MasterCashFlow | None = None
 
     def fill(self) -> None:
         from .. import portfolio as pfm
 
         p = self.perf()
-        self.table.setRowCount(0)
         for c in self.cards.values():
             c.set("—")
         if p is None:
-            self.note.setText("No operating companies in this view.")
+            self.flow = None
+            self.page.setHtml("<p>No operating companies in this view.</p>")
             return
-        stmt = op.cash_flow(self.pf, p, self.view._as_of_date())
-        fill_statement(self.table, stmt)
-        self.note.setText(stmt.note)
-        by = {x.label: x for x in stmt.lines}
-        net = by["Net cash flow"].values
-        act = sum([v for v, pr in zip(net, stmt.projected) if not pr][-12:])
-        proj = sum([v for v, pr in zip(net, stmt.projected) if pr][:12])
-        self.cards["t12"].set(fmt_money(act), "last 12 months", POSITIVE if act > 0 else NEGATIVE if act < 0 else None)
-        self.cards["n12"].set(fmt_money(proj), "net cash flow, projected",
-                              POSITIVE if proj > 0 else NEGATIVE if proj < 0 else None)
-        if "Ending cash" in by:
-            ending = by["Ending cash"].values
-            now = [v for v, pr in zip(ending, stmt.projected) if not pr and v is not None]
-            self.cards["cash"].set(fmt_money(now[-1]) if now else "—", "in the bank (books)")
-            future = [(v, m) for v, m, pr in zip(ending, stmt.months, stmt.projected) if pr and v is not None]
-            if future:
-                low, when = min(future)
-                self.cards["low"].set(fmt_money(low), when.strftime("%b %Y"), NEGATIVE if low < 0 else None)
+        as_of = self.view._as_of_date()
+        f = self.flow = op.master_cash_flow(self.pf, p, as_of)
+        self.page.setHtml(self._html(f, self.show_cols.currentData() or "both"))
+        by = {r.label: r for r in f.rows}
+        net = by["Net property cash flow"]
+        act = sum(v for v, pa in zip(net.actual, f.past) if pa and v is not None)
+        proj = sum(v for v, pa in zip(net.pro_forma, f.past) if not pa)
+        self.cards["t12"].set(fmt_money(act), "actual, last 12 months",
+                              POSITIVE if act > 0 else NEGATIVE if act < 0 else None)
+        self.cards["n12"].set(fmt_money(proj), "pro-forma", POSITIVE if proj > 0 else NEGATIVE if proj < 0 else None)
+        ending = by["Ending balance"]
+        now = [v for v, pa in zip(ending.actual, f.past) if pa and v is not None]
+        if now:
+            self.cards["cash"].set(fmt_money(now[-1]), "in the bank (books)")
+        future = [(v, m) for v, m, pa in zip(ending.pro_forma, f.months, f.past) if not pa]
+        if future:
+            low, when = min(future)
+            self.cards["low"].set(fmt_money(low), when.strftime("%b %Y"), NEGATIVE if low < 0 else None)
         owners = [x for x in pfm.cap_table(self.pf, p) if not x.worked_out]
         if owners:
             self.cards["equity"].set(fmt_money(sum(x.funded for x in owners)),
                                      f"of {fmt_money(sum(x.amount_cents for x in owners))} committed")
+
+    def _html(self, f: op.MasterCashFlow, show: str) -> str:
+        import html as _html
+
+        from .theme import c as tc
+        from .theme import is_dark
+
+        text, muted, red, accent = self.palette().text().color().name(), tc("muted"), tc("red"), tc("link")
+        pf_bg, act_bg = ("#3a2f3a", "#23352b") if is_dark() else ("#fbeef7", "#eaf6ee")
+        tint = "#20303c" if is_dark() else "#eef6fb"
+        esc = _html.escape
+        cols = []   # (month index, 'pro_forma' | 'actual')
+        for i, pa in enumerate(f.past):
+            if show in ("both", "pro_forma"):
+                cols.append((i, "pro_forma"))
+            if show in ("both", "actual") and pa:
+                cols.append((i, "actual"))
+        head1 = ["<td></td>"]
+        head2 = ["<td></td>"]
+        i_prev = None
+        for i, kind in cols:
+            span = sum(1 for j, _k in cols if j == i)
+            if i != i_prev:
+                head1.append(f"<td colspan='{span}' align='center' style='font-weight:700; color:{text}; "
+                             f"padding:2px 6px'>{f.months[i].strftime('%b %y')}</td>")
+            i_prev = i
+            label, bg = ("Pro-Forma", pf_bg) if kind == "pro_forma" else ("Actual", act_bg)
+            head2.append(f"<td align='right' style='background:{bg}; color:{muted}; font-size:8pt; "
+                         f"padding:2px 8px'>{label}</td>")
+        out = [f"<table cellspacing='0' cellpadding='3' style='color:{text}'>",
+               "<tr>" + "".join(head1) + "</tr>", "<tr>" + "".join(head2) + "</tr>"]
+        for r in f.rows:
+            if r.kind == "gap":
+                out.append(f"<tr><td colspan='{len(cols) + 1}' style='font-size:4pt'>&nbsp;</td></tr>")
+                continue
+            bold = r.kind in ("total", "head")
+            pad = {0: 0, 1: 18, 2: 34}.get(r.level, 0)
+            colour = accent if r.kind == "head" else (text if r.level == 0 else muted)
+            cells = [f"<td style='padding-left:{pad}px; padding-right:24px; white-space:nowrap; color:{colour};"
+                     f"{' font-weight:700;' if bold else ''}'>{esc(r.label)}</td>"]
+            for i, kind in cols:
+                v = (r.pro_forma if kind == "pro_forma" else r.actual)[i]
+                s = "" if r.kind == "head" else _whole(v)
+                c = red if s.startswith("(") else text
+                bg = f" background:{tint};" if kind == "actual" and show == "both" else ""
+                cells.append(f"<td align='right' style='padding:2px 8px; color:{c};{bg}"
+                             f"{' font-weight:700;' if bold else ''}'>{s}</td>")
+            out.append("<tr>" + "".join(cells) + "</tr>")
+        out.append("</table>")
+        note = ("Pro-Forma: rent from the rent roll ahead (annual increases, less vacancy), other lines as the same "
+                "month a year earlier, scheduled debt payments, capex to complete spread over the coming months. "
+                "Actual: the books — the ending balance is the bank balance; what the lines don't explain is "
+                "Other / timing.")
+        return (f"<p style='color:{muted}; font-size:8.5pt; margin:0 0 8px 0'>{esc(note)}</p>" + "".join(out))
 
 
 # ---------------------------------------------------------------------------
