@@ -1152,8 +1152,9 @@ def test_portfolio_summary_and_company_overview(app, tmp_path):
     assert v.tabs.tabText(0) == "Portfolio Summary" and v.tabs.tabText(1) == "Company Overview"
     t = v.overview_table
     # vertical: one column per company (+ portfolio), one row per figure
-    assert t.horizontalHeaderItem(1).text() == "Lakeshore Apartments LP"
-    assert t.horizontalHeaderItem(2).text() == "Portfolio (our share)"
+    assert t.horizontalHeaderItem(1).toolTip() == "Lakeshore Apartments LP"      # full name on hover
+    assert t.horizontalHeaderItem(2).toolTip() == "Portfolio (our share)"
+    assert t.columnWidth(1) < 200                                                 # as wide as the numbers
     assert [t.item(r, 0).text() for r in range(t.rowCount())] == SUM_ROWS
     row = {SUM_ROWS[r]: t.item(r, 1).text() for r in range(len(SUM_ROWS))}
     total = {SUM_ROWS[r]: t.item(r, 2).text() for r in range(len(SUM_ROWS))}
@@ -1233,7 +1234,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path):
     from am_accounting.gui.asset_mgmt import SU_ROWS, SourcesUsesDialog
 
     su = v.su_table
-    assert su.horizontalHeaderItem(1).text() == "Lakeshore Apartments LP" and su.rowCount() == len(SU_ROWS)
+    assert su.horizontalHeaderItem(1).toolTip() == "Lakeshore Apartments LP" and su.rowCount() == len(SU_ROWS)
     col = {SU_ROWS[r]: su.item(r, 1).text() for r in range(len(SU_ROWS)) if su.item(r, 1)}
     assert col["Debt financing"] == "$2,000,000.00" and col["Basis"] == "Worked out"
     assert col["Total sources"] == col["Total uses"]
@@ -1533,7 +1534,7 @@ def test_change_company_type_and_grouped_lists(app, tmp_path, monkeypatch):
     v.viewing.setCurrentIndex(0)                             # the whole portfolio
     v.refresh()
     assert [p.holding.name for p in v.summary.performances] == ["Northwind OpCo"]   # out of the portfolio
-    assert v.cons_table.horizontalHeaderItem(1).text().startswith("Northwind OpCo")
+    assert v.cons_table.horizontalHeaderItem(1).toolTip().startswith("Northwind OpCo")
     texts = [w.switcher.itemText(i).strip() for i in range(w.switcher.count())]
     assert texts.index("OPERATING COMPANIES") < texts.index("Northwind OpCo") < texts.index("HOLDING COMPANIES") \
         < texts.index("Morgan Holdings Inc") < texts.index("ASSET MANAGERS") < texts.index("Northstar Asset Management")
@@ -1551,3 +1552,20 @@ def test_change_company_type_and_grouped_lists(app, tmp_path, monkeypatch):
     assert dlg.table.item(0, 0).text() == "Holding companies (2)"   # no operating companies left
     w.set_mode("accounting")
     w.close()
+
+
+def test_company_columns_fit_numbers_and_long_names_wrap(app):
+    from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+    from am_accounting.gui.asset_mgmt import fit_name_columns
+
+    t = QTableWidget(2, 3)
+    t.setHorizontalHeaderLabels(["", "285-286 Saguenay Investment Limited", "Portfolio (our share)"])
+    for c, v in ((1, "$5,600,000.00"), (2, "$800,000.00")):
+        t.setItem(0, c, QTableWidgetItem(v))
+    t.setItem(0, 0, QTableWidgetItem("Value"))
+    fit_name_columns(t)
+    h = t.horizontalHeaderItem(1)
+    assert t.columnWidth(1) < 160 and "\n" in h.text() and h.toolTip() == "285-286 Saguenay Investment Limited"
+    fit_name_columns(t)                       # again (each refresh): still the full name underneath
+    assert t.horizontalHeaderItem(1).toolTip() == "285-286 Saguenay Investment Limited"

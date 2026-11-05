@@ -1347,6 +1347,47 @@ def _table(cols: list[str], stretch: int | None = None) -> QTableWidget:
     return t
 
 
+def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2) -> None:
+    """Columns as wide as their numbers; each column's heading (a company name) wraps onto up to two lines and is
+    cut with "…" if it still doesn't fit — the full name shows when you hover over it."""
+    from PySide6.QtGui import QFontMetrics
+
+    head = t.horizontalHeader()
+    hfm = QFontMetrics(head.font())
+    for c in range(t.columnCount()):
+        widest = 0
+        for r in range(t.rowCount()):
+            it = t.item(r, c)
+            if it is not None and it.text():
+                widest = max(widest, QFontMetrics(it.font()).horizontalAdvance(it.text()))
+        hi = t.horizontalHeaderItem(c)
+        if c == 0:  # the row labels
+            t.setColumnWidth(0, max(widest + 24, 110))
+            continue
+        width = max(widest + 24, min_width)
+        t.setColumnWidth(c, width)
+        if hi is None:
+            continue
+        full = hi.data(Qt.ItemDataRole.UserRole) or hi.text()
+        hi.setData(Qt.ItemDataRole.UserRole, full)
+        hi.setToolTip(full)
+        room = width - 12
+        lines, line = [], ""
+        for word in full.split():
+            trial = f"{line} {word}".strip()
+            if hfm.horizontalAdvance(trial) <= room or not line:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines - 1] + [" ".join(lines[max_lines - 1:])]
+        lines = [hfm.elidedText(x, Qt.TextElideMode.ElideRight, room) for x in lines]
+        hi.setText("\n".join(lines))
+
+
 def _set_row(t: QTableWidget, r: int, vals: list, money_cols: set[int], *, bold: bool = False,
              colour_col: int | None = None, colour_value: float | None = None) -> None:
     for c, v in enumerate(vals):
@@ -2113,7 +2154,7 @@ class AssetManagementView(QWidget):
                 if label == "Basis":
                     cell.setForeground(MUTED)
                 t.setItem(r, ci + 1, cell)
-        t.resizeColumnsToContents()
+        fit_name_columns(t)
 
     def _edit_sources_uses(self, index) -> None:
         col = index.column() - 1
@@ -2186,9 +2227,7 @@ class AssetManagementView(QWidget):
                 if ci < len(perfs) and perfs[ci].holding.status == "exited":
                     cell.setForeground(MUTED)
                 t.setItem(r, ci + 1, cell)
-        t.setColumnWidth(0, 170)
-        for ci in range(len(headers)):
-            t.setColumnWidth(ci + 1, 175)
+        fit_name_columns(t)
         t.verticalHeader().setVisible(False)
 
     # -- customers & vendors of one company ------------------------------------
@@ -2729,9 +2768,7 @@ class AssetManagementView(QWidget):
                     f_.setBold(True)
                     cell.setFont(f_)
                 t.setItem(r_, c_ + 1, cell)
-        t.setColumnWidth(0, 140)
-        for c_ in range(len(cols)):
-            t.setColumnWidth(c_ + 1, 200)
+        fit_name_columns(t)
         t.verticalHeader().setVisible(False)
 
     def _fill_managers(self) -> None:
