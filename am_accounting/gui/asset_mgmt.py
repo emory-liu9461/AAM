@@ -655,10 +655,24 @@ class ShareholderDialog(QDialog):
         self.company = QLineEdit(src.company)
         self.company.setPlaceholderText("If they hold through a company, e.g. Morgan Holdings Inc (optional)")
         form.addRow("Company name:", self.company)
+        self.share_class = QComboBox()
+        self.share_class.setEditable(True)
+        self.share_class.addItems(pfm.SHARE_CLASSES)
+        self.share_class.setCurrentText(src.share_class or "Common")
+        form.addRow("Share class:", self.share_class)
         self.amount = _money_box()
         self.amount.setValue(src.amount_cents / 100)
-        self.amount.setToolTip("What this owner put in; each owner's % is their amount ÷ everyone's total")
-        form.addRow("Amount:", self.amount)
+        self.amount.setToolTip("This owner's equity (committed); each owner's % is their amount ÷ everyone's total")
+        form.addRow("Amount (equity):", self.amount)
+        self.funded = _money_box()
+        self.funded.setValue(src.funded / 100)
+        self.funded.setToolTip("Paid in so far")
+        form.addRow("Funded:", self.funded)
+        self.funded_date = QDateEdit(_qd(src.funded_date))
+        self.funded_date.setCalendarPopup(True)
+        self.funded_date.setDisplayFormat("yyyy-MM-dd")
+        self.funded_date.setToolTip("When it was paid in — shown as an equity injection on the Cash Flow")
+        form.addRow("Funded on:", self.funded_date)
         self.note = QLineEdit(src.note)
         self.note.setPlaceholderText("Note (optional)")
         form.addRow("Note:", self.note)
@@ -677,6 +691,9 @@ class ShareholderDialog(QDialog):
         x = self.sh
         x.name, x.company = self.name.text(), self.company.text()
         x.amount_cents, x.note = round(self.amount.value() * 100), self.note.text()
+        x.share_class = self.share_class.currentText()
+        x.funded_cents = round(self.funded.value() * 100)
+        x.funded_date = _iso(self.funded_date.date())
         try:
             pfm.save_shareholder(self.pf, self.holding.id, x)
         except ValueError as e:
@@ -1571,6 +1588,19 @@ class AssetManagementView(QWidget):
         self.tabs.addTab(self._build_parties_tab(), "Customers && Vendors")
         self.financing_page = self._build_financing_tab()
         self.tabs.addTab(self.financing_page, "Financing && Cap Table")
+        from .operations_tab import CapexPage, CashFlowPage, DashboardPage, OperationsPage
+
+        self.dash_page = DashboardPage(self)
+        self.tabs.addTab(self.dash_page, "Dashboard")
+        self.ops_page = OperationsPage(self)
+        self.tabs.addTab(self.ops_page, "Rent Roll && Operations")
+        self.cash_page = CashFlowPage(self)
+        self.tabs.addTab(self.cash_page, "Cash Flow")
+        self.capex_page = CapexPage(self)
+        self.tabs.addTab(self.capex_page, "CapEx")
+        pages = (self.dash_page, self.ops_page, self.cash_page, self.capex_page)
+        self.tabs.currentChanged.connect(  # each property page shows the latest figures when it's opened
+            lambda i: self.tabs.widget(i).fill() if self.tabs.widget(i) in pages else None)
         self.tabs.addTab(self._build_waterfall_tab(), "Waterfall (LP / GP)")
         pv = QWidget()
         pl = QVBoxLayout(pv)
@@ -2347,9 +2377,11 @@ class AssetManagementView(QWidget):
         i = self.cv_pick.findData(self.co_pick.currentData())
         if i >= 0 and i != self.cv_pick.currentIndex():
             self.cv_pick.setCurrentIndex(i)
-        i = self.fin_pick.findData(self.co_pick.currentData())
-        if i >= 0 and i != self.fin_pick.currentIndex():
-            self.fin_pick.setCurrentIndex(i)
+        for combo in (self.fin_pick, self.ops_page.pick, self.cash_page.pick, self.capex_page.pick,
+                      self.dash_page.pick):
+            i = combo.findData(self.co_pick.currentData())
+            if i >= 0 and i != combo.currentIndex():
+                combo.setCurrentIndex(i)
 
     def _cv_open_books(self) -> None:
         hid = self.cv_pick.currentData()
@@ -2364,7 +2396,8 @@ class AssetManagementView(QWidget):
             return
         perf = next((p for p in self.summary.performances if pfm._same_file(p.holding.company_path, v[1])), None)
         if perf:
-            for combo in (self.co_pick, self.cv_pick, self.fin_pick):
+            for combo in (self.co_pick, self.cv_pick, self.fin_pick, self.ops_page.pick, self.cash_page.pick,
+                          self.capex_page.pick, self.dash_page.pick):
                 i = combo.findData(perf.holding.id)
                 if i >= 0 and i != combo.currentIndex():
                     combo.setCurrentIndex(i)
@@ -2389,6 +2422,8 @@ class AssetManagementView(QWidget):
         self.fin_pick.setCurrentIndex(i if i >= 0 else 0)
         self.fin_pick.blockSignals(False)
         self._fill_financing()
+        for page in (self.dash_page, self.ops_page, self.cash_page, self.capex_page):
+            page.fill_pick(s.performances)
         self._fill_company_pick_overview(s)
 
     def _fill_company_pick_overview(self, s: pfm.Summary) -> None:
@@ -2530,12 +2565,13 @@ class AssetManagementView(QWidget):
         hrow.addWidget(QLabel("<b>Cap table</b> (owners: name, company and amount)"))
         hrow.addStretch(1)
         for text, slot in [("Add Owner…", self._fin_add_holder), ("Edit…", self._fin_edit_holder),
-                           ("Delete", self._fin_delete_holder)]:
+                           ("Delete", self._fin_delete_holder), ("Import Equity…", self._fin_import_equity)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
             hrow.addWidget(b)
         cl.addLayout(hrow)
-        self.fin_holders = _table(["Name", "Company", "Amount", "% owned", "Value of stake", "Note"], 5)
+        self.fin_holders = _table(["Name", "Company", "Class", "Equity", "% owned", "Funded", "Funded on",
+                                   "Value of stake", "Note"], 8)
         self.fin_holders.doubleClicked.connect(lambda *_: self._fin_edit_holder())
         self._fin_holder_rows: list[pfm.Shareholder] = []
         cl.addWidget(self.fin_holders, 1)
@@ -2579,20 +2615,39 @@ class AssetManagementView(QWidget):
                                               "100.0%" if stack else "", "", "", ""], {1, 2}, bold=True)
         self.fin_stack.resizeColumnsToContents()
         names = {pth: n for n, pth, _r in self._companies()}
-        holders = self._fin_holder_rows = pfm.cap_table(self.pf, p, names.get(self.pf.owner_of(p.holding), ""))
-        self.fin_holders.setRowCount(len(holders) + 1)
-        for r, x in enumerate(holders):
-            _set_row(self.fin_holders, r, [x.name, x.company or "—",
-                                           fmt_money(x.amount_cents) if x.amount_cents else "—",
-                                           f"{x.pct * 100:.2f}%", fmt_money(x.value) if x.value is not None else "—",
-                                           "worked out from the ownership % — Edit to enter" if x.worked_out
-                                           else x.note], {2, 3, 4})
-            if x.worked_out:
-                self.fin_holders.item(r, 5).setForeground(MUTED)
-        _set_row(self.fin_holders, len(holders), [
-            "Total", "", fmt_money(sum(x.amount_cents for x in holders)), "100.00%" if holders else "",
-            fmt_money(sum(x.value or 0 for x in holders)) if p.value_100 is not None else "—", ""],
-            {2, 3, 4}, bold=True)
+        holders = pfm.cap_table(self.pf, p, names.get(self.pf.owner_of(p.holding), ""))
+        classes = pfm.class_totals(holders)
+        t = self.fin_holders
+        t.clearSpans()
+        t.setRowCount(0)
+        self._fin_holder_rows = []
+
+        def add(vals, *, owner=None, bold=False, muted_note=False):
+            r = t.rowCount()
+            t.insertRow(r)
+            _set_row(t, r, vals, {3, 4, 5, 7}, bold=bold)
+            if muted_note:
+                t.item(r, 8).setForeground(MUTED)
+            self._fin_holder_rows.append(owner)
+
+        many = len(classes) > 1
+        for cls, (amt, fund, share) in classes.items():
+            members = [x for x in holders if (x.share_class or "Common") == cls]
+            for x in members:
+                add([x.name, x.company or "—", cls, fmt_money(x.amount_cents) if x.amount_cents else "—",
+                     f"{x.pct * 100:.2f}%", fmt_money(x.funded) if x.funded else "—", x.funded_date or "",
+                     fmt_money(x.value) if x.value is not None else "—",
+                     "worked out from the ownership % — Edit to enter" if x.worked_out else x.note],
+                    owner=x, muted_note=x.worked_out)
+            if many:
+                add([f"Total {cls}", "", "", fmt_money(amt), f"{share * 100:.2f}%", fmt_money(fund),
+                     ("over by " + fmt_money(fund - amt)) if fund > amt else "",
+                     fmt_money(round(p.value_100 * share)) if p.value_100 is not None else "—", ""], bold=True)
+        if holders:
+            tot_a = sum(x.amount_cents for x in holders)
+            tot_f = sum(x.funded for x in holders)
+            add(["Total", "", "", fmt_money(tot_a), "100.00%", fmt_money(tot_f), "",
+                 fmt_money(sum(x.value or 0 for x in holders)) if p.value_100 is not None else "—", ""], bold=True)
         self.fin_holders.resizeColumnsToContents()
         if 0 <= keep < len(self._fin_rows):
             self.fin_loans.selectRow(keep)
@@ -2710,6 +2765,36 @@ class AssetManagementView(QWidget):
         p, x = self._fin_perf(), self._selected_holder()
         if p and x and ShareholderDialog(self.pf, p.holding, x, self).exec():
             self.refresh()
+
+    def _fin_import_equity(self, path: str | None = None) -> int:
+        """Equity contributions from a workbook laid out like a Debt-Equity tab (class headings, then Name of
+        Investor / Name of Corporation / Equity / Funded rows)."""
+        p = self._fin_perf()
+        if not p:
+            return 0
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Import equity contributions", "",
+                                                  "Workbook or CSV (*.xlsx *.xlsm *.csv)")
+            if not path:
+                return 0
+        try:
+            rows, where = pfm.read_equity_file(path)
+        except Exception as e:  # noqa: BLE001
+            error(self, "Couldn't read the equity table", str(e))
+            return 0
+        existing = [x for x in pfm.cap_table(self.pf, p) if not x.worked_out]
+        if existing and not confirm(self, "Replace cap table", f"Replace the {len(existing)} owners on file with the "
+                                                               f"{len(rows)} contributions in “{where}”?"):
+            return 0
+        for x in existing:
+            pfm.delete_shareholder(self.pf, x.id)
+        for x in rows:
+            pfm.save_shareholder(self.pf, p.holding.id, x)
+        totals = pfm.class_totals(rows)
+        info(self, "Equity imported", f"{len(rows)} contributions from “{where}”: " + "; ".join(
+            f"{k} {fmt_money(a)} ({sh * 100:.0f}%)" for k, (a, _f, sh) in totals.items()) + ".")
+        self.refresh()
+        return len(rows)
 
     def _fin_delete_holder(self) -> None:
         x = self._selected_holder()

@@ -349,6 +349,52 @@ valuations. If you delete one, or unlink its books, it stays out. To bring
 those back, untick and re-tick the box. Holding companies and asset managers
 are never added as holdings.
 
+**Property pages.** For each operating company, Asset Management has these
+tabs, kept in step with its books:
+
+- **Dashboard**
+  - Left: the property and address, then a timeline. It shows closing, each
+    loan's funding and maturity, your own milestones with original and current
+    dates (late ones in red), and the exit date. Below that are value, debt and
+    NAV, then invested, distributions, profit, MOIC and IRR.
+  - Middle: rental status (EGI, Op. Ex and NOI for the last 12 months, the
+    current run-rate and the next 12 months projected). Then construction
+    status (budget, cost to date and cost to complete by group, from CapEx) and
+    this month's cash: starting cash, rent collected, operating costs, capex,
+    debt service, equity, debt, working-capital change and ending cash.
+  - Right: rental status by unit type (old-lease and renovated units with their
+    average rents, and market rent), a leasing update (available units and
+    market rate by type), and a **Weekly Activity** notes box.
+- **Rent Roll & Operations**
+  - The rent roll: unit, tenant, type, size, status, rent, parking, locker,
+    market rent, move-in, lease end (a date or MTM) and notes. Add units by
+    hand, or use **Import Rent Roll…** to read a rent-roll table from an Excel
+    workbook or CSV.
+  - Figures: units, occupancy, in-place rent, average vs market rent, loss to
+    lease, MTM leases and those expiring in 90 days, NOI and DSCR.
+  - **Unit Mix**, plus a **Monthly Operating Statement** with months across
+    and categories down. Past months are the books, account by account. The
+    next 12 months are projected: rent from the rent roll, going up by the
+    annual increase on each move-in anniversary, less the vacancy allowance.
+    Other lines use the same month last year, so seasonal costs stay seasonal.
+  - Below: NOI, debt service (from the loans), cash flow after debt service
+    and DSCR.
+- **Cash Flow**
+  - Monthly: NOI, capex, debt service, loan advances, equity injections (from
+    the cap table's funding dates), distributions, net cash flow, and opening
+    and ending cash.
+  - Actual months end at the bank balance in the books. Receivables, payables
+    and timing differences show as *Other / working capital*. Projected months
+    carry the balance forward and spread the capex cost to complete evenly.
+- **CapEx**
+  - A capital budget by group: hard costs, fees, soft costs, closing costs,
+    acquisition and interest. Each line has a budget, cost to date, cost to
+    complete and % complete. **Start from Template** adds the usual items.
+  - Link a line to an account in the books, or use **Create Account in the
+    Books** to add one such as *CapEx – Roofing*. Then categorizing a
+    contractor's payment to that account updates the cost to date and the
+    monthly spending table. Costs not in the books can be entered by hand.
+
 **Financing & Cap Table.** This Asset Management tab has a page for each
 company:
 
@@ -371,9 +417,13 @@ company:
   total. Switch between *Each payment* and *By year*.
 - **Capital stack:** debt from most senior down, then equity, each as a % of
   total capitalization, with the cumulative loan-to-value.
-- **Cap table:** the owners. **Add Owner…** takes a name, the company they hold
-  through (if any) and the amount; each owner's % is their amount ÷ the total,
-  with the value of their stake. Until you enter owners, it's worked out from
+- **Cap table (debt & equity):** the owners by **share class**. Each owner
+  has a name, the company they hold through (if any), equity, % owned (their
+  equity ÷ the total), amount funded and funding date, with subtotals per
+  class and the value of each stake. Overfunding shows on the class subtotal.
+  **Import Equity…** reads an equity table laid out with class headings
+  ("Class A Shares") followed by Name of Investor / Name of Corporation /
+  Equity / Funded rows. Until you enter owners, the table is worked out from
   the holding's ownership %.
 
 **Loans in the accounting.** Loans entered on Financing & Cap Table connect

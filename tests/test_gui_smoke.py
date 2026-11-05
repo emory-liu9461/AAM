@@ -1118,7 +1118,7 @@ def test_role_bar_links_to_asset_management(app, tmp_path):
     w.close()
 
 
-def test_portfolio_summary_and_company_overview(app, tmp_path):
+def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     from datetime import date
 
     from am_accounting import portfolio as pfm
@@ -1210,7 +1210,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path):
     # capital stack and cap table
     stack = {v.fin_stack.item(r, 0).text(): v.fin_stack.item(r, 1).text() for r in range(v.fin_stack.rowCount())}
     assert stack["TD Bank – Mortgage"] == "$1,800,000.00" and stack["Total capitalization"] == "$3,250,000.00"
-    assert v.fin_holders.item(0, 3).text() == "50.00%" and v.fin_holders.item(1, 0).text() == "Other owners"
+    assert v.fin_holders.item(0, 4).text() == "50.00%" and v.fin_holders.item(1, 0).text() == "Other owners"
     from am_accounting.gui.asset_mgmt import ShareholderDialog
 
     for name, co, amt in (("Alex Morgan", "Morgan Holdings Inc", 600_000), ("Jane Shah", "", 400_000)):
@@ -1222,8 +1222,34 @@ def test_portfolio_summary_and_company_overview(app, tmp_path):
     v.refresh()
     fh = v.fin_holders
     assert [fh.item(r, 0).text() for r in range(2)] == ["Alex Morgan", "Jane Shah"]
-    assert fh.item(0, 1).text() == "Morgan Holdings Inc" and fh.item(0, 3).text() == "60.00%"
-    assert fh.item(2, 2).text() == "$1,000,000.00"
+    assert fh.item(0, 1).text() == "Morgan Holdings Inc" and fh.item(0, 4).text() == "60.00%"
+    assert fh.item(2, 3).text() == "$1,000,000.00" and fh.item(0, 2).text() == "Common"
+    # equity by share class, imported from a workbook laid out like a Debt-Equity tab
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Debt-Equity"
+    ws.append(["Equity Contribution"])
+    ws.append(["Class A Shares", None, "Name of Investor", "Name of Corporation", "Equity", "UBO%", "Funded"])
+    ws.append([None, None, "Pat Lee", "Lee Holdings Inc.", 600000, 0.48, 600000])
+    ws.append([None, None, "Sam Roe", "Sam Roe", 150000, 0.12, 100000])
+    ws.append(["Total Class A", None, None, None, 750000])
+    ws.append(["Class B Shares"])
+    ws.append([None, None, "Name of Investor", "Name of Corporation", "Equity", "UBO%"])
+    ws.append([None, None, "Kim Day", "Day Capital Ltd", 500000, 0.4, 520000])
+    wbp = tmp_path / "equity.xlsx"
+    wb.save(wbp)
+    import am_accounting.gui.asset_mgmt as amg
+
+    monkeypatch.setattr(amg, "confirm", lambda *a: True)
+    monkeypatch.setattr(amg, "info", lambda *a: None)
+    assert v._fin_import_equity(str(wbp)) == 3
+    rows = {fh.item(r, 0).text(): r for r in range(fh.rowCount())}
+    assert fh.item(rows["Total Class A"], 3).text() == "$750,000.00"
+    assert fh.item(rows["Total Class A"], 4).text() == "60.00%" and fh.item(rows["Total Class A"], 5).text() == "$700,000.00"
+    assert fh.item(rows["Total Class B"], 6).text() == "over by $20,000.00"
+    assert fh.item(rows["Sam Roe"], 1).text() == "—"           # same as the investor: no separate company
     row = {SUM_ROWS[r]: t.item(r, 1).text() for r in range(len(SUM_ROWS))}
     total = {SUM_ROWS[r]: t.item(r, 2).text() for r in range(len(SUM_ROWS))}
     assert (row["Lender(s)"], row["Principal"], row["Interest rate"], row["Maturity"]) == (
@@ -1559,7 +1585,7 @@ def test_company_columns_fit_numbers_and_long_names_wrap(app):
     from am_accounting.gui.asset_mgmt import fit_name_columns
 
     t = QTableWidget(2, 3)
-    t.setHorizontalHeaderLabels(["", "285-286 Saguenay Investment Limited", "Portfolio (our share)"])
+    t.setHorizontalHeaderLabels(["", "1200-1210 Lakeview Investment Limited", "Portfolio (our share)"])
     for c, v in ((1, "$5,600,000.00"), (2, "$800,000.00")):
         t.setItem(0, c, QTableWidgetItem(v))
     t.setItem(0, 0, QTableWidgetItem("Value"))
@@ -1567,9 +1593,80 @@ def test_company_columns_fit_numbers_and_long_names_wrap(app):
     h = t.horizontalHeaderItem(1)
     from PySide6.QtGui import QFontMetrics
 
-    name_w = QFontMetrics(t.horizontalHeader().font()).horizontalAdvance("285-286 Saguenay Investment Limited")
+    name_w = QFontMetrics(t.horizontalHeader().font()).horizontalAdvance("1200-1210 Lakeview Investment Limited")
     num_w = QFontMetrics(t.item(0, 1).font()).horizontalAdvance("$5,600,000.00")
     assert num_w <= t.columnWidth(1) < name_w                 # fits the number, narrower than the whole name
-    assert "\n" in h.text() and h.toolTip() == "285-286 Saguenay Investment Limited"
+    assert "\n" in h.text() and h.toolTip() == "1200-1210 Lakeview Investment Limited"
     fit_name_columns(t)                       # again (each refresh): still the full name underneath
-    assert t.horizontalHeaderItem(1).toolTip() == "285-286 Saguenay Investment Limited"
+    assert t.horizontalHeaderItem(1).toolTip() == "1200-1210 Lakeview Investment Limited"
+
+
+def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
+    import csv
+    from datetime import date
+
+    from am_accounting.books import CompanyProfile, ParsedTransaction
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui import operations_tab as ot
+    from am_accounting.gui.main_window import MainWindow
+
+    monkeypatch.setattr(ot, "info", lambda *a: None)
+    monkeypatch.setattr(ot, "confirm", lambda *a: True)
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    op_path = str(reg.create(CompanyProfile("Maple Court Ltd")))
+    w = MainWindow(op_path, registry=reg)
+    bank = w.books.account_by_code("1000").id
+    w.books.import_transactions(bank, [ParsedTransaction(date.today().replace(day=1), "RENTS", 3_000_00)])
+    w.set_mode("assets")
+    v = w.asset_view
+    names = [v.tabs.tabText(i) for i in range(v.tabs.count())]
+    assert {"Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table"} <= set(names)
+    ops = v.ops_page
+    assert ops.pick.currentText() == "Maple Court Ltd"
+    roll = tmp_path / "roll.csv"
+    with open(roll, "w", newline="") as f:
+        csv.writer(f).writerows([["Unit", "Tenant", "Unit Type", "Status", "Rent", "Market Rent", "Move In",
+                                  "Lease End"],
+                                 ["1", "A. Tenant", "1 Bedroom", "Old Lease", "1,200.00", "1,800", "2019-05-01", "MTM"],
+                                 ["2", "", "1 Bedroom", "Vacant", "0", "1,800", "", ""]])
+    assert ops.import_from(str(roll)) == 2
+    assert ops.roll.rowCount() == 3 and ops.roll.item(2, 5).text() == "$1,200.00"
+    assert ops.cards["units"].value.text() == "2" and ops.cards["occupancy"].value.text() == "50.0%"
+    assert ops.cards["ltl"].value.text() == "$600.00"
+    heads = [ops.stmt.horizontalHeaderItem(c).text() for c in range(ops.stmt.columnCount())]
+    assert heads[-2:] == ["Last 12\nactual", "Next 12\nprojected"] and "proj." in heads[13]
+    labels = [ops.stmt.item(r, 0).text() for r in range(ops.stmt.rowCount())]
+    assert "Rental revenue" in labels and "Net operating income" in labels and "DSCR" in labels
+    assert ops.mix.rowCount() == 2
+    dash = v.dash_page
+    v.tabs.setCurrentWidget(dash)                # opening the tab shows the latest figures
+    assert dash.title.text() == "Maple Court Ltd Dashboard"
+    rental = {dash.rental.item(r, 0).text(): r for r in range(dash.rental.rowCount())}
+    assert set(rental) == {"EGI", "Op. Ex", "NOI"}
+    types = dash.types
+    assert types.item(0, 0).text() == "1 Bedroom" and types.item(0, 1).text() == "1"     # one old-lease unit
+    assert dash.leasing.item(0, 1).text() == "1"                                          # one available
+    m = ot.MilestoneDialog(v.pf, dash.perf().holding, parent=dash)
+    m.name.setText("Turnover milestone – 5 units")
+    m.save()
+    dash.notes.setPlainText("- Rent collected\n- Show unit painted")
+    dash._save_info()
+    dash.fill()
+    assert any(dash.timeline.item(r, 0).text() == "Turnover milestone – 5 units"
+               for r in range(dash.timeline.rowCount()))
+    assert dash.notes.toPlainText().startswith("- Rent collected")
+    cash = v.cash_page
+    assert cash.pick.currentText() == "Maple Court Ltd" and cash.cards["cash"].value.text() == "$3,000.00"
+    assert cash.table.item(0, 0).text() == "Total revenue"
+    cap = v.capex_page
+    d = ot.CapexLineDialog(v.pf, cap.perf().holding, parent=cap)
+    d.item.setText("Roofing")
+    d.budget.setValue(50_000)
+    d.save()
+    cap.fill()
+    cap.table.selectRow(1)                       # row 0 is the "Hard Costs" heading
+    cap.create_account()
+    assert any(a.name == "CapEx – Roofing" for a in w.books.accounts())   # in the open books too
+    assert cap.cards["budget"].value.text() == "$50,000.00" and cap.table.item(1, 7).text() == "CapEx – Roofing"
+    w.set_mode("accounting")
+    w.close()

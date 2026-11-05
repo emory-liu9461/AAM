@@ -1823,6 +1823,12 @@ class Shareholder:
     pct: float = 0.0             # of the company
     value: int | None = None     # their share of the equity value
     worked_out: bool = False     # not entered: from the holding's ownership %
+    funded_cents: int | None = None  # paid in so far (None = the whole amount)
+    funded_date: str | None = None   # when it was paid in (for the cash flow)
+
+    @property
+    def funded(self) -> int:
+        return self.amount_cents if self.funded_cents is None else self.funded_cents
 
     @property
     def label(self) -> str:
@@ -1842,9 +1848,11 @@ class StackRow:
 
 def _cap_ready(pf: Portfolio) -> None:
     pf.conn.executescript(CAP_SCHEMA)
-    if "company" not in {c[1] for c in pf.conn.execute("PRAGMA table_info(shareholders)")}:
-        pf.conn.execute("ALTER TABLE shareholders ADD COLUMN company TEXT NOT NULL DEFAULT ''")
-        pf.conn.commit()
+    cols = {c[1] for c in pf.conn.execute("PRAGMA table_info(shareholders)")}
+    for col, decl in (("company", "TEXT NOT NULL DEFAULT ''"), ("funded_cents", "INTEGER"), ("funded_date", "TEXT")):
+        if col not in cols:
+            pf.conn.execute(f"ALTER TABLE shareholders ADD COLUMN {col} {decl}")
+    pf.conn.commit()
 
 
 def save_shareholder(pf: Portfolio, holding_id: int, sh: Shareholder) -> int:
@@ -1853,15 +1861,20 @@ def save_shareholder(pf: Portfolio, holding_id: int, sh: Shareholder) -> int:
         raise ValueError("Enter the owner's name (or their company's)")
     if sh.amount_cents <= 0:
         raise ValueError("Enter the amount")
-    vals = (holding_id, sh.name.strip(), sh.company.strip(), sh.share_class, sh.amount_cents / 100, sh.amount_cents,
-            sh.note.strip())
+    if sh.funded_cents is not None and sh.funded_cents < 0:
+        raise ValueError("The amount funded can't be negative")
+    if sh.funded_date:
+        date.fromisoformat(sh.funded_date)
+    vals = (holding_id, sh.name.strip(), sh.company.strip(), sh.share_class.strip() or "Common",
+            sh.amount_cents / 100, sh.amount_cents, sh.note.strip(), sh.funded_cents, sh.funded_date)
     with pf.conn:
         if sh.id is None:
             sh.id = pf.conn.execute("INSERT INTO shareholders(holding_id, name, company, share_class, shares, "
-                                    "invested_cents, note) VALUES (?,?,?,?,?,?,?)", vals).lastrowid
+                                    "invested_cents, note, funded_cents, funded_date) VALUES (?,?,?,?,?,?,?,?,?)",
+                                    vals).lastrowid
         else:
             pf.conn.execute("UPDATE shareholders SET holding_id=?, name=?, company=?, share_class=?, shares=?, "
-                            "invested_cents=?, note=? WHERE id=?", vals + (sh.id,))
+                            "invested_cents=?, note=?, funded_cents=?, funded_date=? WHERE id=?", vals + (sh.id,))
     return sh.id
 
 
@@ -1876,8 +1889,9 @@ def cap_table(pf: Portfolio, p: "Performance", owner_name: str = "") -> list[Sha
     us at the ownership % (with the capital we put in) and 'Other owners' for the rest."""
     _cap_ready(pf)
     h = p.holding
-    rows = [Shareholder(r["name"], r["company"], r["invested_cents"], r["note"], r["id"], r["share_class"])
-            for r in pf.conn.execute("SELECT * FROM shareholders WHERE holding_id=? ORDER BY invested_cents DESC, id",
+    rows = [Shareholder(r["name"], r["company"], r["invested_cents"], r["note"], r["id"], r["share_class"],
+                        funded_cents=r["funded_cents"], funded_date=r["funded_date"])
+            for r in pf.conn.execute("SELECT * FROM shareholders WHERE holding_id=? ORDER BY share_class, id",
                                      (h.id,))]
     if rows:
         total = sum(x.amount_cents for x in rows)
@@ -1892,6 +1906,94 @@ def cap_table(pf: Portfolio, p: "Performance", owner_name: str = "") -> list[Sha
     for x in rows:
         x.value = round(p.value_100 * x.pct) if p.value_100 is not None else None
     return rows
+
+
+def class_totals(rows: list[Shareholder]) -> dict[str, tuple[int, int, float]]:
+    """{share class: (equity, funded, % of all equity)} in the order the classes first appear."""
+    total = sum(x.amount_cents for x in rows)
+    out: dict[str, list] = {}
+    for x in rows:
+        t = out.setdefault(x.share_class or "Common", [0, 0])
+        t[0] += x.amount_cents
+        t[1] += x.funded
+    return {k: (a, f, a / total if total else 0.0) for k, (a, f) in out.items()}
+
+
+def read_equity_table(rows: list[list]) -> list[Shareholder]:
+    """Equity contributions from a sheet laid out like: a heading such as "Class A Shares", a row with
+    "Name of Investor / Name of Corporation / Equity (/ Funded)", then one row per contribution; repeated for each
+    class. Totals and blank rows are skipped."""
+    import re as _re
+
+    def money(v) -> int | None:
+        if isinstance(v, (int, float)):
+            return round(float(v) * 100)
+        s_ = _re.sub(r"[^0-9.\-]", "", str(v or ""))
+        try:
+            return round(float(s_) * 100) if s_ not in ("", "-", ".") else None
+        except ValueError:
+            return None
+
+    out: list[Shareholder] = []
+    cls, cols = "Common", None
+    for row in rows:
+        cells = [str(c).strip() if c is not None else "" for c in row]
+        low = [c.lower() for c in cells]
+        m = next((_re.search(r"(class\s+\w+|preferred|common|lp units|gp units)", c, _re.I) for c in cells
+                  if _re.search(r"^(class\s+\w+|preferred|common|lp units|gp units)(\s+shares|\s+units)?$", c, _re.I)),
+                 None)
+        if m:  # a class heading (its row may also hold the column headings)
+            cls = m.group(1).title().replace("Lp ", "LP ").replace("Gp ", "GP ")
+        if any("investor" in c for c in low) and any("equity" in c or "amount" in c for c in low):
+            funded_col = next((i for i, c in enumerate(low) if "funded" in c), None)
+            cols = {"name": next(i for i, c in enumerate(low) if "investor" in c),
+                    "company": next((i for i, c in enumerate(low) if "corporation" in c or "company" in c), None),
+                    "amount": next(i for i, c in enumerate(low) if "equity" in c or "amount" in c),
+                    # a later class's headings may leave out "Funded": keep the column found before
+                    "funded": funded_col if funded_col is not None else (cols or {}).get("funded")}
+            continue
+        if m:
+            continue
+        if cols is None or not any(cells):
+            continue
+        name = cells[cols["name"]] if cols["name"] < len(cells) else ""
+        if not name or name.lower().startswith("total"):
+            continue
+        amt = money(row[cols["amount"]]) if cols["amount"] < len(row) else None
+        if not amt or amt <= 0:
+            continue
+        company = cells[cols["company"]] if cols["company"] is not None and cols["company"] < len(cells) else ""
+        funded = money(row[cols["funded"]]) if cols["funded"] is not None and cols["funded"] < len(row) else None
+        out.append(Shareholder(name, company if company != name else "", amt, share_class=cls,
+                               funded_cents=funded if funded is not None else 0))
+    if not out:
+        raise ValueError("Couldn't find an equity table (a heading row with Name of Investor and Equity)")
+    return out
+
+
+def read_equity_file(path) -> tuple[list[Shareholder], str]:
+    """Equity contributions from an Excel workbook (a sheet named like 'Equity' first) or a CSV."""
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        import csv
+
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            return read_equity_table(list(csv.reader(f))), path.name
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    try:
+        sheets = sorted(wb.worksheets, key=lambda ws: (0 if "equity" in ws.title.lower() else 1))
+        problem = None
+        for ws in sheets:
+            try:
+                return read_equity_table([list(r) for r in ws.iter_rows(max_row=300, max_col=12,
+                                                                         values_only=True)]), ws.title
+            except ValueError as e:
+                problem = e
+        raise problem or ValueError("No sheets")
+    finally:
+        wb.close()
 
 
 def capital_stack(pf: Portfolio, p: "Performance", as_of: date | None = None) -> list[StackRow]:
