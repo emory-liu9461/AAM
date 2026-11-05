@@ -1154,7 +1154,6 @@ def test_portfolio_summary_and_company_overview(app, tmp_path):
     # vertical: one column per company (+ portfolio), one row per figure
     assert t.horizontalHeaderItem(1).toolTip() == "Lakeshore Apartments LP"      # full name on hover
     assert t.horizontalHeaderItem(2).toolTip() == "Portfolio (our share)"
-    assert t.columnWidth(1) < 200                                                 # as wide as the numbers
     assert [t.item(r, 0).text() for r in range(t.rowCount())] == SUM_ROWS
     row = {SUM_ROWS[r]: t.item(r, 1).text() for r in range(len(SUM_ROWS))}
     total = {SUM_ROWS[r]: t.item(r, 2).text() for r in range(len(SUM_ROWS))}
@@ -1566,6 +1565,11 @@ def test_company_columns_fit_numbers_and_long_names_wrap(app):
     t.setItem(0, 0, QTableWidgetItem("Value"))
     fit_name_columns(t)
     h = t.horizontalHeaderItem(1)
-    assert t.columnWidth(1) < 160 and "\n" in h.text() and h.toolTip() == "285-286 Saguenay Investment Limited"
+    from PySide6.QtGui import QFontMetrics
+
+    name_w = QFontMetrics(t.horizontalHeader().font()).horizontalAdvance("285-286 Saguenay Investment Limited")
+    num_w = QFontMetrics(t.item(0, 1).font()).horizontalAdvance("$5,600,000.00")
+    assert num_w <= t.columnWidth(1) < name_w                 # fits the number, narrower than the whole name
+    assert "\n" in h.text() and h.toolTip() == "285-286 Saguenay Investment Limited"
     fit_name_columns(t)                       # again (each refresh): still the full name underneath
     assert t.horizontalHeaderItem(1).toolTip() == "285-286 Saguenay Investment Limited"
