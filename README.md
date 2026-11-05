@@ -352,7 +352,9 @@ are never added as holdings.
 **Property pages.** For each operating company, Asset Management has these
 tabs, kept in step with its books:
 
-- **Dashboard**
+- **Dashboard** — one page, no boxes or grid lines, every figure right-aligned
+  in its column. **Details…** sets the address and exit date, **Timeline…**
+  edits milestones, and **Weekly Notes…** edits the notes.
   - Left: the property and address, then a timeline. It shows closing, each
     loan's funding and maturity, your own milestones with original and current
     dates (late ones in red), and the exit date. Below that are value, debt and
@@ -364,7 +366,7 @@ tabs, kept in step with its books:
     debt service, equity, debt, working-capital change and ending cash.
   - Right: rental status by unit type (old-lease and renovated units with their
     average rents, and market rent), a leasing update (available units and
-    market rate by type), and a **Weekly Activity** notes box.
+    market rate by type), and the weekly activity notes.
 - **Rent Roll & Operations**
   - The rent roll: unit, tenant, type, size, status, rent, parking, locker,
     market rent, move-in, lease end (a date or MTM) and notes. Add units by

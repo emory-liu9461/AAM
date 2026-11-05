@@ -746,11 +746,17 @@ class MainWindow(QMainWindow):
 
     def refresh_appearance(self) -> None:
         """Repaint everything that uses meaning colours after a light/dark change."""
+        from PySide6.QtWidgets import QApplication, QCheckBox, QRadioButton
+
         bar = getattr(self, "company_bar", None)
         if bar is not None:  # widgets under a style sheet keep the old text colour until re-polished
             bar.setStyleSheet(bar.styleSheet())
-            for lbl in bar.findChildren(QLabel):
-                lbl.setPalette(self.palette())
+        pal = QApplication.palette()
+        for kind in (QLabel, QCheckBox, QRadioButton):
+            for w in self.findChildren(kind):
+                w.setPalette(pal)
+        if self.asset_view is not None:
+            self.asset_view.refresh()
         for refresh in (self.dashboard_tab.refresh, self.review_panel.refresh, self.tx_tab.refresh,
                         self.docs_tab.refresh, self.accounts_tab.refresh, self.reports_tab.run):
             try:

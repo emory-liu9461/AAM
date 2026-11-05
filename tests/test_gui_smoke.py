@@ -1641,20 +1641,20 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     dash = v.dash_page
     v.tabs.setCurrentWidget(dash)                # opening the tab shows the latest figures
     assert dash.title.text() == "Maple Court Ltd Dashboard"
-    rental = {dash.rental.item(r, 0).text(): r for r in range(dash.rental.rowCount())}
-    assert set(rental) == {"EGI", "Op. Ex", "NOI"}
-    types = dash.types
-    assert types.item(0, 0).text() == "1 Bedroom" and types.item(0, 1).text() == "1"     # one old-lease unit
-    assert dash.leasing.item(0, 1).text() == "1"                                          # one available
+    assert [r[0] for r in dash.data["rental"]] == ["EGI", "Op. Ex", "NOI"]
+    assert dash.data["types"][0][:2] == ["1 Bedroom", "1"]                        # one old-lease unit
+    assert dash.data["leasing"][0][1] == "1"                                      # one available
+    page = dash.page.toPlainText()
+    assert "RENTAL STATUS" in page and "LEASING UPDATE" in page and "Maple Court Ltd" in page
+    import re as _re
+
+    assert set(_re.findall(r'border="(\d+)"', dash.page.toHtml())) <= {"0"}      # no lines anywhere
     m = ot.MilestoneDialog(v.pf, dash.perf().holding, parent=dash)
     m.name.setText("Turnover milestone – 5 units")
     m.save()
-    dash.notes.setPlainText("- Rent collected\n- Show unit painted")
-    dash._save_info()
-    dash.fill()
-    assert any(dash.timeline.item(r, 0).text() == "Turnover milestone – 5 units"
-               for r in range(dash.timeline.rowCount()))
-    assert dash.notes.toPlainText().startswith("- Rent collected")
+    dash.save_notes("- Rent collected\n- Show unit painted")
+    assert any(r[0] == "Turnover milestone – 5 units" for r in dash.data["timeline"])
+    assert "Show unit painted" in dash.page.toPlainText()
     cash = v.cash_page
     assert cash.pick.currentText() == "Maple Court Ltd" and cash.cards["cash"].value.text() == "$3,000.00"
     assert cash.table.item(0, 0).text() == "Total revenue"

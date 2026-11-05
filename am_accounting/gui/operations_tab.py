@@ -745,29 +745,6 @@ class CashFlowPage(_CompanyPage):
 # ---------------------------------------------------------------------------
 
 
-def _mini(cols: list[str]) -> QTableWidget:
-    t = QTableWidget(0, len(cols))
-    t.setHorizontalHeaderLabels(cols)
-    t.verticalHeader().setVisible(False)
-    t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    t.setAlternatingRowColors(True)
-    t.horizontalHeader().setStretchLastSection(False)
-    return t
-
-
-def _fill_mini(t: QTableWidget, rows: list[list[str]], bold_rows: set[int] = frozenset()) -> None:
-    t.setRowCount(len(rows))
-    for r, vals in enumerate(rows):
-        for c, v in enumerate(vals):
-            t.setItem(r, c, _cell(v, right=c > 0, bold=r in bold_rows))
-    t.resizeColumnsToContents()
-    t.resizeRowsToContents()
-    h = t.horizontalHeader().height() + sum(t.rowHeight(r) for r in range(t.rowCount())) + 4
-    t.setFixedHeight(max(h, 60))
-
-
 class MilestoneDialog(QDialog):
     def __init__(self, pf, holding, m: op.Milestone | None = None, parent=None):
         super().__init__(parent)
@@ -802,150 +779,198 @@ class MilestoneDialog(QDialog):
         self.accept()
 
 
+class _ListDialog(QDialog):
+    """Timeline: the milestones (from the records, and the ones typed in) with Add / Edit / Delete."""
+
+    def __init__(self, page, p):
+        super().__init__(page)
+        self.page, self.p = page, p
+        self.setWindowTitle(f"Timeline – {p.holding.name}")
+        self.resize(560, 380)
+        lay = QVBoxLayout(self)
+        self.table = _table(["Milestone", "Original", "Current"], 0)
+        self.table.doubleClicked.connect(lambda *_: self.edit())
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        for text, slot in (("Add Milestone…", self.add), ("Edit…", self.edit), ("Delete", self.delete)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addLayout(row)
+        self.fill()
+
+    def fill(self) -> None:
+        self.rows = op.milestones(self.page.pf, self.p.holding)
+        self.table.setRowCount(len(self.rows))
+        for r, m in enumerate(self.rows):
+            for c, v in enumerate([m.name + ("  (from the records)" if m.auto else ""), m.original or "",
+                                   m.current or ""]):
+                self.table.setItem(r, c, _cell(v, colour=MUTED if m.auto else None))
+
+    def _selected(self):
+        r = self.table.currentRow()
+        m = self.rows[r] if 0 <= r < len(self.rows) else None
+        if m is not None and m.auto:
+            info(self, "From the records", f"“{m.name}” comes from the holding's acquisition date, its loans or the "
+                                           "exit date (Details…) — change it there.")
+            return None
+        return m
+
+    def add(self) -> None:
+        if MilestoneDialog(self.page.pf, self.p.holding, parent=self).exec():
+            self.fill()
+
+    def edit(self) -> None:
+        m = self._selected()
+        if m and MilestoneDialog(self.page.pf, self.p.holding, m, self).exec():
+            self.fill()
+
+    def delete(self) -> None:
+        m = self._selected()
+        if m and confirm(self, "Delete milestone", f"Delete “{m.name}”?"):
+            op.delete_milestone(self.page.pf, m.id)
+            self.fill()
+
+
+class _DetailsDialog(QDialog):
+    """Address and planned exit date."""
+
+    def __init__(self, page, p, info_: op.DashInfo):
+        super().__init__(page)
+        self.setWindowTitle(f"Details – {p.holding.name}")
+        self.resize(460, 0)
+        form = QFormLayout(self)
+        self.address = QLineEdit(info_.address or p.holding.location)
+        self.exit = QDateEdit(_qd(info_.exit_date))
+        self.exit.setCalendarPopup(True)
+        self.exit.setDisplayFormat("yyyy-MM-dd")
+        from PySide6.QtWidgets import QCheckBox
+
+        self.use_exit = QCheckBox("Planned exit date:")
+        self.use_exit.setChecked(bool(info_.exit_date))
+        form.addRow("Address:", self.address)
+        form.addRow(self.use_exit, self.exit)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+
+class _NotesDialog(QDialog):
+    def __init__(self, page, p, text: str):
+        super().__init__(page)
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        self.setWindowTitle(f"Weekly activity – {p.holding.name}")
+        self.resize(620, 420)
+        lay = QVBoxLayout(self)
+        self.text = QPlainTextEdit(text)
+        self.text.setPlaceholderText("Operating activity\n- …\n\nConstruction activity\n- …")
+        lay.addWidget(self.text, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+
 class DashboardPage(_CompanyPage):
+    """One page, no boxes or grid lines: three columns of sections; every figure right-aligned in its column."""
+
     def __init__(self, view):
         super().__init__(view)
-        from PySide6.QtWidgets import QGridLayout, QGroupBox, QPlainTextEdit, QScrollArea
+        from PySide6.QtWidgets import QTextBrowser
 
         outer = QVBoxLayout(self)
         head = QHBoxLayout()
         head.addWidget(QLabel("Company:"))
         head.addWidget(self.pick)
-        self.title = QLabel()
-        tf = self.title.font()
-        tf.setPointSizeF(tf.pointSizeF() * 1.3)
-        tf.setBold(True)
-        self.title.setFont(tf)
-        head.addSpacing(12)
-        head.addWidget(self.title, 1)
-        self.week = QLabel()
-        head.addWidget(self.week)
-        outer.addLayout(head)
-        area = QScrollArea()
-        area.setWidgetResizable(True)
-        area.setFrameShape(QScrollArea.Shape.NoFrame)
-        body = QWidget()
-        grid = QGridLayout(body)
-        grid.setHorizontalSpacing(14)
-        area.setWidget(body)
-        outer.addWidget(area, 1)
-
-        def box(title: str, col: int, row: int, *widgets) -> QVBoxLayout:
-            g = QGroupBox(title)
-            lay = QVBoxLayout(g)
-            for w in widgets:
-                lay.addWidget(w) if isinstance(w, QWidget) else lay.addLayout(w)
-            if not any(isinstance(w, QPlainTextEdit) for w in widgets):
-                lay.addStretch(1)  # tables at the top of their box
-            grid.addWidget(g, row, col)
-            return lay
-
-        # left: property, timeline, value, returns
-        self.prop = _mini(["", ""])
-        self.prop.horizontalHeader().setVisible(False)
-        prow = QHBoxLayout()
-        self.address = QLineEdit()
-        self.address.setPlaceholderText("Address")
-        self.address.editingFinished.connect(self._save_info)
-        prow.addWidget(QLabel("Address:"))
-        prow.addWidget(self.address, 1)
-        box("Property", 0, 0, self.prop, prow)
-        self.timeline = _mini(["", "Original", "Current"])
-        trow = QHBoxLayout()
-        for text, slot in (("Add Milestone…", self.add_milestone), ("Edit…", self.edit_milestone),
-                           ("Delete", self.delete_milestone)):
+        head.addStretch(1)
+        for text, slot in (("Details…", self.edit_details), ("Timeline…", self.edit_timeline),
+                           ("Weekly Notes…", self.edit_notes)):
             b = QPushButton(text)
             b.clicked.connect(slot)
-            trow.addWidget(b)
-        erow = QHBoxLayout()
-        erow.addWidget(QLabel("Exit date:"))
-        self.exit = QDateEdit(QDate.currentDate())
-        self.exit.setCalendarPopup(True)
-        self.exit.setDisplayFormat("yyyy-MM-dd")
-        self.exit.setSpecialValueText("—")
-        self.exit.dateChanged.connect(lambda *_: self._save_info())
-        erow.addWidget(self.exit)
-        erow.addStretch(1)
-        self.timeline.doubleClicked.connect(lambda *_: self.edit_milestone())
-        box("Timeline", 0, 1, self.timeline, trow, erow)
-        self.value = _mini(["", ""])
-        self.value.horizontalHeader().setVisible(False)
-        box("Value", 0, 2, self.value)
-        self.returns = _mini(["", ""])
-        self.returns.horizontalHeader().setVisible(False)
-        box("Returns", 0, 3, self.returns)
-        # middle: rental status, construction status, cash balance
-        self.rental = _mini(["", "Last 12 months", "Run-rate", "Next 12 (proj.)"])
-        box("Rental Status", 1, 0, self.rental)
-        self.construction = _mini(["", "Budgeted", "Cost to date", "Cost to complete"])
-        box("Construction Status", 1, 1, self.construction)
-        self.cash = _mini(["", ""])
-        self.cash_title = QLabel()
-        self.cash_title.setObjectName("hint")
-        box("Cash Balance", 1, 2, self.cash_title, self.cash)
-        # right: rental status by type, leasing, weekly activity
-        self.types = _mini(["Unit type", "Existing units", "Existing rent", "Reno units", "Reno rent",
-                            "Market rent"])
-        self.monthly = QLabel()
-        box("Rental Status by Unit Type", 2, 0, self.types, self.monthly)
-        self.leasing = _mini(["Unit type", "Available", "Market rate"])
-        box("Leasing Update", 2, 1, self.leasing)
-        self.notes = QPlainTextEdit()
-        self.notes.setPlaceholderText("Weekly activity — operating (rent collection, tenants, vendors) and construction "
-                                      "(what was done, what's next)…")
-        self.notes.setMinimumHeight(180)
-        nrow = QHBoxLayout()
-        self.notes_saved = QLabel()
-        self.notes_saved.setObjectName("hint")
-        nrow.addWidget(self.notes_saved, 1)
-        save = QPushButton("Save Notes")
-        save.clicked.connect(self._save_info)
-        nrow.addWidget(save)
-        box("Weekly Activity", 2, 2, self.notes, nrow)
-        grid.setRowStretch(4, 1)
-        for c in range(3):
-            grid.setColumnStretch(c, 1)
-        self._milestones: list[op.Milestone] = []
+            head.addWidget(b)
+        outer.addLayout(head)
+        self.page = QTextBrowser()
+        self.page.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.page.setOpenLinks(False)
+        self.page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(self.page, 1)
+        self.title = QLabel()   # (kept for the window's state; the page carries the title)
+        self.data: dict[str, list[list[str]]] = {}
 
-    def _save_info(self) -> None:
+    # -- editing -------------------------------------------------------------
+
+    def edit_details(self) -> None:
         p = self.perf()
         if not p:
             return
-        exit_d = self.exit.date().toString("yyyy-MM-dd") if self.exit.date() != self.exit.minimumDate() else None
-        info_ = op.DashInfo(self.address.text(), exit_d, self.notes.toPlainText(), date.today().isoformat())
+        info_ = op.dash_info(self.pf, p.holding.id)
+        d = _DetailsDialog(self, p, info_)
+        if d.exec():
+            info_.address = d.address.text()
+            info_.exit_date = d.exit.date().toString("yyyy-MM-dd") if d.use_exit.isChecked() else None
+            op.save_dash_info(self.pf, p.holding.id, info_)
+            self.fill()
+
+    def edit_timeline(self) -> None:
+        p = self.perf()
+        if p:
+            _ListDialog(self, p).exec()
+            self.fill()
+
+    def edit_notes(self) -> None:
+        p = self.perf()
+        if not p:
+            return
+        info_ = op.dash_info(self.pf, p.holding.id)
+        d = _NotesDialog(self, p, info_.notes)
+        if d.exec():
+            self.save_notes(d.text.toPlainText())
+
+    def save_notes(self, text: str) -> None:
+        p = self.perf()
+        if not p:
+            return
+        info_ = op.dash_info(self.pf, p.holding.id)
+        info_.notes, info_.notes_date = text, date.today().isoformat()
         op.save_dash_info(self.pf, p.holding.id, info_)
-        self.notes_saved.setText(f"Saved {info_.notes_date}")
-        self._fill_timeline(p)
+        self.fill()
+
+    # -- the page ------------------------------------------------------------
 
     def fill(self) -> None:
+        import html as _html
+
+        from .theme import c as tc
+
         p = self.perf()
+        self.data = {}
         if p is None:
-            self.title.setText("No operating companies in this view.")
+            self.title.setText("")
+            self.page.setHtml("<p>No operating companies in this view.</p>")
             return
         h = p.holding
         as_of = self.view._as_of_date()
         self.title.setText(f"{h.name} Dashboard")
-        self.week.setText(f"For the week of {as_of.strftime('%b %d, %Y')}")
         info_ = op.dash_info(self.pf, h.id)
-        for w in (self.address, self.exit, self.notes):
-            w.blockSignals(True)
-        self.address.setText(info_.address or h.location)
-        self.exit.setDate(_qd(info_.exit_date) if info_.exit_date else self.exit.minimumDate())
-        self.notes.setPlainText(info_.notes)
-        for w in (self.address, self.exit, self.notes):
-            w.blockSignals(False)
-        self.notes_saved.setText(f"Last saved {info_.notes_date}" if info_.notes_date else "")
         rows = op.units(self.pf, h.id)
         s = op.summary(rows, as_of)
-        _fill_mini(self.prop, [["Property", h.name], ["Type", h.type], ["Units", str(s.units) if s.units else "—"],
-                               ["Occupancy", f"{s.occupancy * 100:.1f}%" if s.occupancy is not None else "—"]])
-        self._fill_timeline(p)
-        _fill_mini(self.value, [["Current value", fmt_money(p.company_value) if p.company_value is not None else "—"],
-                                ["Total debt", fmt_money(p.debt)], ["NAV", fmt_money(p.nav)]], {2})
-        _fill_mini(self.returns, [["Invested", fmt_money(p.invested)], ["Distributions to date", fmt_money(p.returned)],
-                                  ["Total profit", fmt_money(p.gain)],
-                                  ["MOIC", f"{p.moic:.2f}x" if p.moic is not None else "—"],
-                                  ["IRR", f"{p.irr * 100:.1f}%" if p.irr is not None else "—"]])
+        d = self.data
+        d["property"] = [["Property", h.name], ["Address", info_.address or h.location or "—"], ["Type", h.type],
+                         ["Units", str(s.units) if s.units else "—"],
+                         ["Occupancy", f"{s.occupancy * 100:.1f}%" if s.occupancy is not None else "—"]]
+        ms = op.milestones(self.pf, h)
+        d["timeline"] = [[m.name, m.original or "", m.current or ""] for m in ms]
+        d["value"] = [["Current value", fmt_money(p.company_value) if p.company_value is not None else "—"],
+                      ["Total debt", fmt_money(p.debt)], ["NAV", fmt_money(p.nav)]]
+        d["returns"] = [["Invested", fmt_money(p.invested)], ["Distributions to date", fmt_money(p.returned)],
+                        ["Total profit", fmt_money(p.gain)], ["MOIC", f"{p.moic:.2f}x" if p.moic is not None else "—"],
+                        ["IRR", f"{p.irr * 100:.1f}%" if p.irr is not None else "—"]]
         stmt = op.monthly_statement(self.pf, p, as_of)
         by = {x.label: x for x in stmt.lines}
 
@@ -953,75 +978,96 @@ class DashboardPage(_CompanyPage):
             return sum(v for v, pr in zip(by[label].values, stmt.projected) if pr and v is not None)
 
         st = op.settings(self.pf, h.id)
-        egi_t12, opx_t12 = op.t12(stmt, "Total revenue"), op.t12(stmt, "Total operating expenses")
-        other_rev = egi_t12 - op.t12(stmt, "Rental revenue") if "Rental revenue" in by else egi_t12
-        run_egi = round(s.in_place * 12 * (1 - st.vacancy_pct / 100)) + other_rev if rows else egi_t12
-        _fill_mini(self.rental, [["EGI", fmt_money(egi_t12), fmt_money(run_egi), fmt_money(nxt("Total revenue"))],
-                                 ["Op. Ex", fmt_money(opx_t12), fmt_money(opx_t12),
-                                  fmt_money(nxt("Total operating expenses"))],
-                                 ["NOI", fmt_money(egi_t12 - opx_t12), fmt_money(run_egi - opx_t12),
-                                  fmt_money(nxt("Net operating income"))]], {2})
-        lines_ = cx.lines(self.pf, h, as_of)
-        tot = cx.totals(lines_)
-        crow = [[g, fmt_money(b), fmt_money(d), fmt_money(c_)] for g, (b, d, c_) in tot.by_group.items()]
-        crow.append(["Total budget", fmt_money(tot.budget), fmt_money(tot.to_date), fmt_money(tot.to_complete)])
-        _fill_mini(self.construction, crow if lines_ else [["No capex schedule yet (CapEx tab)", "", "", ""]],
-                   {len(crow) - 1} if lines_ else set())
+        egi, opx = op.t12(stmt, "Total revenue"), op.t12(stmt, "Total operating expenses")
+        other_rev = egi - op.t12(stmt, "Rental revenue") if "Rental revenue" in by else egi
+        run_egi = round(s.in_place * 12 * (1 - st.vacancy_pct / 100)) + other_rev if rows else egi
+        d["rental"] = [["EGI", fmt_money(egi), fmt_money(run_egi), fmt_money(nxt("Total revenue"))],
+                       ["Op. Ex", fmt_money(opx), fmt_money(opx), fmt_money(nxt("Total operating expenses"))],
+                       ["NOI", fmt_money(egi - opx), fmt_money(run_egi - opx), fmt_money(nxt("Net operating income"))]]
+        tot = cx.totals(cx.lines(self.pf, h, as_of))
+        d["construction"] = [[g, fmt_money(b), fmt_money(dd), fmt_money(c_)] for g, (b, dd, c_) in tot.by_group.items()]
+        if d["construction"]:
+            d["construction"].append(["Total budget", fmt_money(tot.budget), fmt_money(tot.to_date),
+                                      fmt_money(tot.to_complete)])
         cf = op.cash_flow(self.pf, p, as_of)
         cby = {x.label: x for x in cf.lines}
         i = max((k for k, pr in enumerate(cf.projected) if not pr), default=0)
-        self.cash_title.setText(cf.months[i].strftime("%B %Y"))
 
         def v(label, sign=1):
             x = cby.get(label)
             return fmt_money(sign * x.values[i]) if x and x.values[i] is not None else "—"
 
-        _fill_mini(self.cash, [["Starting cash", v("Opening cash")], ["Rent collection", v("Total revenue")],
-                               ["Operating costs", v("Total operating expenses", -1)], ["CapEx", v("CapEx")],
-                               ["Debt service", v("Debt service")], ["Equity", v("Equity injections")],
-                               ["Debt", v("Loan advances")], ["Working capital change",
-                                                              v("Other / working capital (books)")],
-                               ["Ending cash", v("Ending cash")]], {8})
+        d["cash"] = [["Starting cash", v("Opening cash")], ["Rent collection", v("Total revenue")],
+                     ["Operating costs", v("Total operating expenses", -1)], ["CapEx", v("CapEx")],
+                     ["Debt service", v("Debt service")], ["Equity", v("Equity injections")],
+                     ["Debt", v("Loan advances")], ["Working capital change", v("Other / working capital (books)")],
+                     ["Ending cash", v("Ending cash")]]
         types = op.by_unit_type(rows)
-        _fill_mini(self.types, [[t.unit_type, str(t.existing), fmt_money(t.existing_rent) if t.existing else "—",
-                                 str(t.renovated), fmt_money(t.renovated_rent) if t.renovated else "—",
-                                 fmt_money(t.market) if t.market else "—"] for t in types]
-                   or [["No rent roll yet (Rent Roll & Operations tab)", "", "", "", "", ""]])
-        self.monthly.setText(f"Monthly rent {fmt_money(s.in_place)} · average {fmt_money(s.avg_rent)}"
-                             if rows and s.avg_rent is not None else "")
-        _fill_mini(self.leasing, [[t.unit_type, str(t.vacant), fmt_money(t.market) if t.market else "—"]
-                                  for t in types] + ([["Total", str(sum(t.vacant for t in types)), ""]] if types else []),
-                   {len(types)} if types else set())
+        d["types"] = [[t.unit_type, str(t.existing), fmt_money(t.existing_rent) if t.existing else "—",
+                       str(t.renovated), fmt_money(t.renovated_rent) if t.renovated else "—",
+                       fmt_money(t.market) if t.market else "—"] for t in types]
+        d["leasing"] = [[t.unit_type, str(t.vacant), fmt_money(t.market) if t.market else "—"] for t in types]
+        if types:
+            d["leasing"].append(["Total", str(sum(t.vacant for t in types)), ""])
 
-    def _fill_timeline(self, p) -> None:
-        self._milestones = op.milestones(self.pf, p.holding)
-        _fill_mini(self.timeline, [[m.name, m.original or "", m.current or ""] for m in self._milestones]
-                   or [["Add milestones (turnovers, refinancing, completion…)", "", ""]])
-        for r, m in enumerate(self._milestones):
-            if m.original and m.current and m.current > m.original:
-                self.timeline.item(r, 2).setForeground(NEGATIVE)   # running late
+        # ---- render: one page, no lines; titles quiet, figures right-aligned ----
+        text, muted, red, accent = self.palette().text().color().name(), tc("muted"), tc("red"), tc("link")
+        esc = _html.escape
 
-    def _selected_milestone(self):
-        r = self.timeline.currentRow()
-        m = self._milestones[r] if 0 <= r < len(self._milestones) else None
-        if m is not None and m.auto:
-            info(self, "From the records", f"“{m.name}” comes from the holding's acquisition date, its loans or the "
-                                           "exit date — change it there.")
-            return None
-        return m
+        def section(title: str, rows_: list[list[str]], heads: list[str] | None = None, *, bold_last=False,
+                    empty="—", sub: str = "", late: set[int] = frozenset()) -> str:
+            out = [f"<p style='margin:18px 0 4px 0; color:{accent}; font-size:8.5pt; font-weight:700'>"
+                   f"{esc(title.upper())}{f' &nbsp;<span style=\"color:{muted}; font-weight:400\">{esc(sub)}</span>' if sub else ''}"
+                   "</p>"]
+            out.append("<table width='100%' cellspacing='0' cellpadding='3'>")
+            if heads:
+                out.append("<tr>" + "".join(
+                    f"<td align='{'left' if k == 0 else 'right'}' style='color:{muted}; font-size:8pt'>{esc(x)}</td>"
+                    for k, x in enumerate(heads)) + "</tr>")
+            if not rows_:
+                out.append(f"<tr><td style='color:{muted}'>{esc(empty)}</td></tr>")
+            for r, row in enumerate(rows_):
+                weight = "font-weight:700;" if bold_last and r == len(rows_) - 1 else ""
+                cells = []
+                for k, x in enumerate(row):
+                    colour = red if (k > 0 and (x.startswith("(") or (r in late and k == 2))) else \
+                        (muted if k == 0 and not weight else text)
+                    width = " width='42%'" if k == 0 and len(row) == 2 else ""
+                    cells.append(f"<td{width} align='{'left' if k == 0 else 'right'}' style='{weight}color:{colour}'>"
+                                 f"{esc(x)}</td>")
+                out.append("<tr>" + "".join(cells) + "</tr>")
+            out.append("</table>")
+            return "".join(out)
 
-    def add_milestone(self) -> None:
-        p = self.perf()
-        if p and MilestoneDialog(self.pf, p.holding, parent=self).exec():
-            self._fill_timeline(p)
-
-    def edit_milestone(self) -> None:
-        p, m = self.perf(), self._selected_milestone()
-        if p and m and MilestoneDialog(self.pf, p.holding, m, self).exec():
-            self._fill_timeline(p)
-
-    def delete_milestone(self) -> None:
-        p, m = self.perf(), self._selected_milestone()
-        if p and m and confirm(self, "Delete milestone", f"Delete “{m.name}”?"):
-            op.delete_milestone(self.pf, m.id)
-            self._fill_timeline(p)
+        late_rows = {r for r, m in enumerate(ms) if m.original and m.current and m.current > m.original}
+        left = (section("Property", d["property"]) +
+                section("Timeline", d["timeline"], ["", "Original", "Current"], late=late_rows,
+                        empty="No milestones yet — Timeline…") +
+                section("Value", d["value"], bold_last=True) + section("Returns", d["returns"]))
+        mid = (section("Rental status", d["rental"], ["", "Last 12 months", "Run-rate", "Next 12"], bold_last=True) +
+               section("Construction status", d["construction"], ["", "Budgeted", "Cost to date", "To complete"],
+                       bold_last=True, empty="No capex schedule yet (CapEx tab)") +
+               section("Cash balance", d["cash"], bold_last=True, sub=cf.months[i].strftime("%B %Y")))
+        notes = info_.notes.strip()
+        notes_html = (f"<p style='margin:2px 0; color:{text}'>" +
+                      "<br>".join(esc(x) for x in notes.splitlines()) + "</p>") if notes else \
+            f"<p style='color:{muted}'>No notes yet — Weekly Notes…</p>"
+        right = (section("Rental status by unit type", d["types"], ["", "Existing", "Rent", "Reno", "Rent",
+                                                                     "Market"], empty="No rent roll yet") +
+                 (f"<p style='margin:2px 0 0 3px; color:{muted}; font-size:8.5pt'>Monthly rent {fmt_money(s.in_place)}"
+                  f" · average {fmt_money(s.avg_rent)}</p>" if rows and s.avg_rent is not None else "") +
+                 section("Leasing update", d["leasing"], ["", "Available", "Market rate"], bold_last=bool(types),
+                         empty="No rent roll yet") +
+                 f"<p style='margin:18px 0 4px 0; color:{accent}; font-size:8.5pt; font-weight:700'>WEEKLY ACTIVITY"
+                 f"{f' &nbsp;<span style=\"color:{muted}; font-weight:400\">saved {info_.notes_date}</span>' if info_.notes_date else ''}"
+                 f"</p>{notes_html}")
+        page = (f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+                f"<td valign='middle'><span style='font-size:17pt; font-weight:700; color:{text}'>{esc(h.name)}"
+                f"</span> <span style='font-size:12pt; color:{muted}'>Dashboard</span></td>"
+                f"<td align='right' valign='middle' style='color:{muted}'>For the week of "
+                f"{as_of.strftime('%b %d, %Y')}</td></tr></table>"
+                f"<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:8px'><tr>"
+                f"<td width='32%' valign='top'>{left}</td><td width='2%'></td>"
+                f"<td width='32%' valign='top'>{mid}</td><td width='2%'></td>"
+                f"<td width='32%' valign='top'>{right}</td></tr></table>")
+        self.page.setHtml(page)
