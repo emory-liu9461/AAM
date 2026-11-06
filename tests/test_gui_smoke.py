@@ -1195,7 +1195,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert v.co_loans.rowCount() == 2 and "add terms" in v.co_loans.item(0, 0).text()   # summary on the overview
     v._go_financing(0)                                   # its own page: Financing & Cap Table
     assert v.tabs.tabText(v.tabs.currentIndex()) == "Financing && Cap Table"
-    assert v.fin_pick.currentText() == "Lakeshore Apartments LP" and v.fin_loans.currentRow() == 0
+    assert v.fin_pick.currentText() == "Lakeshore Apartments LP" and v._fin_sel == 0
     ld = LoanDialog(v.pf, v._fin_perf().holding, v._selected_loan())
     assert ld.balance.value() == 1_800_000 and not ld.balance.isEnabled()   # balance read from the books
     ld.lender.setText("TD Bank")
@@ -1212,10 +1212,20 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     ld.repayment.setCurrentIndex(ld.repayment.findData("Amortizing"))
     ld.save()
     v.refresh()
-    fl = v.fin_loans
-    assert fl.item(0, 0).text() == "TD Bank" and fl.item(0, 2).text() == "Amortizing"
-    assert fl.item(0, 5).text() == "5.25% fixed" and fl.item(0, 6).text() == "5 yr / 25 yr amort."
-    assert fl.item(0, 7).text() == "$11,984.95 monthly" and fl.item(0, 10).text() == "2029-04-30"
+    fl = v.fin_loan_cells
+    assert fl[0][0] == "TD Bank" and fl[0][2] == "Amortizing"
+    assert fl[0][5] == "5.25% fixed" and fl[0][6] == "5 yr / 25 yr amort."
+    assert fl[0][7] == "$11,984.95 monthly" and fl[0][10] == "2029-04-30"
+    assert "TD Bank" in v.fin_loans.toPlainText() and 'href="loan:0"' in v.fin_loans.toHtml()   # click to select
+    import re as _re
+
+    assert set(_re.findall(r'border="(\d+)"', v.fin_loans.toHtml())) <= {"0"}             # no lines
+    from PySide6.QtCore import QUrl
+
+    v._fin_select(None)
+    assert v._selected_loan() is None
+    v.fin_loans.anchorClicked.emit(QUrl("loan:0"))                # clicking the lender selects the loan
+    assert v._selected_loan() is v._fin_rows[0] and v.fin_sched.rowCount() == 62
     assert v.fin_sched.rowCount() == 62 and v.fin_sched.item(61, 0).text() == "Total"
     v.fin_sched_view.setCurrentIndex(1)                  # by year
     assert v.fin_sched.item(0, 0).text() == "2024"
@@ -1689,5 +1699,14 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     cap.create_account()
     assert any(a.name == "CapEx – Roofing" for a in w.books.accounts())   # in the open books too
     assert cap.cards["budget"].value.text() == "$50,000.00" and cap.table.item(1, 7).text() == "CapEx – Roofing"
+    bank_id = w.books.account_by_code("1000").id
+    w.books.import_transactions(bank_id, [ParsedTransaction(date.today().replace(day=2), "ROOFER", -12_500_00)])
+    roofer = next(t for t in w.books.transactions() if t.description == "ROOFER")
+    w.books.set_category(roofer.id, next(a.id for a in w.books.accounts() if a.name == "CapEx – Roofing"))
+    cap.fill()
+    assert cap.month_rows[0][0] == "Roofing" and cap.month_rows[0][-1] == 12_500_00
+    spend = cap.months.toPlainText()
+    assert "HARD COSTS" in spend and "12,500" in spend and date.today().strftime("%b %y") in spend
+    assert set(re.findall(r'border="(\d+)"', cap.months.toHtml())) <= {"0"}            # no lines
     w.set_mode("accounting")
     w.close()

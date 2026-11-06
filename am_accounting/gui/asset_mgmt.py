@@ -848,48 +848,82 @@ LOAN_COLS = ["Lender", "Facility", "Type", "Principal", "Balance", "Rate", "Term
              "Annual interest", "Maturity", "Time left", "From the books"]
 
 
-def fill_loan_table(t: QTableWidget, rows: list[pfm.Loan], as_of: date) -> None:
-    t.setRowCount(0)
-    tot = pfm.financing_totals(rows)
-    t.setRowCount(len(rows) + (1 if rows else 0))
+def _loan_term(ln) -> str:
+    if not ln.term_months:
+        return "—"
+    y, m = divmod(ln.term_months, 12)
+    txt = " ".join(x for x in (f"{y} yr" if y else "", f"{m} mo" if m else "") if x)
+    if ln.repayment == "Amortizing" and ln.amort_months and ln.amort_months != ln.term_months:
+        txt += f" / {ln.amort_months / 12:g} yr amort."
+    return txt
 
-    def term(ln):
-        if not ln.term_months:
-            return "—"
-        y, m = divmod(ln.term_months, 12)
-        txt = " ".join(x for x in (f"{y} yr" if y else "", f"{m} mo" if m else "") if x)
-        if ln.repayment == "Amortizing" and ln.amort_months and ln.amort_months != ln.term_months:
-            txt += f" / {ln.amort_months / 12:g} yr amort."
-        return txt
 
-    for r, ln in enumerate(rows):
+def loan_cells(rows: list[pfm.Loan], as_of: date) -> list[list[str]]:
+    """One list of texts per loan (LOAN_COLS order), then the total line."""
+    out = []
+    for ln in rows:
         left = ln.years_left(as_of)
-        _set_row(t, r, [
+        out.append([
             ln.lender + ("  — click to add terms" if ln.terms_missing else ""), ln.kind,
             "—" if ln.terms_missing else ln.repayment,
             fmt_money(ln.principal_cents) if ln.principal_cents else "—", fmt_money(ln.balance),
-            f"{ln.rate_pct:.3g}% {ln.rate_type.lower()}" if ln.rate_pct is not None else "—", term(ln),
+            f"{ln.rate_pct:.3g}% {ln.rate_type.lower()}" if ln.rate_pct is not None else "—", _loan_term(ln),
             f"{fmt_money(ln.payment)} {ln.payment_freq.lower()}" if ln.payment else
             (ln.payment_freq if ln.payment_freq == "At maturity" else "—"),
             fmt_money(ln.annual_debt_service) if ln.annual_debt_service else "—",
             fmt_money(ln.annual_interest) if ln.annual_interest is not None else "—",
             ln.maturity_date or "—",
             ("matured" if left < 0 else f"{left:.1f} yrs") if left is not None else "—",
-            ln.account_name or "—"], {3, 4, 5, 7, 8, 9, 11})
-        if ln.terms_missing:
-            for c in range(t.columnCount()):
-                t.item(r, c).setForeground(MUTED)
-        if left is not None and left < 1:
-            t.item(r, 10).setForeground(NEGATIVE)
-            t.item(r, 11).setForeground(NEGATIVE)
+            ln.account_name or "—"])
     if rows:
-        _set_row(t, len(rows), ["Total", "", "", fmt_money(tot.principal), fmt_money(tot.balance),
-                                f"{tot.rate:.3g}% avg" if tot.rate is not None else "—", "", "",
-                                fmt_money(tot.debt_service), fmt_money(tot.annual_interest),
-                                f"next {tot.next_maturity}" if tot.next_maturity else "", "", ""],
-                 {3, 4, 5, 8, 9}, bold=True)
-    t.resizeColumnsToContents()
-    t.horizontalHeader().setStretchLastSection(True)
+        tot = pfm.financing_totals(rows)
+        out.append(["Total", "", "", fmt_money(tot.principal), fmt_money(tot.balance),
+                    f"{tot.rate:.3g}% avg" if tot.rate is not None else "—", "", "",
+                    fmt_money(tot.debt_service), fmt_money(tot.annual_interest),
+                    f"next {tot.next_maturity}" if tot.next_maturity else "", "", ""])
+    return out
+
+
+def loans_html(widget, rows: list[pfm.Loan], as_of: date, selected: int | None) -> str:
+    """The loans as one clean page (no grid or lines, figures right-aligned): each lender is a link that selects
+    the loan; the selected one is shaded; maturities under a year away in red."""
+    import html as _html
+
+    from .theme import c as tc
+    from .theme import is_dark
+
+    text, muted, red, accent = widget.palette().text().color().name(), tc("muted"), tc("red"), tc("link")
+    shade = "#203040" if is_dark() else "#eef4fb"
+    esc = _html.escape
+    right = {3, 4, 5, 7, 8, 9, 11}
+    td = "padding:3px 10px"
+    head = "<tr>" + "".join(f"<td align='{'right' if c in right else 'left'}' style='{td}; color:{muted}; "
+                            f"font-size:8pt'>{esc(h)}</td>" for c, h in enumerate(LOAN_COLS)) + "</tr>"
+    body = []
+    cells = loan_cells(rows, as_of)
+    for r, vals in enumerate(cells):
+        total = r == len(rows)
+        ln = rows[r] if not total else None
+        left = ln.years_left(as_of) if ln else None
+        bg = f" background:{shade};" if (selected == r and not total) else ""
+        out = []
+        for c, v in enumerate(vals):
+            colour = muted if (ln is not None and ln.terms_missing) else text
+            if left is not None and left < 1 and c in (10, 11):
+                colour = red
+            weight = " font-weight:700;" if total else ""
+            content = esc(v)
+            if c == 0 and not total:
+                content = f"<a href='loan:{r}' style='color:{accent}; text-decoration:none'>{esc(v)}</a>"
+            out.append(f"<td align='{'right' if c in right else 'left'}' style='{td}; color:{colour};{weight}{bg}'>"
+                       f"{content}</td>")
+        if total:
+            body.append(f"<tr><td colspan='{len(LOAN_COLS)}' style='font-size:4pt'>&nbsp;</td></tr>")
+        body.append("<tr>" + "".join(out) + "</tr>")
+    if not rows:
+        body.append(f"<tr><td colspan='{len(LOAN_COLS)}' style='color:{muted}; {td}'>No loans yet — Add Loan…"
+                    "</td></tr>")
+    return f"<table cellspacing='0' cellpadding='0'>{head}{''.join(body)}</table>"
 
 
 # ---------------------------------------------------------------------------
@@ -2573,7 +2607,8 @@ class AssetManagementView(QWidget):
         tl = QVBoxLayout(top)
         tl.setContentsMargins(0, 0, 0, 0)
         lrow = QHBoxLayout()
-        lrow.addWidget(QLabel("<b>Loans</b> (balances from the company's books where linked; double-click to edit)"))
+        lrow.addWidget(QLabel("<b>Loans</b> (balances from the company's books where linked; click a lender to select its loan, "
+                              "then Edit Loan…)"))
         lrow.addStretch(1)
         for text, slot in [("Add Loan…", self._fin_add_loan), ("Edit Loan…", self._fin_edit_loan),
                            ("Delete Loan", self._fin_delete_loan), ("Create Account in the Books", self._fin_link),
@@ -2584,10 +2619,16 @@ class AssetManagementView(QWidget):
                 b.setObjectName("primary")
             lrow.addWidget(b)
         tl.addLayout(lrow)
-        self.fin_loans = _table(LOAN_COLS, None)
-        self.fin_loans.doubleClicked.connect(lambda *_: self._fin_edit_loan())
-        self.fin_loans.itemSelectionChanged.connect(self._fill_fin_schedule)
+        from PySide6.QtWidgets import QTextBrowser
+
+        self.fin_loans = QTextBrowser()      # one clean page; click a lender to select its loan
+        self.fin_loans.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.fin_loans.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        self.fin_loans.setOpenLinks(False)
+        self.fin_loans.anchorClicked.connect(lambda url: self._fin_select(int(url.toString().split(":")[1])))
         self._fin_rows: list[pfm.Loan] = []
+        self._fin_sel: int | None = None
+        self.fin_loan_cells: list[list[str]] = []
         tl.addWidget(self.fin_loans, 1)
         split.addWidget(top)
         bottom = QSplitter(Qt.Orientation.Horizontal)
@@ -2640,16 +2681,17 @@ class AssetManagementView(QWidget):
 
     def _fill_financing(self) -> None:
         p = self._fin_perf()
-        keep = self.fin_loans.currentRow()
+        keep = self._fin_sel if self._fin_sel is not None else -1
         if p is None:
             self._fin_rows, self._fin_holder_rows = [], []
-            for t in (self.fin_loans, self.fin_stack, self.fin_holders, self.fin_sched):
+            self.fin_loans.setHtml("")
+            for t in (self.fin_stack, self.fin_holders, self.fin_sched):
                 t.setRowCount(0)
             self.fin_info.setText("<i>No holdings yet.</i>")
             return
         as_of = self._as_of_date()
         self._fin_rows = pfm.loans(self.pf, p.holding, as_of)
-        fill_loan_table(self.fin_loans, self._fin_rows, as_of)
+        self.fin_loan_cells = loan_cells(self._fin_rows, as_of)
         tot = pfm.financing_totals(self._fin_rows)
         self.fin_info.setText(
             f"{len(self._fin_rows)} loan(s) · balance <b>{fmt_money(tot.balance)}</b> · debt service "
@@ -2701,15 +2743,17 @@ class AssetManagementView(QWidget):
             add(["Total", "", "", fmt_money(tot_a), "100.00%", fmt_money(tot_f), "",
                  fmt_money(sum(x.value or 0 for x in holders)) if p.value_100 is not None else "—", ""], bold=True)
         self.fin_holders.resizeColumnsToContents()
-        if 0 <= keep < len(self._fin_rows):
-            self.fin_loans.selectRow(keep)
-        elif self._fin_rows:
-            self.fin_loans.selectRow(0)
+        self._fin_select(keep if 0 <= keep < len(self._fin_rows) else (0 if self._fin_rows else None))
+
+    def _fin_select(self, r: int | None) -> None:
+        """Select a loan (clicking its lender): shaded in the list, its amortization table below."""
+        self._fin_sel = r
+        self.fin_loans.setHtml(loans_html(self, self._fin_rows, self._as_of_date(), r))
         self._fill_fin_schedule()
 
     def _selected_loan(self) -> pfm.Loan | None:
-        r = self.fin_loans.currentRow()
-        return self._fin_rows[r] if 0 <= r < len(self._fin_rows) else None
+        r = self._fin_sel
+        return self._fin_rows[r] if r is not None and 0 <= r < len(self._fin_rows) else None
 
     def _fin_books(self):
         from ..books import Books
@@ -2780,7 +2824,7 @@ class AssetManagementView(QWidget):
         self.fin_pick.setCurrentIndex(max(0, self.fin_pick.findData(self.co_pick.currentData())))
         self.tabs.setCurrentWidget(self.financing_page)
         if loan_row is not None and 0 <= loan_row < len(self._fin_rows):
-            self.fin_loans.selectRow(loan_row)
+            self._fin_select(loan_row)
 
     def _fin_add_loan(self) -> None:
         p = self._fin_perf()

@@ -409,12 +409,14 @@ Financials and Managed Companies.
   - Link a line to an account in the books, or use **Create Account in the
     Books** to add one such as *CapEx – Roofing*. Then categorizing a
     contractor's payment to that account updates the cost to date and the
-    monthly spending table. Costs not in the books can be entered by hand.
+    monthly spending (one clean page like the Dashboard: cost items by group
+    down, months across). Costs not in the books can be entered by hand.
 
 **Financing & Cap Table.** This Asset Management tab has a page for each
 company:
 
-- **Loans:** each loan's lender name, facility (mortgage, term loan, line of
+- **Loans** (one clean page like the Dashboard; click a lender to select the
+  loan): each loan's lender name, facility (mortgage, term loan, line of
   credit…), type (**amortizing** or **interest only**), principal, balance,
   interest rate (fixed / variable), term, payment, annual debt service,
   annual interest, maturity and time left. Debt accounts in the company's books

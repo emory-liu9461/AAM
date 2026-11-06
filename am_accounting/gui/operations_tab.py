@@ -519,8 +519,11 @@ class CapexPage(_CompanyPage):
         ml = QVBoxLayout(mw)
         ml.setContentsMargins(0, 4, 0, 0)
         ml.addWidget(QLabel("<b>Monthly capex spending</b> (recorded in the books, last 12 months)"))
-        self.months = _table([""])
-        self.months.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        from PySide6.QtWidgets import QTextBrowser
+
+        self.months = QTextBrowser()          # one clean page, like the Dashboard
+        self.months.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.months.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
         ml.addWidget(self.months, 1)
         split.addWidget(mw)
         split.setSizes([420, 220])
@@ -531,7 +534,7 @@ class CapexPage(_CompanyPage):
         p = self.perf()
         t = self.table
         t.setRowCount(0)
-        self.months.setRowCount(0)
+        self.months.setHtml("")
         for c in self.cards.values():
             c.set("—")
         self._rows = []
@@ -583,28 +586,47 @@ class CapexPage(_CompanyPage):
         self._rows.append(line)
 
     def _fill_months(self, lines, as_of: date) -> None:
+        """Spending recorded in the books, last 12 months: cost items down (by group), months across ("Mar 26");
+        no grid or lines, figures right-aligned, totals in bold."""
+        import html as _html
+
+        from .theme import c as tc
+
         months = op._month_starts(as_of, 12, 0)
         keys = [m.strftime("%Y-%m") for m in months]
         active = [ln for ln in lines if ln.monthly and any(ln.monthly.get(k) for k in keys)]
-        t = self.months
-        t.clear()
-        t.setColumnCount(len(keys) + 2)
-        t.setHorizontalHeaderLabels(["", *[m.strftime("%b %y") for m in months], "Total"])
-        t.setRowCount(len(active) + 1)
-        for r, ln in enumerate(active):
-            t.setItem(r, 0, _cell(ln.item))
-            vals = [ln.monthly.get(k, 0) for k in keys]
-            for c, v in enumerate(vals, start=1):
-                t.setItem(r, c, _cell(fmt_money(v) if v else "", right=True))
-            t.setItem(r, len(keys) + 1, _cell(fmt_money(sum(vals)), right=True, bold=True))
+        self.month_rows = [[ln.item, *[ln.monthly.get(k, 0) for k in keys]] for ln in active]
         tot = cx.monthly_outflows(lines, keys)
-        r = len(active)
-        t.setItem(r, 0, _cell("Total", bold=True))
-        for c, k in enumerate(keys, start=1):
-            t.setItem(r, c, _cell(fmt_money(tot[k]) if tot[k] else "", right=True, bold=True))
-        t.setItem(r, len(keys) + 1, _cell(fmt_money(sum(tot.values())), right=True, bold=True))
-        t.resizeColumnsToContents()
-        t.setColumnWidth(0, max(t.columnWidth(0), 180))
+        text, muted, accent = self.palette().text().color().name(), tc("muted"), tc("link")
+        esc = _html.escape
+        td = "padding:2px 10px"
+        head = ("<tr><td></td>" + "".join(f"<td align='right' style='{td}; color:{text}; font-weight:700'>"
+                                            f"{m.strftime('%b %y')}</td>" for m in months)
+                + f"<td align='right' style='{td}; color:{text}; font-weight:700'>Total</td></tr>")
+        body = []
+        for grp in dict.fromkeys(ln.grp for ln in active):
+            body.append(f"<tr><td colspan='{len(keys) + 2}' style='padding:10px 0 2px 0; color:{accent}; "
+                        f"font-size:8.5pt; font-weight:700'>{esc(grp.upper())}</td></tr>")
+            for ln in (x for x in active if x.grp == grp):
+                vals = [ln.monthly.get(k, 0) for k in keys]
+                body.append(f"<tr><td style='padding:2px 24px 2px 14px; color:{muted}; white-space:nowrap'>"
+                            f"{esc(ln.item)}</td>"
+                            + "".join(f"<td align='right' style='{td}; color:{text}'>{_whole(v) if v else ''}</td>"
+                                      for v in vals)
+                            + f"<td align='right' style='{td}; color:{text}; font-weight:700'>{_whole(sum(vals))}</td>"
+                            "</tr>")
+        if active:
+            body.append(f"<tr><td colspan='{len(keys) + 2}' style='font-size:4pt'>&nbsp;</td></tr>")
+            body.append(f"<tr><td style='padding:2px 24px 2px 0; color:{text}; font-weight:700'>Total</td>"
+                        + "".join(f"<td align='right' style='{td}; color:{text}; font-weight:700'>"
+                                  f"{_whole(tot[k]) if tot[k] else ''}</td>" for k in keys)
+                        + f"<td align='right' style='{td}; color:{text}; font-weight:700'>"
+                          f"{_whole(sum(tot.values()))}</td></tr>")
+        else:
+            body.append(f"<tr><td colspan='{len(keys) + 2}' style='color:{muted}; padding-top:8px'>Nothing recorded "
+                        "in the books for the capex lines in the last 12 months — link lines to accounts (Edit… or "
+                        "Create Account in the Books).</td></tr>")
+        self.months.setHtml(f"<table cellspacing='0' cellpadding='0'>{head}{''.join(body)}</table>")
 
     def _selected(self):
         r = self.table.currentRow()
