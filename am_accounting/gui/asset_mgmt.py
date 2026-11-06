@@ -1740,6 +1740,7 @@ class AssetManagementView(QWidget):
         ml.addWidget(self.managed_table, 1)
         self.managed_page = mv
         self.tabs.addTab(mv, "Managed Companies")
+        self._arrange_tabs()
         self.setStyleSheet("QFrame#card { background: palette(base); border: 1px solid palette(midlight); "
                            "border-radius: 8px; } QLabel#cardtitle { color: palette(placeholder-text); }")
         self.refresh()
@@ -1787,9 +1788,44 @@ class AssetManagementView(QWidget):
         self.viewing.setCurrentIndex(i)
         self.viewing.blockSignals(False)
 
-    def show_summary(self) -> None:
+    def _arrange_tabs(self) -> None:
+        """The whole portfolio (summary, holdings, consolidated financials, managed companies) sits behind the
+        Portfolio Summary button; the tabs are for one company: Dashboard (with what was the Company Overview),
+        Rent Roll & Operations, Cash Flow, CapEx, Financing & Cap Table, Customers & Vendors, Waterfall,
+        Projections."""
+        pages = {self.tabs.tabText(i): self.tabs.widget(i) for i in range(self.tabs.count())}
+        self.tabs.blockSignals(True)
+        while self.tabs.count():
+            self.tabs.removeTab(0)
+        self.portfolio_tabs = QTabWidget()
+        self.portfolio_tabs.setDocumentMode(True)
+        self.summary_page = pages["Portfolio Summary"]
+        for name, label in (("Portfolio Summary", "Summary"), ("Holdings", "Holdings"),
+                            ("Consolidated Financials", "Consolidated Financials"),
+                            ("Managed Companies", "Managed Companies")):
+            self.portfolio_tabs.addTab(pages[name], label)
+        self.portfolio_area = self.portfolio_tabs
+        self.tabs.addTab(self.portfolio_area, "Portfolio")
+        self.tabs.setTabVisible(0, False)  # opened with the Portfolio Summary button at the top, not a tab
+        self.overview_page = pages["Company Overview"]   # merged into the Dashboard; kept for its figures
+        self.overview_page.setParent(self)
+        self.overview_page.hide()
+        for name in ("Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
+                     "Customers && Vendors", "Waterfall (LP / GP)", "Projections"):
+            self.tabs.addTab(pages[name], name)
         self.tabs.setCurrentIndex(0)
+        self.tabs.blockSignals(False)
         self.summary_btn.setChecked(True)
+
+    def show_portfolio(self, page=None) -> None:
+        """The portfolio area (Summary, Holdings, Consolidated Financials, Managed Companies)."""
+        self.tabs.setCurrentIndex(0)
+        if page is not None:
+            self.portfolio_tabs.setCurrentWidget(page)
+        self.summary_btn.setChecked(True)
+
+    def show_summary(self) -> None:
+        self.show_portfolio(self.summary_page)
 
     def _filter(self) -> dict:
         v = self.viewing.currentData()
@@ -1811,7 +1847,7 @@ class AssetManagementView(QWidget):
                       and self.viewing.itemData(k)[0] == kind and same(self.viewing.itemData(k)[1], path)), 0)
             self.viewing.setCurrentIndex(i)
             self.refresh()
-            self.tabs.setCurrentWidget(self.managed_page if role == "asset_manager" else self.tabs.widget(0))
+            self.show_portfolio(self.managed_page if role == "asset_manager" else self.summary_page)
             return ""
         self._fill_viewing()
         i = next((k for k in range(self.viewing.count()) if self.viewing.itemData(k)
@@ -1823,13 +1859,13 @@ class AssetManagementView(QWidget):
         if perf is None:
             self.viewing.setCurrentIndex(0)
             self.refresh()
-            self.tabs.setCurrentIndex(0)
+            self.show_summary()
             return "This company isn't in the portfolio — tick “Pull in all operating companies” or add it with " \
                    "New Holding…."
         self.co_pick.setCurrentIndex(self.co_pick.findData(perf.holding.id))
         self.cv_pick.setCurrentIndex(self.cv_pick.findData(perf.holding.id))
-        if self.tabs.currentIndex() in (0, self.tabs.indexOf(self.managed_page)):
-            self.tabs.setCurrentIndex(1)  # Company Overview (stays on Customers & Vendors / Projections… if open)
+        if self.tabs.currentIndex() == 0:
+            self.tabs.setCurrentWidget(self.dash_page)  # its Dashboard (stays on another company tab if open)
         return ""
 
     def _auto_sync_toggled(self, on: bool) -> None:
@@ -2507,8 +2543,10 @@ class AssetManagementView(QWidget):
     def _open_company_overview(self, index) -> None:
         col = index.column() - 1  # column 0 holds the row labels; one column per company
         if self.summary and 0 <= col < len(self.summary.performances):
-            self.co_pick.setCurrentIndex(self.co_pick.findData(self.summary.performances[col].holding.id))
-            self.tabs.setCurrentIndex(1)
+            hid = self.summary.performances[col].holding.id
+            for combo in (self.co_pick, self.dash_page.pick):
+                combo.setCurrentIndex(combo.findData(hid))
+            self.tabs.setCurrentWidget(self.dash_page)
 
     def _co_projections(self) -> None:
         p = self._company_perf()
@@ -2970,7 +3008,7 @@ class AssetManagementView(QWidget):
     def _goto_holding(self, t: QTableWidget) -> None:
         rows = t.selectionModel().selectedRows()
         if rows and self.summary and rows[0].row() < len(self.summary.performances):
-            self.tabs.setCurrentWidget(self.holdings_page)
+            self.show_portfolio(self.holdings_page)
             self.table.selectRow(rows[0].row())
 
     def _show_detail(self) -> None:

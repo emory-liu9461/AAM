@@ -350,12 +350,19 @@ those back, untick and re-tick the box. Holding companies and asset managers
 are never added as holdings.
 
 **Property pages.** For each operating company, Asset Management has these
-tabs, kept in step with its books. **Portfolio Summary** is a button on the
-bar at the top rather than a tab:
+tabs, kept in step with its books: Dashboard, Rent Roll & Operations, Cash
+Flow, CapEx, Financing & Cap Table, Customers & Vendors, Waterfall and
+Projections. The whole portfolio is behind the **Portfolio Summary** button on
+the bar at the top, with its own tabs: Summary, Holdings, Consolidated
+Financials and Managed Companies.
 
 - **Dashboard** — one page, no boxes or grid lines, every figure right-aligned
-  in its column. **Details…** sets the address and exit date, **Timeline…**
-  edits milestones, and **Weekly Notes…** edits the notes.
+  in its column. It also holds what used to be the Company Overview:
+  operations for the last 12 months (revenue, Op. Ex, EBITDA, Non-Op. Ex,
+  CapEx, net cash flow), LTV and cash-on-cash, financing and valuations.
+  **Details…** sets the address and exit date, **Timeline…** edits milestones,
+  **Weekly Notes…** edits the notes, and **Add Valuation…**, **Edit Holding…**
+  and **Open Company Books** do what they did on the overview.
   - Left: the property and address, then a timeline. It shows closing, each
     loan's funding and maturity, your own milestones with original and current
     dates (late ones in red), and the exit date. Below that are value, debt and

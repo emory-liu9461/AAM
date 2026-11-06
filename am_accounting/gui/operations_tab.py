@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QDialog,
 
 from .. import capex as cx
 from .. import operations as op
+from .. import portfolio as pfm
 from ..money import fmt_money
 from .common import ALIGN_RIGHT, MUTED, NEGATIVE, POSITIVE, confirm, error, info
 
@@ -760,7 +761,7 @@ class CashFlowPage(_CompanyPage):
         self.flow: op.MasterCashFlow | None = None
 
     def fill(self) -> None:
-        from .. import portfolio as pfm
+
 
         p = self.perf()
         for c in self.cards.values():
@@ -950,7 +951,8 @@ class DashboardPage(_CompanyPage):
         head.addWidget(self.pick)
         head.addStretch(1)
         for text, slot in (("Details…", self.edit_details), ("Timeline…", self.edit_timeline),
-                           ("Weekly Notes…", self.edit_notes)):
+                           ("Weekly Notes…", self.edit_notes), ("Add Valuation…", self.add_valuation),
+                           ("Edit Holding…", self.edit_holding), ("Open Company Books", self.open_books)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             head.addWidget(b)
@@ -976,6 +978,28 @@ class DashboardPage(_CompanyPage):
             info_.exit_date = d.exit.date().toString("yyyy-MM-dd") if d.use_exit.isChecked() else None
             op.save_dash_info(self.pf, p.holding.id, info_)
             self.fill()
+
+    def add_valuation(self) -> None:
+        from .asset_mgmt import ValuationDialog
+
+        p = self.perf()
+        if p and ValuationDialog(self.pf, p.holding, self).exec():
+            self.view.refresh()
+
+    def edit_holding(self) -> None:
+        from .asset_mgmt import HoldingDialog
+
+        p = self.perf()
+        if p and HoldingDialog(self.pf, self.view.companies_fn(), p.holding, self,
+                               create_company=self.view.create_company).exec():
+            self.view.refresh()
+
+    def open_books(self) -> None:
+        p = self.perf()
+        if p and p.holding.company_path:
+            self.view.open_company.emit(p.holding.company_path)
+        elif p:
+            error(self, "Not linked", "This company isn't linked to its books yet — use Edit Holding….")
 
     def edit_timeline(self) -> None:
         p = self.perf()
@@ -1027,10 +1051,29 @@ class DashboardPage(_CompanyPage):
         ms = op.milestones(self.pf, h)
         d["timeline"] = [[m.name, m.original or "", m.current or ""] for m in ms]
         d["value"] = [["Current value", fmt_money(p.company_value) if p.company_value is not None else "—"],
-                      ["Total debt", fmt_money(p.debt)], ["NAV", fmt_money(p.nav)]]
+                      ["Total debt", fmt_money(p.debt)], ["LTV", f"{p.ltv * 100:.1f}%" if p.ltv is not None else "—"],
+                      [f"NAV ({h.ownership_pct:g}% owned)", fmt_money(p.nav)]]
         d["returns"] = [["Invested", fmt_money(p.invested)], ["Distributions to date", fmt_money(p.returned)],
                         ["Total profit", fmt_money(p.gain)], ["MOIC", f"{p.moic:.2f}x" if p.moic is not None else "—"],
-                        ["IRR", f"{p.irr * 100:.1f}%" if p.irr is not None else "—"]]
+                        ["IRR", f"{p.irr * 100:.1f}%" if p.irr is not None else "—"],
+                        ["Cash on cash", f"{p.cash_on_cash * 100:.1f}%" if p.cash_on_cash is not None else "—"]]
+        fin = p.financials if p.has_books else None
+        d["operations"] = ([["Revenue", fmt_money(fin.revenue_ltm)], ["Op. Ex", fmt_money(fin.opex_ltm)],
+                            ["EBITDA", fmt_money(fin.ebitda_ltm)], ["Non-Op. Ex", fmt_money(fin.nonop_ltm)],
+                            ["CapEx", fmt_money(p.capex_req)],
+                            ["Net cash flow", fmt_money(p.net_cash_flow) if p.net_cash_flow is not None else "—"]]
+                           if fin else [])
+        loans = pfm.loans(self.pf, h, as_of)
+        d["financing"] = [[ln.lender, fmt_money(ln.balance), f"{ln.rate_pct:.2f}%" if ln.rate_pct is not None else "—",
+                           ln.maturity_date or "—"] for ln in loans]
+        if loans:
+            ft = pfm.financing_totals(loans)
+            d["financing"].append(["Total", fmt_money(ft.balance), f"{ft.rate:.2f}%" if ft.rate is not None else "",
+                                   ft.next_maturity or ""])
+        vals = list(reversed(self.pf.valuations(h.id)))[:4]
+        d["valuations"] = [[v_.date, fmt_money(v_.company_value_cents if v_.company_value_cents is not None
+                                              else v_.value_cents + (v_.debt_cents or 0)),
+                            fmt_money(v_.value_cents), v_.method] for v_ in vals]
         stmt = op.monthly_statement(self.pf, p, as_of)
         by = {x.label: x for x in stmt.lines}
 
@@ -1105,6 +1148,8 @@ class DashboardPage(_CompanyPage):
                         empty="No milestones yet — Timeline…") +
                 section("Value", d["value"], bold_last=True) + section("Returns", d["returns"]))
         mid = (section("Rental status", d["rental"], ["", "Last 12 months", "Run-rate", "Next 12"], bold_last=True) +
+               section("Operations", d["operations"], sub="last 12 months, from the books",
+                       empty="Not linked to its books") +
                section("Construction status", d["construction"], ["", "Budgeted", "Cost to date", "To complete"],
                        bold_last=True, empty="No capex schedule yet (CapEx tab)") +
                section("Cash balance", d["cash"], bold_last=True, sub=cf.months[i].strftime("%B %Y")))
@@ -1118,6 +1163,10 @@ class DashboardPage(_CompanyPage):
                   f" · average {fmt_money(s.avg_rent)}</p>" if rows and s.avg_rent is not None else "") +
                  section("Leasing update", d["leasing"], ["", "Available", "Market rate"], bold_last=bool(types),
                          empty="No rent roll yet") +
+                 section("Financing", d["financing"], ["", "Balance", "Rate", "Maturity"], bold_last=bool(loans),
+                         empty="No loans (Financing & Cap Table)") +
+                 section("Valuations", d["valuations"], ["", "Company value", "Equity", "Method"],
+                         empty="No valuations yet — Add Valuation…") +
                  f"<p style='margin:18px 0 4px 0; color:{accent}; font-size:8.5pt; font-weight:700'>WEEKLY ACTIVITY"
                  f"{f' &nbsp;<span style=\"color:{muted}; font-weight:400\">saved {info_.notes_date}</span>' if info_.notes_date else ''}"
                  f"</p>{notes_html}")

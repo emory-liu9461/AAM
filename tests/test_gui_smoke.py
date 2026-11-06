@@ -1114,7 +1114,8 @@ def test_role_bar_links_to_asset_management(app, tmp_path):
     assert w.role_btn.text() == "Open Managed Companies"
     w._open_role_view()
     assert tuple(w.asset_view.viewing.currentData()) == ("manager", mgr)
-    assert w.asset_view.tabs.tabText(w.asset_view.tabs.currentIndex()) == "Managed Companies"
+    av = w.asset_view
+    assert av.tabs.currentIndex() == 0 and av.portfolio_tabs.currentWidget() is av.managed_page
     w.close()
 
 
@@ -1149,7 +1150,12 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert "$1,450,000.00" in vd.result.text() and "$725,000.00" in vd.result.text()
     vd.save()
     v.refresh()
-    assert v.tabs.tabText(0) == "Portfolio Summary" and v.tabs.tabText(1) == "Company Overview"
+    assert v.tabs.tabText(0) == "Portfolio" and v.tabs.tabText(1) == "Dashboard"
+    tabs = [v.tabs.tabText(i) for i in range(1, v.tabs.count())]
+    assert tabs == ["Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
+                    "Customers && Vendors", "Waterfall (LP / GP)", "Projections"]
+    assert [v.portfolio_tabs.tabText(i) for i in range(v.portfolio_tabs.count())] == [
+        "Summary", "Holdings", "Consolidated Financials", "Managed Companies"]   # behind the button
     assert not v.tabs.isTabVisible(0)                     # a button at the top, not a tab
     v.tabs.setCurrentIndex(1)
     assert not v.summary_btn.isChecked()
@@ -1176,7 +1182,9 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert list(g) == ["value", "debt", "nav", "revenue", "opex", "ebitda", "nonop", "capex", "ncf", "moic", "irr",
                        "coc"]
     v._open_company_overview(t.model().index(3, 1))
-    assert v.tabs.currentIndex() == 1 and v.co_grouped.cards["nav"].value.text() == "$725,000.00"
+    assert v.tabs.currentWidget() is v.dash_page and v.co_grouped.cards["nav"].value.text() == "$725,000.00"
+    dd = v.dash_page.data
+    assert dd["value"][-1] == ["NAV (50% owned)", "$725,000.00"] and dd["operations"][2] == ["EBITDA", "$35,000.00"]
     assert v.co_grouped.cards["ebitda"].value.text() == "$35,000.00" and len(v.co_chart.data) == 12
     assert v.co_vals.rowCount() == 1
     # existing financing: the mortgage in the books, then its terms entered
@@ -1279,7 +1287,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert col["Basis"] == "Entered" and col["Total uses"] == "$3,250,000.00"
     assert su.item(SU_ROWS.index("Total uses"), 2).text() == "$1,625,000.00"     # our 50%
     # customers & vendors page: revenue by customer (the RENTS deposit has no name yet)
-    assert v.tabs.tabText(2) == "Customers && Vendors" and v.cv_pick.currentText() == "Lakeshore Apartments LP"
+    assert v.cv_pick.currentText() == "Lakeshore Apartments LP"
     cv = v.cv_customers
     assert cv.item(0, 0).text() == "(not assigned)" and cv.item(0, 1).text() == "$35,000.00"
     assert cv.item(cv.rowCount() - 1, 1).text() == "$35,000.00" and "0% assigned" in v.cv_info.text()
@@ -1363,7 +1371,7 @@ def test_company_dropdown_with_asset_and_accounting_tabs(app, tmp_path):
     assert w.company_role.text() == "Operating company"
     w.mode_tabs.setCurrentIndex(0)                      # Asset Management for Alpha
     v = w.asset_view
-    assert w.stack.currentWidget() is v and v.tabs.tabText(v.tabs.currentIndex()) == "Company Overview"
+    assert w.stack.currentWidget() is v and v.tabs.tabText(v.tabs.currentIndex()) == "Dashboard"
     assert v.co_pick.currentText() == "Alpha Ltd"
     w.switcher.setCurrentIndex(w.switcher.findData(b))  # pick Beta from the dropdown: still Asset Management
     w._on_switcher(w.switcher.currentIndex())
@@ -1635,6 +1643,7 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
                                   "Lease End"],
                                  ["1", "A. Tenant", "1 Bedroom", "Old Lease", "1,200.00", "1,800", "2019-05-01", "MTM"],
                                  ["2", "", "1 Bedroom", "Vacant", "0", "1,800", "", ""]])
+    v.tabs.setCurrentWidget(ops)
     assert ops.import_from(str(roll)) == 2
     assert ops.roll.rowCount() == 3 and ops.roll.item(2, 5).text() == "$1,200.00"
     assert ops.cards["units"].value.text() == "2" and ops.cards["occupancy"].value.text() == "50.0%"
