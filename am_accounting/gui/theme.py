@@ -138,3 +138,32 @@ def apply() -> None:
 
     for qc, name in ((common.POSITIVE, "green"), (common.NEGATIVE, "red"), (common.MUTED, "muted")):
         qc.setRgb(QColor(c(name)).rgb())
+    if hasattr(app, "setStyleSheet"):
+        app.setStyleSheet(table_css())
+
+
+def table_css() -> str:
+    """Every table in the app looks like the Dashboard: no grid, no frame, no boxed headings or striped rows —
+    quiet grey column titles, a little room around each figure, a soft shade for the selected row."""
+    dark = is_dark()
+    sel = "rgba(127, 178, 255, 0.22)" if dark else "rgba(47, 111, 222, 0.13)"
+    return f"""
+QTableView, QTableWidget {{
+    border: none;
+    gridline-color: transparent;
+    background: palette(base);
+    alternate-background-color: palette(base);
+    selection-background-color: {sel};
+    selection-color: palette(text);
+}}
+QTableView::item {{ border: none; padding: 2px 8px; }}
+QTableView::item:selected {{ background: {sel}; color: palette(text); }}
+QHeaderView {{ border: none; background: transparent; }}
+QHeaderView::section {{
+    border: none;
+    background: transparent;
+    color: {c("muted")};
+    padding: 4px 8px;
+}}
+QTableCornerButton::section {{ border: none; background: transparent; }}
+"""
