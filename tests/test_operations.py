@@ -173,3 +173,52 @@ def test_master_cash_flow_pro_forma_and_actual(tmp_path):
     assert r["Starting cash"].pro_forma[3] == r["Ending balance"].actual[2]    # projection starts from the bank
     assert r["Ending balance"].pro_forma[4] == r["Ending balance"].pro_forma[3] + r["Net property cash flow"].pro_forma[4]
     pf.close()
+
+
+def test_capex_unit_sub_lines_and_sub_accounts(tmp_path):
+    from am_accounting import reports
+
+    b = Books.open(tmp_path / "op.amdb", create=True)
+    bank = b.account_by_code("1000").id
+    b.import_transactions(bank, [ParsedTransaction(date(2026, 3, 5), "RENO 102", -12_000_00)])
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=str(tmp_path / "op.amdb"))
+    pf.save_holding(h)
+    op.replace_units(pf, h.id, op.parse_rows(ROWS))
+    cx.add_template(pf, h.id)                                     # in-suite renovations gets the rent roll units
+    units = [ln for ln in cx.lines(pf, h) if ln.parent_id is not None]
+    assert [ln.item for ln in units] == ["Unit 101", "Unit 102", "Unit 103"]
+    assert all(ln.parent_item == "In-suite renovations" and ln.grp == "Hard Costs" for ln in units)
+    assert cx.sync_units(pf, h.id) == 0                           # nothing twice
+    op.save_unit(pf, h.id, op.Unit("104", status="Vacant"))       # a unit added to the rent roll later
+    assert cx.sync_units(pf, h.id) == 1
+    new = cx.add_unit(pf, h.id, "201", 30_000_00, to_rent_roll=True)   # newly built
+    assert new.item == "Unit 201" and any(u.unit == "201" and not u.occupied for u in op.units(pf, h.id))
+    assert cx.sync_units(pf, h.id) == 0
+    with pytest.raises(ValueError):
+        cx.add_unit(pf, h.id, "101")
+    # the in-suite line in the books: one sub-account per unit
+    top = cx.unit_line(pf, h.id)
+    cx.create_account(pf, h, top)
+    rows = cx.lines(pf, h)
+    unit_rows = [ln for ln in rows if ln.parent_id == top.id]
+    assert len(unit_rows) == 5 and all(ln.account_id is not None for ln in unit_rows)
+    b = Books.open(tmp_path / "op.amdb")
+    top_acct = next(ln.account_id for ln in rows if ln.id == top.id)
+    kids = b.children(top_acct)
+    assert sorted(a.name for a in kids)[0] == "CapEx – In-suite renovations – Unit 101"
+    u102 = next(ln for ln in unit_rows if ln.unit == "102")
+    t = b.transactions()[0]
+    b.set_category(t.id, u102.account_id, source="manual")
+    bs = reports.balance_sheet(b, "2026-12-31")
+    labels = [ln.label for ln in bs.lines]
+    i = labels.index("CapEx – In-suite renovations")
+    assert "CapEx – In-suite renovations – Unit 102" in labels[i:]                # nested under it
+    b.close()
+    rows = {ln.label: ln for ln in cx.lines(pf, h, date(2026, 12, 31))}
+    assert rows["In-suite renovations – Unit 102"].to_date == 12_000_00
+    assert rows["In-suite renovations"].to_date == 0
+    assert cx.totals(list(rows.values())).to_date == 12_000_00
+    cx.delete_line(pf, top.id)                                    # the line with its units
+    assert not [ln for ln in cx.lines(pf, h) if ln.parent_id is not None]

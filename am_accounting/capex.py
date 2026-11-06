@@ -5,6 +5,13 @@ Each line has a budget and can be linked to an account in the company's books: i
 spending are then what was recorded to that account (debits less credits, opening balances included), plus any
 cost entered by hand that isn't in the books. Cost to complete = budget − cost to date.
 
+**In-suite renovations** has a sub-line for each unit: every unit on the rent roll is added automatically (and
+units added to the rent roll later), and **Add Unit** adds one that isn't on the rent roll yet (a newly built unit).
+Each unit has its own budget and cost to date (by hand, or its own account in the books). The line's own figures are
+for in-suite costs not assigned to a unit; its total is its own figures plus its units'. Once the line is linked
+to an account in the books, each unit gets a sub-account of it, so the balance sheet shows in-suite renovations with
+a line per unit.
+
 **Create Account in the Books** adds a fixed-asset account for a line (e.g. "CapEx – Roofing") and links it, so
 paying a contractor and categorizing the payment to it updates the capex schedule.
 """
@@ -26,7 +33,9 @@ CREATE TABLE IF NOT EXISTS capex_lines (
     account_id    INTEGER,                       -- the account in the company's books ('' = not linked)
     manual_cents  INTEGER NOT NULL DEFAULT 0,    -- cost to date not in the books
     notes         TEXT NOT NULL DEFAULT '',
-    sort          INTEGER NOT NULL DEFAULT 0
+    sort          INTEGER NOT NULL DEFAULT 0,
+    parent_id     INTEGER,                       -- a unit's sub-line: the line it belongs to
+    unit          TEXT NOT NULL DEFAULT ''       -- the unit number of a unit's sub-line
 );
 CREATE INDEX IF NOT EXISTS ix_capex_h ON capex_lines(holding_id, sort);
 """
@@ -52,9 +61,16 @@ class CapexLine:
     notes: str = ""
     id: int | None = None
     sort: int = 0
+    parent_id: int | None = None   # a unit's sub-line of this line
+    unit: str = ""                 # its unit number
+    parent_item: str = ""          # the line it belongs to (e.g. "In-suite renovations")
     account_name: str = ""
     book_cents: int = 0          # cost to date from the books
     monthly: dict | None = None  # {'YYYY-MM': cents} from the books
+
+    @property
+    def label(self) -> str:
+        return f"{self.parent_item} – {self.item}" if self.parent_item else self.item
 
     @property
     def to_date(self) -> int:
@@ -69,8 +85,22 @@ class CapexLine:
         return self.to_date / self.budget_cents if self.budget_cents else None
 
 
+UNIT_WORDS = ("in-suite", "in suite", "insuite", "suite reno", "unit reno")
+
+
 def ready(pf) -> None:
     pf.conn.executescript(SCHEMA)
+    cols = {r[1] for r in pf.conn.execute("PRAGMA table_info(capex_lines)")}
+    with pf.conn:
+        if "parent_id" not in cols:
+            pf.conn.execute("ALTER TABLE capex_lines ADD COLUMN parent_id INTEGER")
+        if "unit" not in cols:
+            pf.conn.execute("ALTER TABLE capex_lines ADD COLUMN unit TEXT NOT NULL DEFAULT ''")
+
+
+def unit_label(unit: str) -> str:
+    u = unit.strip()
+    return u if u.lower().startswith(("unit", "suite", "apt")) else f"Unit {u}"
 
 
 def save_line(pf, holding_id: int, ln: CapexLine) -> int:
@@ -79,26 +109,32 @@ def save_line(pf, holding_id: int, ln: CapexLine) -> int:
         raise ValueError("Enter the cost item")
     if ln.budget_cents < 0:
         raise ValueError("The budget can't be negative")
-    vals = (holding_id, ln.grp.strip() or "Other", ln.item.strip(), ln.budget_cents, ln.account_id, ln.manual_cents,
-            ln.notes.strip(), ln.sort)
+    if ln.parent_id is not None:   # a unit's sub-line is in its line's group
+        row = pf.conn.execute("SELECT grp FROM capex_lines WHERE id=?", (ln.parent_id,)).fetchone()
+        if row:
+            ln.grp = row[0]
     with pf.conn:
+        if ln.id is None and not ln.sort:
+            ln.sort = (pf.conn.execute("SELECT COALESCE(MAX(sort), 0) FROM capex_lines WHERE holding_id=? AND "
+                                       "parent_id IS ?", (holding_id, ln.parent_id)).fetchone()[0] or 0) + 1
+        vals = (holding_id, ln.grp.strip() or "Other", ln.item.strip(), ln.budget_cents, ln.account_id,
+                ln.manual_cents, ln.notes.strip(), ln.sort, ln.parent_id, ln.unit.strip())
         if ln.id is None:
-            if not ln.sort:
-                ln.sort = (pf.conn.execute("SELECT COALESCE(MAX(sort), 0) FROM capex_lines WHERE holding_id=?",
-                                           (holding_id,)).fetchone()[0] or 0) + 1
-                vals = vals[:-1] + (ln.sort,)
             ln.id = pf.conn.execute("INSERT INTO capex_lines(holding_id, grp, item, budget_cents, account_id, "
-                                    "manual_cents, notes, sort) VALUES (?,?,?,?,?,?,?,?)", vals).lastrowid
+                                    "manual_cents, notes, sort, parent_id, unit) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                    vals).lastrowid
         else:
             pf.conn.execute("UPDATE capex_lines SET holding_id=?, grp=?, item=?, budget_cents=?, account_id=?, "
-                            "manual_cents=?, notes=?, sort=? WHERE id=?", vals + (ln.id,))
+                            "manual_cents=?, notes=?, sort=?, parent_id=?, unit=? WHERE id=?", vals + (ln.id,))
+            if ln.parent_id is None:
+                pf.conn.execute("UPDATE capex_lines SET grp=? WHERE parent_id=?", (vals[1], ln.id))
     return ln.id
 
 
 def delete_line(pf, line_id: int) -> None:
     ready(pf)
     with pf.conn:
-        pf.conn.execute("DELETE FROM capex_lines WHERE id=?", (line_id,))
+        pf.conn.execute("DELETE FROM capex_lines WHERE id=? OR parent_id=?", (line_id, line_id))
 
 
 def add_template(pf, holding_id: int) -> int:
@@ -108,7 +144,65 @@ def add_template(pf, holding_id: int) -> int:
         for item in items:
             save_line(pf, holding_id, CapexLine(item, grp))
             n += 1
+    sync_units(pf, holding_id)
     return n
+
+
+def unit_line(pf, holding_id: int) -> CapexLine | None:
+    """The in-suite renovations line (the one with a sub-line per unit)."""
+    ready(pf)
+    for r in pf.conn.execute("SELECT * FROM capex_lines WHERE holding_id=? AND parent_id IS NULL ORDER BY sort, id",
+                             (holding_id,)):
+        if any(w in r["item"].lower() for w in UNIT_WORDS):
+            return CapexLine(r["item"], r["grp"], r["budget_cents"], r["account_id"], r["manual_cents"],
+                             r["notes"], r["id"], r["sort"])
+    return None
+
+
+def _unit_keys(pf, parent_id: int) -> set[str]:
+    return {(r[0] or r[1]).strip().lower() for r in
+            pf.conn.execute("SELECT unit, item FROM capex_lines WHERE parent_id=?", (parent_id,))}
+
+
+def sync_units(pf, holding_id: int) -> int:
+    """Give the in-suite renovations line a sub-line for every unit on the rent roll that doesn't have one yet
+    (sub-lines of units no longer on the rent roll are kept — they may have costs). Returns how many were added."""
+    from .operations import units
+
+    parent = unit_line(pf, holding_id)
+    if parent is None:
+        return 0
+    have = _unit_keys(pf, parent.id)
+    n = 0
+    for i, u in enumerate(units(pf, holding_id), 1):
+        key = u.unit.strip().lower()
+        if key and key not in have and unit_label(u.unit).lower() not in have:
+            save_line(pf, holding_id, CapexLine(unit_label(u.unit), parent.grp, parent_id=parent.id, unit=u.unit,
+                                                sort=i))
+            have.add(key)
+            n += 1
+    return n
+
+
+def add_unit(pf, holding_id: int, unit: str, budget_cents: int = 0, *, to_rent_roll: bool = False) -> CapexLine:
+    """A unit that isn't on the rent roll yet (e.g. newly built) under in-suite renovations (created if there isn't
+    one); optionally added to the rent roll too, as under construction."""
+    from . import operations as op
+
+    unit = unit.strip()
+    if not unit:
+        raise ValueError("Enter the unit number")
+    parent = unit_line(pf, holding_id)
+    if parent is None:
+        parent = CapexLine("In-suite renovations", "Hard Costs")
+        save_line(pf, holding_id, parent)
+    if unit.lower() in _unit_keys(pf, parent.id) or unit_label(unit).lower() in _unit_keys(pf, parent.id):
+        raise ValueError(f"{unit_label(unit)} is already on the capex schedule")
+    if to_rent_roll and not any(u.unit.strip().lower() == unit.lower() for u in op.units(pf, holding_id)):
+        op.save_unit(pf, holding_id, op.Unit(unit, status="Under construction", notes="New unit"))
+    ln = CapexLine(unit_label(unit), parent.grp, budget_cents, parent_id=parent.id, unit=unit)
+    save_line(pf, holding_id, ln)
+    return ln
 
 
 def _book_activity(company_path: str, account_ids: list[int], as_of: date) -> tuple[dict, dict, dict]:
@@ -136,9 +230,18 @@ def lines(pf, holding, as_of: date | None = None) -> list[CapexLine]:
     """The schedule with cost to date and monthly spending read from the company's books."""
     ready(pf)
     as_of = as_of or date.today()
-    out = [CapexLine(r["item"], r["grp"], r["budget_cents"], r["account_id"], r["manual_cents"], r["notes"], r["id"],
-                     r["sort"])
-           for r in pf.conn.execute("SELECT * FROM capex_lines WHERE holding_id=? ORDER BY sort, id", (holding.id,))]
+    flat = [CapexLine(r["item"], r["grp"], r["budget_cents"], r["account_id"], r["manual_cents"], r["notes"],
+                      r["id"], r["sort"], r["parent_id"], r["unit"])
+            for r in pf.conn.execute("SELECT * FROM capex_lines WHERE holding_id=? ORDER BY sort, id", (holding.id,))]
+    tops = [ln for ln in flat if ln.parent_id is None]
+    names = {ln.id: ln.item for ln in tops}
+    out = []   # each line followed by its units
+    for top in tops:
+        out.append(top)
+        for ln in flat:
+            if ln.parent_id == top.id:
+                ln.parent_item = names[top.id]
+                out.append(ln)
     ids = sorted({ln.account_id for ln in out if ln.account_id is not None})
     totals, months, names = _book_activity(holding.company_path, ids, as_of)
     # an account shared by several lines counts once, on the first of them
@@ -185,28 +288,92 @@ def monthly_outflows(rows: list[CapexLine], months: list[str]) -> dict[str, int]
     return out
 
 
+def _new_account(books, name: str, parent_id: int | None = None) -> int:
+    """A fixed-asset account (a sub-account of ``parent_id`` when given) with a free code and a unique name."""
+    used = {a.code for a in books.accounts()}
+    code = "1650"
+    while code in used:
+        code = str(int(code) + 1)
+    base, n = name, 2
+    while any(a.name.lower() == name.lower() for a in books.accounts()):
+        name, n = f"{base} ({n})", n + 1
+    if parent_id is not None:
+        parent = books.account(parent_id)
+        return books.add_account(code, name, parent.type, parent.subtype, parent_id=parent_id).id
+    return books.add_account(code, name, "asset", "fixed_asset").id
+
+
+def _line(pf, line_id: int) -> CapexLine | None:
+    r = pf.conn.execute("SELECT * FROM capex_lines WHERE id=?", (line_id,)).fetchone()
+    return CapexLine(r["item"], r["grp"], r["budget_cents"], r["account_id"], r["manual_cents"], r["notes"], r["id"],
+                     r["sort"], r["parent_id"], r["unit"]) if r else None
+
+
+def _account_ok(books, account_id: int | None) -> bool:
+    if account_id is None:
+        return False
+    try:
+        books.account(account_id)
+        return True
+    except KeyError:
+        return False
+
+
 def create_account(pf, holding, ln: CapexLine) -> int:
-    """A fixed-asset account in the company's books for this line ("CapEx – <item>"), linked to it."""
+    """A fixed-asset account in the company's books for this line ("CapEx – <item>"), linked to it. A unit's
+    account is a sub-account of its line's account (created too if needed), so the balance sheet shows the line
+    with a sub-line per unit; creating the line's account gives each of its units a sub-account."""
     from .books import Books
 
     if not holding.company_path or not Path(holding.company_path).exists():
         raise ValueError("Link this company to its books first")
     books = Books.open(holding.company_path, create=False)
     try:
-        used = {a.code for a in books.accounts()}
-        code = "1650"
-        while code in used:
-            code = str(int(code) + 1)
-        name = f"CapEx – {ln.item}"
-        base, n = name, 2
-        while any(a.name.lower() == name.lower() for a in books.accounts()):
-            name, n = f"{base} ({n})", n + 1
-        acct = books.add_account(code, name, "asset", "fixed_asset").id
+        if ln.parent_id is not None:
+            top = _line(pf, ln.parent_id)
+            if top is not None and not _account_ok(books, top.account_id):
+                top.account_id = _new_account(books, f"CapEx – {top.item}")
+                save_line(pf, holding.id, top)
+            ln.parent_item = ln.parent_item or (top.item if top else "")
+            ln.account_id = _new_account(books, f"CapEx – {ln.label}", top.account_id if top else None)
+        else:
+            ln.account_id = _new_account(books, f"CapEx – {ln.label}")
+        save_line(pf, holding.id, ln)
     finally:
         books.close()
-    ln.account_id = acct
-    save_line(pf, holding.id, ln)
-    return acct
+    link_unit_accounts(pf, holding)
+    return ln.account_id
+
+
+def link_unit_accounts(pf, holding) -> int:
+    """When the in-suite renovations line is linked to an account in the books, give each of its units without an
+    account a sub-account of it ("CapEx – In-suite renovations – Unit 101"). Returns how many were created."""
+    from .books import Books
+
+    top = unit_line(pf, holding.id)
+    if top is None or top.account_id is None or not holding.company_path or not Path(holding.company_path).exists():
+        return 0
+    todo = [ln for ln in lines_raw(pf, holding.id) if ln.parent_id == top.id and ln.account_id is None]
+    if not todo:
+        return 0
+    books = Books.open(holding.company_path, create=False)
+    try:
+        if not _account_ok(books, top.account_id):
+            return 0
+        for ln in todo:
+            ln.parent_item = top.item
+            ln.account_id = _new_account(books, f"CapEx – {ln.label}", top.account_id)
+            save_line(pf, holding.id, ln)
+    finally:
+        books.close()
+    return len(todo)
+
+
+def lines_raw(pf, holding_id: int) -> list[CapexLine]:
+    ready(pf)
+    return [CapexLine(r["item"], r["grp"], r["budget_cents"], r["account_id"], r["manual_cents"], r["notes"], r["id"],
+                      r["sort"], r["parent_id"], r["unit"])
+            for r in pf.conn.execute("SELECT * FROM capex_lines WHERE holding_id=? ORDER BY sort, id", (holding_id,))]
 
 
 def book_accounts(company_path: str) -> list[tuple[int, str]]:

@@ -446,8 +446,12 @@ class CapexLineDialog(QDialog):
         self.manual.setValue(ln.manual_cents / 100)
         self.manual.setToolTip("Cost to date that isn't in this company's books (paid by another entity, etc.)")
         self.notes = QLineEdit(ln.notes)
+        if ln.parent_id is not None:
+            self.grp.setEnabled(False)
+            self.grp.setToolTip(f"A unit of “{ln.parent_item}” — in its group")
+            self.setWindowTitle(f"{ln.parent_item} – {ln.item} – {holding.name}")
         form.addRow("Group:", self.grp)
-        form.addRow("Cost item:", self.item)
+        form.addRow("Unit:" if ln.parent_id is not None else "Cost item:", self.item)
         form.addRow("Budget:", self.budget)
         form.addRow("Account in the books:", self.account)
         form.addRow("Cost to date not in the books:", self.manual)
@@ -492,7 +496,8 @@ class CapexPage(_CompanyPage):
         row.addWidget(QLabel("Company:"))
         row.addWidget(self.pick)
         row.addStretch(1)
-        for text, slot in (("Add Line…", self.add_line), ("Edit…", self.edit_line), ("Delete", self.delete_line),
+        for text, slot in (("Add Line…", self.add_line), ("Add Unit…", self.add_unit), ("Edit…", self.edit_line),
+                           ("Delete", self.delete_line),
                            ("Start from Template", self.template),
                            ("Create Account in the Books", self.create_account)):
             b = QPushButton(text)
@@ -539,9 +544,16 @@ class CapexPage(_CompanyPage):
         if p is None:
             return
         as_of = self.view._as_of_date()
+        cx.sync_units(self.pf, p.holding.id)      # a sub-line for each unit on the rent roll
+        try:
+            cx.link_unit_accounts(self.pf, p.holding)   # and, once in-suite is in the books, a sub-account each
+        except Exception:  # noqa: BLE001 — the books may be busy or read-only; try again next time
+            pass
         lines = cx.lines(self.pf, p.holding, as_of)
         tot = cx.totals(lines)
-        self.cards["budget"].set(fmt_money(tot.budget), f"{len(lines)} line(s)")
+        n_units = sum(1 for ln in lines if ln.parent_id is not None)
+        self.cards["budget"].set(fmt_money(tot.budget), f"{len(lines) - n_units} line(s)"
+                                 + (f" · {n_units} unit(s)" if n_units else ""))
         self.cards["to_date"].set(fmt_money(tot.to_date), "books + entered by hand")
         self.cards["to_complete"].set(fmt_money(tot.to_complete), "budget − cost to date",
                                       NEGATIVE if tot.to_complete < 0 else None)
@@ -551,13 +563,20 @@ class CapexPage(_CompanyPage):
         for g in order:
             members = [ln for ln in lines if ln.grp == g]
             self._add(t, [g] + [""] * 7, head=True)
-            for ln in members:
-                self._add(t, ["    " + ln.item, fmt_money(ln.budget_cents),
+            for k, ln in enumerate(members):
+                unit = ln.parent_id is not None
+                self._add(t, [("          " if unit else "    ") + ln.item, fmt_money(ln.budget_cents),
                               fmt_money(ln.book_cents) if ln.account_id is not None else "—",
                               fmt_money(ln.manual_cents) if ln.manual_cents else "",
                               fmt_money(ln.to_date), fmt_money(ln.to_complete),
                               f"{ln.pct_complete * 100:.0f}%" if ln.pct_complete is not None else "",
-                              ln.account_name or "not linked"], line=ln)
+                              ln.account_name or "not linked"], line=ln, unit=unit)
+                last_unit = unit and (k + 1 == len(members) or members[k + 1].parent_id != ln.parent_id)
+                if last_unit:   # the line with its units
+                    fam = [x for x in members if x.id == ln.parent_id or x.parent_id == ln.parent_id]
+                    b_, d_ = sum(x.budget_cents for x in fam), sum(x.to_date for x in fam)
+                    self._add(t, [f"    Total {ln.parent_item}", fmt_money(b_), "", "", fmt_money(d_),
+                                  fmt_money(b_ - d_), f"{d_ / b_ * 100:.0f}%" if b_ else "", ""], bold=True)
             b, d, c_ = tot.by_group[g]
             self._add(t, [f"Total {g}", fmt_money(b), "", "", fmt_money(d), fmt_money(c_),
                           f"{d / b * 100:.0f}%" if b else "", ""], bold=True)
@@ -569,11 +588,11 @@ class CapexPage(_CompanyPage):
         t.horizontalHeader().setStretchLastSection(True)
         self._fill_months(lines, as_of)
 
-    def _add(self, t, vals, *, head=False, bold=False, line=None) -> None:
+    def _add(self, t, vals, *, head=False, bold=False, line=None, unit=False) -> None:
         r = t.rowCount()
         t.insertRow(r)
         for c, v in enumerate(vals):
-            colour = None
+            colour = MUTED if unit and c == 0 else None
             if line is not None and c == 5 and line.to_complete < 0:
                 colour = NEGATIVE
             if line is not None and c == 7 and line.account_id is None:
@@ -593,7 +612,7 @@ class CapexPage(_CompanyPage):
         months = op._month_starts(as_of, 12, 0)
         keys = [m.strftime("%Y-%m") for m in months]
         active = [ln for ln in lines if ln.monthly and any(ln.monthly.get(k) for k in keys)]
-        self.month_rows = [[ln.item, *[ln.monthly.get(k, 0) for k in keys]] for ln in active]
+        self.month_rows = [[ln.label, *[ln.monthly.get(k, 0) for k in keys]] for ln in active]
         tot = cx.monthly_outflows(lines, keys)
         text, muted, accent = self.palette().text().color().name(), tc("muted"), tc("link")
         esc = _html.escape
@@ -608,7 +627,7 @@ class CapexPage(_CompanyPage):
             for ln in (x for x in active if x.grp == grp):
                 vals = [ln.monthly.get(k, 0) for k in keys]
                 body.append(f"<tr><td style='padding:2px 24px 2px 14px; color:{muted}; white-space:nowrap'>"
-                            f"{esc(ln.item)}</td>"
+                            f"{esc(ln.label)}</td>"
                             + "".join(f"<td align='right' style='{td}; color:{text}'>{_whole(v) if v else ''}</td>"
                                       for v in vals)
                             + f"<td align='right' style='{td}; color:{text}; font-weight:700'>{_whole(sum(vals))}</td>"
@@ -635,6 +654,11 @@ class CapexPage(_CompanyPage):
         if p and CapexLineDialog(self.pf, p.holding, parent=self).exec():
             self.fill()
 
+    def add_unit(self) -> None:
+        p = self.perf()
+        if p and AddUnitDialog(self.pf, p.holding, self).exec():
+            self.fill()
+
     def edit_line(self) -> None:
         p, ln = self.perf(), self._selected()
         if p and ln and CapexLineDialog(self.pf, p.holding, ln, self).exec():
@@ -642,8 +666,13 @@ class CapexPage(_CompanyPage):
 
     def delete_line(self) -> None:
         ln = self._selected()
-        if ln and confirm(self, "Delete line", f"Delete “{ln.item}” from the capex schedule? (The books aren't "
-                                               "touched.)"):
+        units = sum(1 for x in self._rows if x is not None and x.parent_id == ln.id) if ln else 0
+        extra = f" and its {units} unit(s)" if units else ""
+        note = ("" if ln is None or ln.parent_id is None or not ln.unit or
+                not any(u.unit.strip().lower() == ln.unit.strip().lower() for u in op.units(self.pf, self.perf().holding.id))
+                else " It's on the rent roll, so it comes back unless the unit is removed from the rent roll too.")
+        if ln and confirm(self, "Delete line", f"Delete “{ln.label}”{extra} from the capex schedule? (The books "
+                                               f"aren't touched.){note}"):
             cx.delete_line(self.pf, ln.id)
             self.fill()
 
@@ -667,9 +696,59 @@ class CapexPage(_CompanyPage):
         except ValueError as e:
             error(self, "Couldn't create the account", str(e))
             return
-        info(self, "Linked to the books", f"“CapEx – {ln.item}” is in {p.holding.name}'s chart of accounts. "
-                                          "Categorize the payments for it to that account and they show here.")
+        units = sum(1 for x in self._rows if x is not None and x.parent_id == ln.id)
+        more = (f" Each of its {units} units has a sub-account under it, so the balance sheet shows a line per unit "
+                "— categorize a unit's payments to its own account." if units else "")
+        info(self, "Linked to the books", f"“CapEx – {ln.label}” is in {p.holding.name}'s chart of accounts. "
+                                          f"Categorize the payments for it to that account and they show here.{more}")
         self.fill()
+
+
+class AddUnitDialog(QDialog):
+    """A unit that isn't on the rent roll yet (e.g. newly built) under in-suite renovations."""
+
+    def __init__(self, pf, holding, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QCheckBox
+
+        self.pf, self.holding = pf, holding
+        self.setWindowTitle(f"Add Unit – {holding.name}")
+        self.resize(440, 0)
+        form = QFormLayout(self)
+        self.unit = QLineEdit()
+        self.unit.setPlaceholderText("e.g. 108 — or several: 108, 109, 110")
+        self.budget = _money_box()
+        self.roll = QCheckBox("Also add to the rent roll (status Under construction)")
+        self.roll.setChecked(True)
+        form.addRow("Unit number:", self.unit)
+        form.addRow("Budget per unit:", self.budget)
+        form.addRow(self.roll)
+        hint = QLabel("Every unit on the rent roll is already listed under In-suite renovations — add a unit here "
+                      "when it isn't on the rent roll yet, e.g. one being built.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        hint.setMinimumHeight(hint.fontMetrics().lineSpacing() * 2)
+        form.addRow(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def save(self) -> None:
+        import re
+
+        names = [x.strip() for x in re.split(r"[,;]", self.unit.text()) if x.strip()]
+        if not names:
+            error(self, "Couldn't add", "Enter the unit number")
+            return
+        try:
+            for u in names:
+                cx.add_unit(self.pf, self.holding.id, u, round(self.budget.value() * 100),
+                            to_rent_roll=self.roll.isChecked())
+        except ValueError as e:
+            error(self, "Couldn't add", str(e))
+            return
+        self.accept()
 
 
 # ---------------------------------------------------------------------------
