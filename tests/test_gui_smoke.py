@@ -1627,7 +1627,7 @@ def test_company_columns_fit_numbers_and_long_names_wrap(app):
 def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     import csv
     import re
-    from datetime import date
+    from datetime import date, timedelta
 
     from am_accounting.books import CompanyProfile, ParsedTransaction
     from am_accounting.companies import CompanyRegistry
@@ -1687,6 +1687,10 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     page = cash.page.toPlainText()
     assert "Pro-Forma" in page and "Actual" in page and "Net property cash flow" in page
     assert date.today().strftime("%b %y") in page                                 # months as "Mmm yy"
+    m = date.today().replace(day=1)
+    for _ in range(3):
+        m = (m - timedelta(days=1)).replace(day=1)
+    assert cash.page._start == m.strftime("%b %y") == ops.stmt._start            # opens 3 months back
     cash.show_cols.setCurrentIndex(cash.show_cols.findData("actual"))
     assert cash.page.toPlainText().count("Pro-Forma") == 1                         # only in the note
     cap = v.capex_page

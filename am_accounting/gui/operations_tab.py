@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
                                QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
@@ -226,7 +226,6 @@ class OperationsPage(_CompanyPage):
         sw = QWidget()
         sl = QVBoxLayout(sw)
         sl.setContentsMargins(0, 4, 0, 0)
-        from PySide6.QtWidgets import QTextBrowser
 
         srow = QHBoxLayout()
         srow.addWidget(QLabel("Show:"))
@@ -237,9 +236,7 @@ class OperationsPage(_CompanyPage):
         srow.addWidget(self.stmt_show)
         srow.addStretch(1)
         sl.addLayout(srow)
-        self.stmt = QTextBrowser()          # one clean page, like the Dashboard and Cash Flow
-        self.stmt.setFrameShape(QTextBrowser.Shape.NoFrame)
-        self.stmt.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        self.stmt = MonthTable()            # one clean page, like the Dashboard and Cash Flow
         sl.addWidget(self.stmt, 1)
         self.sub.addTab(sw, "Monthly Operating Statement")
         # rent roll
@@ -326,11 +323,12 @@ class OperationsPage(_CompanyPage):
 
     def _fill_statement(self, stmt: op.Statement) -> None:
         p = self.perf()
-        f = op.master_cash_flow(self.pf, p, self.view._as_of_date())
+        f = op.master_cash_flow(self.pf, p, self.view._as_of_date(), back=HISTORY_MONTHS)
         rows = op.operating_rows(f, self._units, op.settings(self.pf, p.holding.id))
         note = ("Pro-Forma: rent from the rent roll ahead (annual increases on move-in anniversaries, less vacancy), "
                 "other lines as the same month a year earlier, scheduled debt payments. Actual: the books.")
-        self.stmt.setHtml(pf_actual_html(self, f.months, f.past, rows, self.stmt_show.currentData() or "both", note))
+        self.stmt.set_parts(*pf_actual_parts(self, f.months, f.past, rows, self.stmt_show.currentData() or "both",
+                                             note))
 
     def _fill_roll(self, rows: list[op.Unit], s: op.RentRollSummary) -> None:
         t = self.roll
@@ -689,8 +687,14 @@ def _whole(cents) -> str:
     return f"({abs(d):,})" if d < 0 else f"{d:,}"
 
 
-def pf_actual_html(widget, months, past, rows, show: str, note: str) -> str:
-    """Months across ("Nov 25"), each with Pro-Forma and / or Actual columns; categories down; no lines."""
+HISTORY_MONTHS = 36   # months of history loaded (scroll left to see them)
+SHOW_BACK = 3         # the page opens on the 3 months before this one, this month and the year ahead
+
+
+def pf_actual_parts(widget, months, past, rows, show: str, note: str) -> tuple[str, str, str, str]:
+    """(note, labels column html, months html, the month to open on) — months across ("Nov 25"), each with
+    Pro-Forma and / or Actual columns; categories down; no lines. The labels are a separate column so they stay put
+    while the months scroll."""
     import html as _html
 
     from .theme import c as tc
@@ -700,14 +704,23 @@ def pf_actual_html(widget, months, past, rows, show: str, note: str) -> str:
     pf_bg, act_bg = ("#3a2f3a", "#23352b") if is_dark() else ("#fbeef7", "#eaf6ee")
     tint = "#20303c" if is_dark() else "#eef6fb"
     esc = _html.escape
+    # leave out the oldest months the books and the projection have nothing for
+    current = max((i for i, pa in enumerate(past) if pa), default=0)
+    default_start = max(0, current - SHOW_BACK)
+    first = default_start
+    for i in range(default_start):
+        if any(r.actual[i] for r in rows if r.kind not in ("gap", "head", "ratio")):   # the books begin
+            first = i
+            break
     cols = []   # (month index, 'pro_forma' | 'actual')
     for i, pa in enumerate(past):
+        if i < first:
+            continue
         if show in ("both", "pro_forma"):
             cols.append((i, "pro_forma"))
         if show in ("both", "actual") and pa:
             cols.append((i, "actual"))
-    head1 = ["<td></td>"]
-    head2 = ["<td></td>"]
+    head1, head2 = [], []
     i_prev = None
     for i, kind in cols:
         span = sum(1 for j, _k in cols if j == i)
@@ -718,32 +731,115 @@ def pf_actual_html(widget, months, past, rows, show: str, note: str) -> str:
         label, bg = ("Pro-Forma", pf_bg) if kind == "pro_forma" else ("Actual", act_bg)
         head2.append(f"<td align='right' style='background:{bg}; color:{muted}; font-size:8pt; "
                      f"padding:2px 8px'>{label}</td>")
-    out = [f"<table cellspacing='0' cellpadding='3' style='color:{text}'>",
-           "<tr>" + "".join(head1) + "</tr>", "<tr>" + "".join(head2) + "</tr>"]
+    table = f"<table cellspacing='0' cellpadding='0' style='color:{text}'>"
+    left = [table, "<tr><td style='font-weight:700; padding:2px 6px'>&nbsp;</td></tr>",
+            "<tr><td style='font-size:8pt; padding:2px 8px'>&nbsp;</td></tr>"]
+    body = [table, "<tr>" + "".join(head1) + "</tr>", "<tr>" + "".join(head2) + "</tr>"]
     for r in rows:
         if r.kind == "gap":
-            out.append(f"<tr><td colspan='{len(cols) + 1}' style='font-size:4pt'>&nbsp;</td></tr>")
+            gap = "<tr><td colspan='{}' style='font-size:4pt; padding:2px 0'>&nbsp;</td></tr>"
+            left.append(gap.format(1))
+            body.append(gap.format(max(1, len(cols))))
             continue
-        bold = r.kind in ("total", "head")
+        bold = " font-weight:700;" if r.kind in ("total", "head") else ""
         pad = {0: 0, 1: 18, 2: 34}.get(r.level, 0)
         colour = accent if r.kind == "head" else (text if r.level == 0 else muted)
-        cells = [f"<td style='padding-left:{pad}px; padding-right:24px; white-space:nowrap; color:{colour};"
-                 f"{' font-weight:700;' if bold else ''}'>{esc(r.label)}</td>"]
+        left.append(f"<tr><td style='padding:2px 24px 2px {pad + 2}px; white-space:nowrap; color:{colour};{bold}'>"
+                    f"{esc(r.label)}</td></tr>")
+        cells = []
         for i, kind in cols:
             v = (r.pro_forma if kind == "pro_forma" else r.actual)[i]
             if r.kind == "head":
-                s = ""
+                s = "&nbsp;"
             elif r.kind == "ratio":
-                s = f"{v:.2f}x" if v is not None else ""
+                s = f"{v:.2f}x" if v is not None else "&nbsp;"
             else:
-                s = _whole(v)
+                s = _whole(v) or "&nbsp;"
             c = red if s.startswith("(") else text
             bg = f" background:{tint};" if kind == "actual" and show == "both" else ""
-            cells.append(f"<td align='right' style='padding:2px 8px; color:{c};{bg}"
-                         f"{' font-weight:700;' if bold else ''}'>{s}</td>")
-        out.append("<tr>" + "".join(cells) + "</tr>")
-    out.append("</table>")
-    return f"<p style='color:{muted}; font-size:8.5pt; margin:0 0 8px 0'>{esc(note)}</p>" + "".join(out)
+            cells.append(f"<td align='right' style='padding:2px 8px; color:{c};{bg}{bold}'>{s}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    left.append("</table>")
+    body.append("</table>")
+    start = months[default_start].strftime("%b %y") if months else ""
+    return (f"<span style='color:{muted}; font-size:8.5pt'>{esc(note)}</span>", "".join(left), "".join(body), start)
+
+
+class MonthTable(QWidget):
+    """A months-across statement: the line names stay on the left while the months scroll sideways. Opens on
+    ``SHOW_BACK`` months before this one; scroll left for earlier months."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTextBrowser
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        lay.addLayout(row, 1)
+        self.labels = QTextBrowser()
+        self.body = QTextBrowser()
+        for b in (self.labels, self.body):
+            b.setFrameShape(QTextBrowser.Shape.NoFrame)
+            b.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        self.labels.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.labels.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(0)
+        left.addWidget(self.labels, 1)
+        left.addSpacing(self.body.horizontalScrollBar().sizeHint().height())   # lines up with the months
+        row.addLayout(left)
+        row.addWidget(self.body, 1)
+        self.body.verticalScrollBar().valueChanged.connect(self.labels.verticalScrollBar().setValue)
+        self.labels.verticalScrollBar().valueChanged.connect(self.body.verticalScrollBar().setValue)
+        self._start = ""
+
+    def set_parts(self, note: str, labels: str, body: str, start: str) -> None:
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
+        self.labels.setHtml(labels)
+        self.labels.setFixedWidth(int(self.labels.document().idealWidth()) + 6)
+        self.body.setHtml(body)
+        self._start = start
+        self._go_to_start()
+        QTimer.singleShot(0, self._go_to_start)
+
+    def setHtml(self, html: str) -> None:   # a message instead of a statement
+        self.note.setText(html)
+        self.note.setVisible(bool(html))
+        self.labels.setHtml("")
+        self.labels.setFixedWidth(0)
+        self.body.setHtml("")
+        self._start = ""
+
+    def toPlainText(self) -> str:
+        return "\n".join((self.note.text(), self.labels.toPlainText(), self.body.toPlainText()))
+
+    def toHtml(self) -> str:
+        return self.labels.toHtml() + self.body.toHtml()
+
+    def _go_to_start(self) -> None:
+        """Scroll so the first month on screen is the one the page opens on."""
+        if not self._start:
+            return
+        cur = self.body.document().find(self._start)
+        if cur.isNull():
+            return
+        bar = self.body.horizontalScrollBar()
+        # the month's heading cell spans its columns: its left edge is where the month starts
+        left = self.body.document().documentLayout().blockBoundingRect(cur.block()).left()
+        bar.setValue(max(0, int(left) - 10))
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        QTimer.singleShot(0, self._go_to_start)
 
 
 class CashFlowPage(_CompanyPage):
@@ -751,7 +847,6 @@ class CashFlowPage(_CompanyPage):
 
     def __init__(self, view):
         super().__init__(view)
-        from PySide6.QtWidgets import QTextBrowser
 
         from .asset_mgmt import Card
 
@@ -776,9 +871,7 @@ class CashFlowPage(_CompanyPage):
             self.cards[k] = c
             cards.addWidget(c)
         lay.addLayout(cards)
-        self.page = QTextBrowser()
-        self.page.setFrameShape(QTextBrowser.Shape.NoFrame)
-        self.page.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        self.page = MonthTable()
         lay.addWidget(self.page, 1)
         self.flow: op.MasterCashFlow | None = None
 
@@ -793,11 +886,12 @@ class CashFlowPage(_CompanyPage):
             self.page.setHtml("<p>No operating companies in this view.</p>")
             return
         as_of = self.view._as_of_date()
-        f = self.flow = op.master_cash_flow(self.pf, p, as_of)
-        self.page.setHtml(self._html(f, self.show_cols.currentData() or "both"))
+        f = self.flow = op.master_cash_flow(self.pf, p, as_of, back=HISTORY_MONTHS)
+        self.page.set_parts(*self._parts(f, self.show_cols.currentData() or "both"))
         by = {r.label: r for r in f.rows}
         net = by["Net property cash flow"]
-        act = sum(v for v, pa in zip(net.actual, f.past) if pa and v is not None)
+        last12 = [i for i, pa in enumerate(f.past) if pa][-12:]
+        act = sum(net.actual[i] for i in last12 if net.actual[i] is not None)
         proj = sum(v for v, pa in zip(net.pro_forma, f.past) if not pa)
         self.cards["t12"].set(fmt_money(act), "actual, last 12 months",
                               POSITIVE if act > 0 else NEGATIVE if act < 0 else None)
@@ -815,12 +909,12 @@ class CashFlowPage(_CompanyPage):
             self.cards["equity"].set(fmt_money(sum(x.funded for x in owners)),
                                      f"of {fmt_money(sum(x.amount_cents for x in owners))} committed")
 
-    def _html(self, f: op.MasterCashFlow, show: str) -> str:
+    def _parts(self, f: op.MasterCashFlow, show: str) -> tuple[str, str, str, str]:
         note = ("Pro-Forma: rent from the rent roll ahead (annual increases, less vacancy), other lines as the same "
                 "month a year earlier, scheduled debt payments, capex to complete spread over the coming months. "
                 "Actual: the books — the ending balance is the bank balance; what the lines don't explain is "
                 "Other / timing.")
-        return pf_actual_html(self, f.months, f.past, f.rows, show, note)
+        return pf_actual_parts(self, f.months, f.past, f.rows, show, note)
 
 
 # ---------------------------------------------------------------------------
