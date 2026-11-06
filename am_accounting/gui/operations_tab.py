@@ -1253,7 +1253,7 @@ class DashboardPage(_CompanyPage):
                         (muted if k == 0 and not weight else text)
                     width = " width='42%'" if k == 0 and len(row) == 2 else ""
                     cells.append(f"<td{width} align='{'left' if k == 0 else 'right'}' style='{weight}color:{colour}'>"
-                                 f"{esc(x)}</td>")
+                                 f"{esc(x) or '&nbsp;'}</td>")   # an empty cell would drop the gap below
                 out.append("<tr>" + "".join(cells) + "</tr>")
             out.append("</table>")
             return "".join(out)
