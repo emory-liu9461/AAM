@@ -1154,7 +1154,10 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert v.tabs.tabText(0) == "Portfolio" and v.tabs.tabText(1) == "Dashboard"
     tabs = [v.tabs.tabText(i) for i in range(1, v.tabs.count()) if v.tabs.isTabVisible(i)]
     assert tabs == ["Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
-                    "Customers && Vendors", "Waterfall (LP / GP)", "Projections"]
+                    "Waterfall (LP / GP)", "Projections"]
+    subs = [v.ops_page.sub.tabText(i) for i in range(v.ops_page.sub.count())]
+    assert subs[3] == "Customers && Vendors" and v.ops_page.sub.widget(3) is v.cv_page    # after Operating Costs
+    assert v.cv_pick.isHidden()                         # follows the company picked at the top of the page
     v.show_deals()                                         # Deal Pipeline: a button beside Portfolio Summary
     assert v.tabs.currentWidget() is v.deals_page and v.deals_btn.isChecked() and not v.summary_btn.isChecked()
     assert not v.tabs.isTabVisible(v.tabs.indexOf(v.deals_page))
@@ -1220,6 +1223,8 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     v.refresh()
     fl = v.fin_loan_cells
     assert fl[0][0] == "TD Bank" and fl[0][2] == "Amortizing"
+    assert v.fin_lower.tabText(1) == "Check Against the Balance Sheet" and "DEBT" in v.fin_recon.toPlainText()
+    assert v.fin_recon_data.debt_gap == 0 and v.fin_check.text() == "✓ Matches the balance sheet"
     assert fl[0][5] == "5.25% fixed" and fl[0][6] == "5 yr / 25 yr amort."
     assert fl[0][7] == "$11,984.95 monthly" and fl[0][10] == "2029-04-30"
     assert "TD Bank" in v.fin_loans.toPlainText() and 'href="loan:0"' in v.fin_loans.toHtml()   # click to select
@@ -1339,6 +1344,21 @@ def test_waterfall_tab(app, tmp_path):
     v._save_terms()
     assert pfm.get_terms(v.pf, hold).carry_pct == 30 and v.wf_table.item(4, 2).text() != lp
     assert v.wf_table.item(4, 0).text() == "Total" and v.wf_parts.rowCount() == 1
+    # a company's own cap table: owners straight from Financing & Cap Table, through the tiers on its equity value
+    for name, cls, amt in (("Pat Lee", "Class A", 900_000_00), ("Sponsor Co", "Class B", 100_000_00)):
+        pfm.save_shareholder(v.pf, h.id, pfm.Shareholder(name, amount_cents=amt, share_class=cls, funded_cents=amt,
+                                                         funded_date="2024-01-01"))
+    v.refresh()
+    i = v.wf_pick.findData(f"__co__:{h.id}")
+    assert i > 0 and "cap table" in v.wf_pick.itemText(i)
+    v.wf_pick.setCurrentIndex(i)
+    assert v.wf_owners.isVisible() or not v.isVisible()
+    assert v.wf_owners.rowCount() == 3 and v.wf_owners.item(0, 0).text() == "Pat Lee"
+    assert v.wf_owners.item(0, 3).text() == "LP" and v.wf_owners.item(2, 6).text() == "$2,000,000.00"
+    v.wf_gp_class.setCurrentIndex(v.wf_gp_class.findData("Class B"))
+    assert v.wf_owners.item(1, 3).text() == "GP" and v.wf_owners.item(1, 9).text() != ""
+    v._save_terms()
+    assert pfm.get_terms(v.pf, pfm.company_terms_key(h.id)).gp_name == "Class B"
     w.close()
 
 
@@ -1693,7 +1713,7 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     from am_accounting import op_costs as oc
 
     assert [ops.sub.tabText(i) for i in range(ops.sub.count())] == [
-        "Monthly Operating Statement", "Rent Roll", "Operating Costs", "Unit Mix"]
+        "Monthly Operating Statement", "Rent Roll", "Operating Costs", "Customers && Vendors", "Unit Mix"]
     assert ops.costs.rowCount() == len(oc.CATEGORIES) + 1 and ops.costs.item(0, 0).text() == "Property tax"
     ops.costs.selectRow(1)
     cd = ot.CostDialog(v.pf, ops.perf().holding, ops._cost(), ops)
@@ -1752,5 +1772,10 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     spend = cap.months.toPlainText()
     assert "HARD COSTS" in spend and "12,500" in spend and date.today().strftime("%b %y") in spend
     assert set(re.findall(r'border="(\d+)"', cap.months.toHtml())) <= {"0"}            # no lines
+    # reconciled to the balance sheet: the roofing on the schedule, so no gap from it
+    assert cap.lower.tabText(1) == "Reconcile to Balance Sheet" and cap.recon_data.difference == 0
+    assert "CAPEX SCHEDULE → BALANCE SHEET" in cap.recon_page.toPlainText()
+    assert any(cap.recon.item(r, 0).text() == "CapEx – Roofing" and cap.recon.item(r, 4).text() == "Roofing"
+               for r in range(cap.recon.rowCount()))
     w.set_mode("accounting")
     w.close()

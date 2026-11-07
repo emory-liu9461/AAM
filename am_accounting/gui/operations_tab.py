@@ -713,7 +713,7 @@ class CapexPage(_CompanyPage):
         cards = QHBoxLayout()
         self.cards = {}
         for k, title in (("budget", "Total budget"), ("to_date", "Cost to date"), ("to_complete", "Cost to complete"),
-                         ("pct", "Complete")):
+                         ("pct", "Complete"), ("gap", "Gap to balance sheet")):
             c = Card(title, small=True)
             self.cards[k] = c
             cards.addWidget(c)
@@ -732,8 +732,37 @@ class CapexPage(_CompanyPage):
         self.months.setFrameShape(QTextBrowser.Shape.NoFrame)
         self.months.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
         ml.addWidget(self.months, 1)
-        split.addWidget(mw)
-        split.setSizes([420, 220])
+        self.lower = QTabWidget()
+        self.lower.setDocumentMode(True)
+        self.lower.addTab(mw, "Monthly Capex Spending")
+        # reconciling to the balance sheet: the bridge, then each fixed-asset account
+        rw = QWidget()
+        rl = QHBoxLayout(rw)
+        rl.setContentsMargins(0, 4, 0, 0)
+        self.recon_page = QTextBrowser()
+        self.recon_page.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.recon_page.setMinimumWidth(420)
+        rl.addWidget(self.recon_page, 2)
+        right = QVBoxLayout()
+        right.addWidget(QLabel("<b>Fixed assets on the balance sheet</b>"))
+        self.recon = _table(["Account", "Balance sheet", "At closing / opening", "Spent since", "On the schedule"], 0)
+        self.recon.doubleClicked.connect(lambda *_: self.recon_link())
+        right.addWidget(self.recon, 1)
+        rb = QHBoxLayout()
+        for text, slot, tip in (
+                ("Add to Schedule", self.recon_add, "Put the selected account on the schedule as its own line"),
+                ("Link to a Line…", self.recon_link, "Link the selected account to a line already on the schedule")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            rb.addWidget(b)
+        rb.addStretch(1)
+        right.addLayout(rb)
+        rl.addLayout(right, 3)
+        self.lower.addTab(rw, "Reconcile to Balance Sheet")
+        split.addWidget(self.lower)
+        split.setSizes([420, 260])
+        self._recon_rows: list = []
         lay.addWidget(split, 1)
         self._rows: list = []   # table row -> CapexLine | None
 
@@ -791,6 +820,7 @@ class CapexPage(_CompanyPage):
         t.resizeColumnsToContents()
         t.horizontalHeader().setStretchLastSection(True)
         self._fill_months(lines, as_of)
+        self._fill_recon(p, as_of)
 
     def _add(self, t, vals, *, head=False, bold=False, line=None, unit=False) -> None:
         r = t.rowCount()
@@ -805,6 +835,126 @@ class CapexPage(_CompanyPage):
         if head:
             t.setSpan(r, 0, 1, len(vals))
         self._rows.append(line)
+
+    def _fill_recon(self, p, as_of: date) -> None:
+        """The schedule against the fixed assets on the balance sheet: the bridge and each account."""
+        import html as _html
+
+        from .theme import c as tc
+
+        r = self.recon_data = cx.reconcile(self.pf, p.holding, as_of)
+        t = self.recon
+        t.setRowCount(0)
+        self._recon_rows = []
+        if r.error:
+            self.cards["gap"].set("—", r.error.lower())
+            self.recon_page.setHtml(f"<p>{_html.escape(r.error)} — link the company to its books to reconcile.</p>")
+            return
+        n = len(r.not_on_schedule)
+        self.cards["gap"].set(fmt_money(r.gap), (f"{n} fixed-asset account(s) not on the schedule" if n else
+                                                 "schedule = balance sheet") if not r.difference else
+                              f"{fmt_money(r.difference)} unexplained", NEGATIVE if r.gap or r.difference else POSITIVE)
+        text, muted, red, green, accent = (self.palette().text().color().name(), tc("muted"), tc("red"), tc("green"),
+                                           tc("link"))
+        esc = _html.escape
+
+        def m(c):
+            whole = fmt_money(abs(c))
+            return f"<span style='color:{red}'>({whole})</span>" if c < 0 else whole
+
+        def line(label, cents, *, bold=False, indent=0, colour=None, note=""):
+            w = "font-weight:700;" if bold else ""
+            return (f"<tr><td style='{w}padding:2px 24px 2px {indent}px; color:{colour or (text if bold else muted)}'>"
+                    f"{label}{f' <span style=color:{muted};font-size:8pt>{esc(note)}</span>' if note else ''}</td>"
+                    f"<td align='right' style='{w}padding:2px 0; color:{text}'>{m(cents)}</td></tr>")
+
+        rows = [line("Cost to date on the schedule", r.schedule_total, bold=True)]
+        if r.by_hand:
+            rows.append(line("less entered by hand (not in the books)", -r.by_hand, indent=14))
+        if r.expensed:
+            rows.append(line("less lines linked to expense accounts (expensed)", -r.expensed, indent=14))
+        if r.other_assets:
+            rows.append(line("less lines linked to other asset accounts", -r.other_assets, indent=14))
+        rows.append(line("Schedule in Fixed Assets", r.schedule_fixed, bold=True))
+        if r.not_on_schedule:
+            rows.append(f"<tr><td colspan='2' style='padding:8px 0 2px 0; color:{accent}; font-size:8.5pt; "
+                        f"font-weight:700'>FIXED ASSETS NOT ON THE SCHEDULE</td></tr>")
+            for a in r.not_on_schedule:
+                note = ("at closing / opening" if a.acquisition and not a.since else
+                        f"{fmt_money(a.since)} spent since — capex missing from the schedule?" if a.since else "")
+                rows.append(line(esc(a.name), a.balance, indent=14, note=note))
+            rows.append(line("Total not on the schedule", r.unscheduled, bold=True))
+        rows.append(line("Fixed assets on the balance sheet (at cost)", r.balance_sheet, bold=True))
+        if r.accumulated:
+            rows.append(line("Accumulated depreciation (not part of the schedule)", r.accumulated, indent=14))
+        ok = not r.difference
+        status = (f"<p style='color:{green}; font-weight:700'>✓ Reconciled — the gap is the fixed assets not on the "
+                  f"schedule.</p>" if ok else
+                  f"<p style='color:{red}; font-weight:700'>{fmt_money(r.difference)} unexplained — check the lines "
+                  f"linked to accounts that no longer exist.</p>")
+        hint = ""
+        if r.unscheduled_since:
+            hint = (f"<p style='color:{red}'>{fmt_money(r.unscheduled_since)} was spent since closing on fixed assets "
+                    f"the schedule doesn't track — Add to Schedule or Link to a Line…</p>")
+        self.recon_page.setHtml(
+            f"<p style='color:{accent}; font-size:8.5pt; font-weight:700; margin:0 0 4px 0'>CAPEX SCHEDULE → BALANCE "
+            f"SHEET <span style='color:{muted}; font-weight:400'>at {esc(r.as_of)}</span></p>"
+            f"<table cellspacing='0' cellpadding='0' style='color:{text}'>{''.join(rows)}</table>"
+            f"{status}{hint}<p style='color:{muted}; font-size:8pt'>Gap to the balance sheet: "
+            f"<b>{fmt_money(r.gap)}</b> (fixed assets at cost − the schedule's cost to date).</p>")
+        for a in r.accounts or []:
+            row = t.rowCount()
+            t.insertRow(row)
+            vals = [a.name, fmt_money(a.balance), fmt_money(a.acquisition) if a.acquisition else "",
+                    fmt_money(a.since) if a.since else "",
+                    ", ".join(a.lines) if a.lines else ("— (contra)" if a.accumulated else "not on the schedule")]
+            for c, v in enumerate(vals):
+                colour = None
+                if c == 4 and not a.lines and not a.accumulated:
+                    colour = NEGATIVE if a.since else MUTED
+                t.setItem(row, c, _cell(v, right=c in (1, 2, 3), colour=colour))
+            self._recon_rows.append(a)
+        t.resizeColumnsToContents()
+        t.horizontalHeader().setStretchLastSection(True)
+
+    def _recon_selected(self):
+        r = self.recon.currentRow()
+        a = self._recon_rows[r] if 0 <= r < len(self._recon_rows) else None
+        if a is None:
+            info(self, "Pick an account", "Select a fixed-asset account in the list first.")
+        return a
+
+    def recon_add(self) -> None:
+        p, a = self.perf(), self._recon_selected()
+        if not p or not a:
+            return
+        if a.on_schedule:
+            info(self, "On the schedule", f"{a.name} is already on the schedule ({', '.join(a.lines)}).")
+            return
+        cx.add_account_line(self.pf, p.holding, a)
+        self.fill()
+
+    def recon_link(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        p, a = self.perf(), self._recon_selected()
+        if not p or not a:
+            return
+        rows = [ln for ln in cx.lines(self.pf, p.holding) if ln.account_id != a.id]
+        if not rows:
+            info(self, "No lines", "Add a line first (Add Line…), or Add to Schedule.")
+            return
+        labels = [f"{ln.label}" + (f"  (now: {ln.account_name})" if ln.account_id else "  (not linked)")
+                  for ln in rows]
+        pick, ok = QInputDialog.getItem(self, "Link to a line", f"Link {a.name} to:", labels, 0, False)
+        if ok and pick:
+            ln = rows[labels.index(pick)]
+            if ln.account_id is not None and not confirm(self, "Replace the link",
+                                                         f"“{ln.label}” is linked to {ln.account_name}. Link it to "
+                                                         f"{a.name} instead?"):
+                return
+            cx.link_account(self.pf, p.holding, ln.id, a.id)
+            self.fill()
 
     def _fill_months(self, lines, as_of: date) -> None:
         """Spending recorded in the books, last 12 months: cost items down (by group), months across ("Mar 26");

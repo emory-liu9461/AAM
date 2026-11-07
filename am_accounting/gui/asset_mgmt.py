@@ -1857,8 +1857,8 @@ class AssetManagementView(QWidget):
     def _arrange_tabs(self) -> None:
         """The whole portfolio (summary, holdings, consolidated financials, managed companies) sits behind the
         Portfolio Summary button; the tabs are for one company: Dashboard (with what was the Company Overview),
-        Rent Roll & Operations, Cash Flow, CapEx, Financing & Cap Table, Customers & Vendors, Waterfall,
-        Projections."""
+        Rent Roll & Operations (with Operating Costs and Customers & Vendors), Cash Flow, CapEx, Financing & Cap Table,
+        Waterfall, Projections."""
         pages = {self.tabs.tabText(i): self.tabs.widget(i) for i in range(self.tabs.count())}
         self.tabs.blockSignals(True)
         while self.tabs.count():
@@ -1877,8 +1877,13 @@ class AssetManagementView(QWidget):
         self.overview_page.setParent(self)
         self.overview_page.hide()
         for name in ("Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
-                     "Customers && Vendors", "Waterfall (LP / GP)", "Projections"):
+                     "Waterfall (LP / GP)", "Projections"):
             self.tabs.addTab(pages[name], name)
+        # Customers & Vendors sits in Rent Roll & Operations, following its company
+        self.cv_page = pages["Customers && Vendors"]
+        after = next(i for i in range(self.ops_page.sub.count()) if self.ops_page.sub.tabText(i) == "Operating Costs")
+        self.ops_page.sub.insertTab(after + 1, self.cv_page, "Customers && Vendors")
+        self.ops_page.pick.currentIndexChanged.connect(lambda *_: self._cv_follow_ops())
         from .deals_tab import DealPipelinePage
 
         self.deals_page = DealPipelinePage(self.pf, on_added=lambda _hid: self.refresh(),
@@ -2035,7 +2040,8 @@ class AssetManagementView(QWidget):
         self.wf_pick.setMinimumWidth(280)
         self.wf_pick.currentIndexChanged.connect(lambda *_: self._wf_owner_changed())
         top.addWidget(self.wf_pick)
-        top.addWidget(QLabel("Holdings:"))
+        self.wf_scope_label = QLabel("Holdings:")
+        top.addWidget(self.wf_scope_label)
         self.wf_scope = QComboBox()
         self.wf_scope.setMinimumWidth(240)
         self.wf_scope.currentIndexChanged.connect(lambda *_: self._fill_waterfall())
@@ -2058,10 +2064,15 @@ class AssetManagementView(QWidget):
         self.wf_carry.setSuffix(" % carried interest")
         self.wf_gp = QLineEdit()
         self.wf_gp.setPlaceholderText("GP (blank: the asset manager)")
+        self.wf_gp_class = QComboBox()          # a company's cap table: which share class is the GP
+        self.wf_gp_class.setToolTip("The share class that is the GP (gets the promote); the other classes are LPs")
+        self.wf_gp_class.hide()
+        self.wf_gp_class.currentIndexChanged.connect(lambda *_: self._fill_waterfall())
         for wdg in (self.wf_lp, self.wf_pref, self.wf_cu, self.wf_carry):
             wdg.setDecimals(2)
             tl.addWidget(wdg)
         tl.addWidget(self.wf_gp, 1)
+        tl.addWidget(self.wf_gp_class, 1)
         self.wf_save = QPushButton("Save Terms")
         self.wf_save.clicked.connect(self._save_terms)
         tl.addWidget(self.wf_save)
@@ -2088,6 +2099,10 @@ class AssetManagementView(QWidget):
         self.wf_parts = _table(["", "Capital", "Distributable", "Preferred return", "To LPs", "To GP", "GP promote",
                                 "LP MOIC", "LP IRR", "GP MOIC"], None)
         lay.addWidget(self.wf_parts, 1)
+        self.wf_owners = _table(["Owner", "Company", "Class", "GP / LP", "Paid in", "% of capital",
+                                 "Share of equity value", "Gain", "Multiple", "Of which promote"], None)
+        self.wf_owners.hide()
+        lay.addWidget(self.wf_owners, 1)
         note = QLabel("A hypothetical sale today: everything distributed so far plus today's NAV goes through the tiers "
                       "— 1. return of capital, 2. preferred return (on each contribution from its date, compounding "
                       "annually), 3. GP catch-up, 4. carried interest. Capital and pro-rata tiers are shared LP / GP "
@@ -2107,6 +2122,9 @@ class AssetManagementView(QWidget):
         self.wf_pick.addItem("Overall project (all holding companies)", "__all__")
         for n, p in self._holdcos():
             self.wf_pick.addItem(n, p)
+        for p in (self.summary.performances if self.summary else []):   # each company's own cap table
+            if any(not x.worked_out for x in pfm.cap_table(self.pf, p)):
+                self.wf_pick.addItem(f"{p.holding.name} – cap table (equity value)", f"__co__:{p.holding.id}")
         v = self.viewing.currentData()
         if v and v[0] == "owner":
             want = v[1]
@@ -2115,8 +2133,37 @@ class AssetManagementView(QWidget):
         self.wf_pick.blockSignals(False)
         self._wf_owner_changed()
 
+    def _wf_company(self) -> int | None:
+        owner = self.wf_pick.currentData()
+        return int(owner.split(":")[1]) if isinstance(owner, str) and owner.startswith("__co__:") else None
+
     def _wf_owner_changed(self) -> None:
         owner = self.wf_pick.currentData()
+        hid = self._wf_company()
+        company = hid is not None
+        for wdg in (self.wf_scope, self.wf_scope_label, self.wf_gp, self.wf_parts, self.wf_parts_label):
+            wdg.setVisible(not company)
+        self.wf_gp_class.setVisible(company)
+        self.wf_owners.setVisible(company)
+        self.wf_lp.setEnabled(not company)
+        self.wf_terms_box.setTitle("Terms (this company's cap table)" if company else "Terms (per holding company)")
+        if company:
+            p = next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
+            t = pfm.get_terms(self.pf, pfm.company_terms_key(hid))
+            classes = list(dict.fromkeys((x.share_class or "Common") for x in pfm.cap_table(self.pf, p))) if p else []
+            self.wf_gp_class.blockSignals(True)
+            self.wf_gp_class.clear()
+            self.wf_gp_class.addItem("No GP (pro rata)", "")
+            for c in classes:
+                self.wf_gp_class.addItem(f"GP: {c}", c)
+            self.wf_gp_class.setCurrentIndex(max(0, self.wf_gp_class.findData(t.gp_name)))
+            self.wf_gp_class.blockSignals(False)
+            self.wf_pref.setValue(t.pref_pct)
+            self.wf_cu.setValue(t.catchup_pct)
+            self.wf_carry.setValue(t.carry_pct)
+            self.wf_terms_box.setEnabled(True)
+            self._fill_waterfall()
+            return
         overall = owner in (None, "__all__")
         self.wf_scope.blockSignals(True)
         self.wf_scope.clear()
@@ -2139,6 +2186,17 @@ class AssetManagementView(QWidget):
 
     def _save_terms(self) -> None:
         owner = self.wf_pick.currentData()
+        hid = self._wf_company()
+        if hid is not None:
+            try:
+                pfm.set_terms(self.pf, pfm.company_terms_key(hid),
+                              pfm.Terms(100.0, self.wf_pref.value(), self.wf_cu.value(), self.wf_carry.value(),
+                                        self.wf_gp_class.currentData() or ""))
+            except ValueError as e:
+                error(self, "Couldn't save the terms", str(e))
+                return
+            self._fill_waterfall()
+            return
         if owner in (None, "__all__"):
             return
         try:
@@ -2150,6 +2208,9 @@ class AssetManagementView(QWidget):
         self._fill_waterfall()
 
     def _fill_waterfall(self) -> None:
+        if self._wf_company() is not None:
+            self._fill_company_waterfall()
+            return
         owner = self.wf_pick.currentData()
         as_of = self._as_of_date()
         names = {p: n for n, p in self._holdcos()}
@@ -2195,6 +2256,55 @@ class AssetManagementView(QWidget):
                               _multiple(x.lp_moic), _pct(x.lp_irr), _multiple(x.gp_moic)], set(range(1, 10)))
         for c_, wd in enumerate([220, 120, 130, 130, 130, 120, 120, 80, 80, 80]):
             pt.setColumnWidth(c_, wd)
+
+    def _fill_company_waterfall(self) -> None:
+        """A company's equity value today through the tiers, owner by owner from its cap table."""
+        hid = self._wf_company()
+        h = next((x for x in self.pf.holdings() if x.id == hid), None)
+        if h is None:
+            return
+        terms = pfm.Terms(100.0, self.wf_pref.value(), self.wf_cu.value(), self.wf_carry.value(),
+                          self.wf_gp_class.currentData() or "")
+        w, owners, value = pfm.cap_table_waterfall(self.pf, h, self._as_of_date(), terms)
+        if w is None:
+            for c in self.wf_cards.values():
+                c.set("—")
+            self.wf_table.setRowCount(0)
+            self.wf_owners.setRowCount(0)
+            self.wf_cards["dist"].set("—", "no equity value yet (add a valuation)" if value is None else
+                                      "no owners paid in on the cap table")
+            return
+        gp = w.terms.gp_name
+        self.wf_lp.blockSignals(True)
+        self.wf_lp.setValue(w.terms.lp_pct)          # from the cap table
+        self.wf_lp.blockSignals(False)
+        self.wf_cards["dist"].set(fmt_money(w.distributable), f"equity value today · capital {short(w.capital)}")
+        self.wf_cards["lp"].set(fmt_money(w.lp_total), "LP owners", POSITIVE)
+        self.wf_cards["gp"].set(fmt_money(w.gp_total), gp)
+        self.wf_cards["promote"].set(fmt_money(w.gp_promote), "catch-up + carried interest")
+        self.wf_cards["lpret"].set(f"{_multiple(w.lp_moic)} · {_pct(w.lp_irr)}", f"on {short(w.lp_capital)} in")
+        self.wf_cards["gpret"].set(f"{_multiple(w.gp_moic)} · {_pct(w.gp_irr)}",
+                                   f"on {short(w.gp_capital)} in" if w.gp_capital else "no GP capital")
+        self.wf_bar.set_parts([("LPs", w.lp_total), (gp, w.gp_total)])
+        t = self.wf_table
+        t.setRowCount(len(w.tiers) + 1)
+        for r_, tier in enumerate(w.tiers):
+            note = tier.note + (f" · owed {fmt_money(w.pref)}" if tier.name == "Preferred return" else "")
+            _set_row(t, r_, [f"{r_ + 1}. {tier.name}", fmt_money(tier.total), fmt_money(tier.lp), fmt_money(tier.gp),
+                             note], {1, 2, 3})
+        _set_row(t, len(w.tiers), ["Total", fmt_money(w.distributable), fmt_money(w.lp_total), fmt_money(w.gp_total),
+                                   ""], {1, 2, 3}, bold=True)
+        o = self.wf_owners
+        o.setRowCount(len(owners) + 1)
+        for r_, x in enumerate(owners):
+            _set_row(o, r_, [x.name, x.company or "—", x.share_class, x.role, fmt_money(x.paid_in),
+                             f"{x.pct * 100:.2f}%", fmt_money(x.value), fmt_money(x.gain), _multiple(x.multiple),
+                             fmt_money(x.promote) if x.promote else ""], {4, 5, 6, 7, 8, 9})
+        _set_row(o, len(owners), ["Total", "", "", "", fmt_money(sum(x.paid_in for x in owners)), "100.00%",
+                                  fmt_money(sum(x.value for x in owners)), fmt_money(sum(x.gain for x in owners)),
+                                  _multiple(w.distributable / w.capital if w.capital else None),
+                                  fmt_money(w.gp_promote) if w.gp_promote else ""], {4, 5, 6, 7, 8, 9}, bold=True)
+        o.resizeColumnsToContents()
 
     def _fill_proj_picker(self) -> None:
         want = self.proj_pick.currentData()
@@ -2399,13 +2509,12 @@ class AssetManagementView(QWidget):
     def _build_parties_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 4, 0, 0)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
+        # inside Rent Roll & Operations: the company is the one picked at the top of that page (kept in step)
         self.cv_pick = QComboBox()
-        self.cv_pick.setMinimumWidth(260)
         self.cv_pick.currentIndexChanged.connect(lambda *_: self._fill_parties())
-        row.addWidget(self.cv_pick)
-        row.addSpacing(12)
+        self.cv_pick.hide()
         row.addWidget(QLabel("Period:"))
         self.cv_period = QComboBox()
         for label, key in (("Last 12 months", "ltm"), ("Year to date", "ytd"), ("Last year", "last_year"),
@@ -2517,6 +2626,11 @@ class AssetManagementView(QWidget):
             if i >= 0 and i != combo.currentIndex():
                 combo.setCurrentIndex(i)
 
+    def _cv_follow_ops(self) -> None:
+        i = self.cv_pick.findData(self.ops_page.pick.currentData())
+        if i >= 0 and i != self.cv_pick.currentIndex():
+            self.cv_pick.setCurrentIndex(i)
+
     def _cv_open_books(self) -> None:
         hid = self.cv_pick.currentData()
         p = next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
@@ -2546,6 +2660,7 @@ class AssetManagementView(QWidget):
         i = self.cv_pick.findData(want_cv)
         self.cv_pick.setCurrentIndex(i if i >= 0 else 0)
         self.cv_pick.blockSignals(False)
+        self._cv_follow_ops() if hasattr(self, "cv_page") else None
         self._fill_parties()
         want_fin = self.fin_pick.currentData()
         self.fin_pick.blockSignals(True)
@@ -2650,6 +2765,12 @@ class AssetManagementView(QWidget):
         self.fin_info = QLabel()
         self.fin_info.setTextFormat(Qt.TextFormat.RichText)
         row.addWidget(self.fin_info, 1)
+        self.fin_check = QPushButton()          # the balance-sheet check at a glance; opens the full check
+        self.fin_check.setFlat(True)
+        self.fin_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fin_check.setToolTip("Financing & Cap Table against the company's balance sheet — click for the details")
+        self.fin_check.clicked.connect(lambda: self.fin_lower.setCurrentIndex(1))
+        row.addWidget(self.fin_check)
         lay.addLayout(row)
         split = QSplitter(Qt.Orientation.Vertical)
         top = QWidget()
@@ -2696,7 +2817,13 @@ class AssetManagementView(QWidget):
         sl.addLayout(srow)
         self.fin_sched = _table(SCHED_COLS, None)
         sl.addWidget(self.fin_sched, 1)
-        bottom.addWidget(sw)
+        self.fin_lower = QTabWidget()
+        self.fin_lower.setDocumentMode(True)
+        self.fin_lower.addTab(sw, "Amortization Table")
+        self.fin_recon = QTextBrowser()      # the check against the balance sheet
+        self.fin_recon.setFrameShape(QTextBrowser.Shape.NoFrame)
+        self.fin_lower.addTab(self.fin_recon, "Check Against the Balance Sheet")
+        bottom.addWidget(self.fin_lower)
         cw = QWidget()
         cl = QVBoxLayout(cw)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -2724,6 +2851,83 @@ class AssetManagementView(QWidget):
         lay.addWidget(split, 1)
         return w
 
+    def _fill_fin_recon(self, p) -> None:
+        """Debt on Financing vs the balance sheet's loans; the cap table's money paid in vs owners' money on it."""
+        import html as _html
+
+        from .. import fin_recon as fr
+        from .theme import c as tc
+
+        r = self.fin_recon_data = fr.reconcile(self.pf, p.holding, self._as_of_date())
+        text, muted, red, green, accent = (self.palette().text().color().name(), tc("muted"), tc("red"), tc("green"),
+                                           tc("link"))
+        esc = _html.escape
+
+        def m(c):
+            if c is None:
+                return f"<span style='color:{muted}'>—</span>"
+            return f"<span style='color:{red}'>({fmt_money(-c)})</span>" if c < 0 else fmt_money(c)
+
+        def table(rows, heads, total, gap_label, gap):
+            out = [f"<table cellspacing='0' cellpadding='2' style='color:{text}'><tr><td></td>"
+                   + "".join(f"<td align='right' style='color:{muted}; font-size:8pt; padding-left:18px'>{h}</td>"
+                             for h in heads) + "<td></td></tr>"]
+            for x in rows:
+                flag = red if x.gap else muted
+                out.append(f"<tr><td style='color:{text if x.gap else muted}; padding-right:18px'>{esc(x.name)}</td>"
+                           f"<td align='right' style='padding-left:18px'>{m(x.financing)}</td>"
+                           f"<td align='right' style='padding-left:18px'>{m(x.books)}</td>"
+                           f"<td style='padding-left:18px; color:{flag}; font-size:8pt'>{esc(x.note)}</td></tr>")
+            a, b = total
+            out.append(f"<tr><td style='font-weight:700'>Total</td><td align='right' style='font-weight:700; "
+                       f"padding-left:18px'>{m(a)}</td><td align='right' style='font-weight:700; padding-left:18px'>"
+                       f"{m(b)}</td><td></td></tr></table>")
+            status = (f"<p style='color:{green}; font-weight:700; margin:4px 0 0 0'>✓ {gap_label} matches the balance "
+                      f"sheet</p>" if not gap else
+                      f"<p style='color:{red}; font-weight:700; margin:4px 0 0 0'>{gap_label}: {fmt_money(abs(gap))} "
+                      f"{'more on Financing & Cap Table' if gap > 0 else 'more on the balance sheet'}</p>")
+            return "".join(out) + status
+
+        def title(t, sub=""):
+            return (f"<p style='margin:12px 0 4px 0; color:{accent}; font-size:8.5pt; font-weight:700'>{t}"
+                    + (f" <span style='color:{muted}; font-weight:400'>{esc(sub)}</span>" if sub else "") + "</p>")
+
+        if r.error and not r.debt:
+            self.fin_recon.setHtml(f"<p>{esc(r.error)} — link the company to its books to check.</p>")
+            self.fin_check.setText("")
+            return
+        html = title("DEBT", f"at {r.as_of}") + table(r.debt, ["Financing", "Balance sheet"],
+                                                      (r.debt_financing, r.debt_books), "Debt", r.debt_gap)
+        eq_rows = r.equity
+        html += title("OWNERS' MONEY", "cap table paid in vs share capital and shareholder loans")
+        if not r.cap_table_entered:
+            html += (f"<p style='color:{muted}'>No owners on the cap table yet — Add Owner… or Import Equity… "
+                     f"to check them against the balance sheet.</p>")
+        html += table(eq_rows, ["Cap table", "Balance sheet"], (r.equity_cap_table, r.equity_books),
+                      "Owners' money", r.equity_gap if r.cap_table_entered else 0)
+        notes = []
+        if r.opening_equity:
+            notes.append(f"Opening Balance Equity {fmt_money(r.opening_equity)} — often owners' money not yet "
+                         f"recorded as share capital or a shareholder loan")
+        if r.draws:
+            notes.append(f"Paid out to owners {fmt_money(r.draws)}")
+        if r.retained:
+            notes.append(f"Retained earnings and profit {m(r.retained)} (not money put in)")
+        if notes:
+            html += "".join(f"<p style='color:{muted}; font-size:8pt; margin:2px 0'>{x}</p>" for x in notes)
+        self.fin_recon.setHtml(html)
+        gaps = []
+        if r.debt_gap:
+            gaps.append(f"debt {fmt_money(r.debt_gap)}")
+        if r.cap_table_entered and r.equity_gap:
+            gaps.append(f"owners' money {fmt_money(r.equity_gap)}")
+        if r.error:
+            gaps.append(r.error.lower())
+        self.fin_check.setText(("⚠ Gap to the balance sheet: " + " · ".join(gaps)) if gaps else
+                               "✓ Matches the balance sheet")
+        self.fin_check.setStyleSheet(f"QPushButton {{ color: {red if gaps else green}; font-weight: 700; "
+                                     f"border: none; text-align: right; }}")
+
     def _fin_perf(self) -> pfm.Performance | None:
         hid = self.fin_pick.currentData()
         return next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
@@ -2748,6 +2952,10 @@ class AssetManagementView(QWidget):
             f"<b>{fmt_money(tot.debt_service)}</b> a year"
             + (f" · LTV {p.ltv * 100:.0f}%" if p.ltv is not None else "")
             + (f" · next maturity {tot.next_maturity}" if tot.next_maturity else ""))
+        try:
+            self._fill_fin_recon(p)
+        except Exception as e:  # noqa: BLE001 — the check never stops the page from showing
+            self.fin_recon.setHtml(f"<p>Couldn't check against the books: {e}</p>")
         stack = pfm.capital_stack(self.pf, p, as_of)
         self.fin_stack.setRowCount(len(stack) + 1)
         for r, x in enumerate(stack):

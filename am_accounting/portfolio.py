@@ -1202,6 +1202,65 @@ def holding_waterfall(pf: Portfolio, owner_path: str, as_of: date | None = None,
     return waterfall(flows, nav, as_of, terms)
 
 
+@dataclass
+class OwnerShare:
+    """One cap-table owner's part of a company's waterfall."""
+    name: str
+    company: str
+    share_class: str
+    role: str                 # "GP" | "LP"
+    paid_in: int
+    pct: float                # of the capital paid in
+    value: int                # their part of today's equity value through the waterfall
+    promote: int = 0          # of which promote (GP owners: catch-up + carried interest)
+
+    @property
+    def gain(self) -> int:
+        return self.value - self.paid_in
+
+    @property
+    def multiple(self) -> float | None:
+        return self.value / self.paid_in if self.paid_in else None
+
+
+def company_terms_key(holding_id: int) -> str:
+    return f"holding:{holding_id}"
+
+
+def cap_table_waterfall(pf: Portfolio, h: Holding, as_of: date | None = None, terms: Terms | None = None
+                        ) -> tuple[Waterfall | None, list[OwnerShare], int | None]:
+    """A company's equity value today split among the owners on its cap table, through the waterfall tiers.
+
+    Each owner's capital is what they've paid in (from its date); the GP is the share class named in the terms'
+    ``gp_name`` (blank: no GP — the value goes pro rata to what each paid in). The LP share of capital comes from
+    the cap table. Returns (waterfall, [owner shares], equity value) — (None, [], value) without owners."""
+    as_of = as_of or date.today()
+    p = performance(pf, h, as_of, with_financials=True)
+    value = p.value_100
+    holders = [x for x in cap_table(pf, p) if not x.worked_out and x.funded]
+    if not holders or value is None:
+        return None, [], value
+    t = terms or get_terms(pf, company_terms_key(h.id))
+    gp_class = t.gp_name.strip()
+    is_gp = [bool(gp_class) and (x.share_class or "Common") == gp_class for x in holders]
+    total = sum(x.funded for x in holders)
+    gp_cap = sum(x.funded for x, g in zip(holders, is_gp) if g)
+    lp_cap = total - gp_cap
+    t = Terms(lp_cap / total * 100 if total else 100.0, t.pref_pct, t.catchup_pct if gp_class else 0.0,
+              t.carry_pct if gp_class else 0.0, gp_class or "No GP", t.lp_name or "Limited partners")
+    start = h.acquired or as_of.isoformat()
+    flows = sorted((Flow(x.funded_date or start, "contribution", x.funded) for x in holders), key=lambda f: f.date)
+    w = waterfall(flows, value, as_of, t)
+    out = []
+    for x, g in zip(holders, is_gp):
+        pool, cap = (w.gp_total, gp_cap) if g else (w.lp_total, lp_cap)
+        share = x.funded / cap if cap else 0.0
+        out.append(OwnerShare(x.name or x.company, x.company, x.share_class or "Common", "GP" if g else "LP", x.funded,
+                              x.funded / total if total else 0.0, round(pool * share),
+                              round(w.gp_promote * share) if g else 0))
+    return w, out, value
+
+
 def overall_waterfall(pf: Portfolio, holding_companies: list[str], as_of: date | None = None
                       ) -> tuple[Waterfall, list[tuple[str, Waterfall]]]:
     """The whole project: each holding company's waterfall under its own terms, and their total tier by tier.

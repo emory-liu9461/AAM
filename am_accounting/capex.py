@@ -388,3 +388,134 @@ def book_accounts(company_path: str) -> list[tuple[int, str]]:
     finally:
         conn.close()
     return [(r[0], f"{r[1]} · {r[2]}") for r in rows]
+
+
+# ---- reconciling the schedule to the balance sheet ----
+
+@dataclass
+class AccountRow:
+    id: int
+    code: str
+    name: str
+    balance: int                 # on the balance sheet at the date (debits − credits)
+    acquisition: int = 0         # of which: opening balances / closing, and assets taken on with a loan
+    since: int = 0               # of which: spending since (what the schedule should normally hold)
+    lines: list[str] | None = None   # the schedule lines linked to it ([] = not on the schedule)
+    accumulated: bool = False    # accumulated depreciation (a contra account)
+
+    @property
+    def on_schedule(self) -> bool:
+        return bool(self.lines)
+
+
+@dataclass
+class Recon:
+    as_of: str
+    schedule_total: int = 0      # cost to date on the schedule
+    by_hand: int = 0             # entered by hand (not in the books)
+    expensed: int = 0            # lines linked to expense accounts (in the books, not on the balance sheet)
+    other_assets: int = 0        # lines linked to asset accounts outside Fixed Assets
+    accounts: list[AccountRow] | None = None   # every fixed-asset account
+    error: str = ""
+
+    @property
+    def schedule_fixed(self) -> int:
+        """The schedule's part that sits in Fixed Assets on the balance sheet."""
+        return self.schedule_total - self.by_hand - self.expensed - self.other_assets
+
+    @property
+    def not_on_schedule(self) -> list[AccountRow]:
+        return [a for a in self.accounts or [] if not a.on_schedule and not a.accumulated and a.balance]
+
+    @property
+    def unscheduled(self) -> int:
+        return sum(a.balance for a in self.not_on_schedule)
+
+    @property
+    def unscheduled_since(self) -> int:
+        """Spending since the books began on fixed assets the schedule doesn't track — likely capex missed."""
+        return sum(a.since for a in self.not_on_schedule)
+
+    @property
+    def accumulated(self) -> int:
+        return sum(a.balance for a in self.accounts or [] if a.accumulated)
+
+    @property
+    def balance_sheet(self) -> int:
+        """Fixed assets on the balance sheet, at cost (before accumulated depreciation)."""
+        return sum(a.balance for a in self.accounts or [] if not a.accumulated)
+
+    @property
+    def gap(self) -> int:
+        """Balance sheet fixed assets (at cost) − the schedule's cost to date."""
+        return self.balance_sheet - self.schedule_total
+
+    @property
+    def difference(self) -> int:
+        """What the bridge doesn't explain (0 = reconciled)."""
+        return self.balance_sheet - (self.schedule_fixed + self.unscheduled)
+
+
+def reconcile(pf, holding, as_of: date | None = None) -> Recon:
+    """The capex schedule against the fixed assets on the company's balance sheet (see Recon)."""
+    from .portfolio import NOT_FINANCED
+
+    as_of = as_of or date.today()
+    r = Recon(as_of.isoformat(), accounts=[])
+    rows = lines(pf, holding, as_of)
+    r.schedule_total = sum(ln.to_date for ln in rows)
+    r.by_hand = sum(ln.manual_cents for ln in rows)
+    path = holding.company_path
+    if not path or not Path(path).exists():
+        r.error = "Not linked to its books"
+        return r
+    conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+    try:
+        accts = {i: (code, name, typ, sub) for i, code, name, typ, sub in conn.execute(
+            "SELECT id, code, name, type, subtype FROM accounts")}
+        bal = dict(conn.execute(
+            "SELECT l.account_id, SUM(l.debit_cents - l.credit_cents) FROM journal_lines l JOIN journal_entries e "
+            "ON e.id = l.entry_id WHERE e.date <= ? GROUP BY l.account_id", (r.as_of,)).fetchall())
+        acq = dict(conn.execute(
+            f"SELECT l.account_id, SUM(l.debit_cents - l.credit_cents) FROM journal_lines l JOIN journal_entries e "
+            f"ON e.id = l.entry_id WHERE e.date <= ? AND (e.kind = 'opening' OR NOT {NOT_FINANCED}) "
+            f"GROUP BY l.account_id", (r.as_of,)).fetchall())
+    finally:
+        conn.close()
+    linked: dict[int, list[str]] = {}
+    for ln in rows:
+        if ln.account_id is None or ln.account_id not in accts:
+            continue
+        linked.setdefault(ln.account_id, []).append(ln.label)
+        _code, _name, typ, sub = accts[ln.account_id]
+        if typ == "expense":
+            r.expensed += ln.book_cents
+        elif typ == "asset" and sub != "fixed_asset":
+            r.other_assets += ln.book_cents
+    for i, (code, name, typ, sub) in sorted(accts.items(), key=lambda kv: kv[1][0]):
+        if typ != "asset" or sub != "fixed_asset":
+            continue
+        b = bal.get(i, 0)
+        if not b and i not in linked:
+            continue
+        a = acq.get(i, 0)
+        low = name.lower()
+        r.accounts.append(AccountRow(i, code, name, b, a, b - a, linked.get(i, []),
+                                     "accumulated" in low or "depreciation" in low))
+    return r
+
+
+def link_account(pf, holding, line_id: int, account_id: int) -> None:
+    """Link a schedule line to an account in the books."""
+    ready(pf)
+    with pf.conn:
+        pf.conn.execute("UPDATE capex_lines SET account_id=? WHERE id=? AND holding_id=?",
+                        (account_id, line_id, holding.id))
+
+
+def add_account_line(pf, holding, account: AccountRow) -> int:
+    """Put a fixed-asset account on the schedule as its own line (acquisition costs under Acquisition Cost)."""
+    acquisition = account.acquisition and not account.since
+    item = account.name.split("–", 1)[-1].strip() if account.name.lower().startswith("capex") else account.name
+    return save_line(pf, holding.id, CapexLine(item, "Acquisition Cost" if acquisition else "Hard Costs",
+                                               account.balance if acquisition else 0, account.id))
