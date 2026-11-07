@@ -1372,22 +1372,49 @@ def test_projections_window(app, tmp_path):
     actual = pfm.Financials("2026-10-31", revenue_ltm=400000_00, opex_ltm=180000_00, nonop_ltm=50000_00,
                             capex_ltm=30000_00)
     d = ProjectionsDialog(v.pf, h, actual)
+    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
+    assert names[0] == "REVENUE" and "Rental income" in names and "Property tax" in names and "CAPEX" in names
     d.add_year()
-    d.table.item(0, 0).setText("2027")
-    d.table.item(0, 1).setText("420,000")
-    d.table.item(0, 2).setText("190000")
-    d.table.item(0, 4).setText("50,000.00")
-    d.table.item(0, 5).setText("$250,000")
-    assert d.table.item(0, 3).text() == "$230,000.00" and d.table.item(0, 6).text() == "($70,000.00)"
+    year = d.years[0]
+
+    def put(name, amount, col=1):
+        d.table.item(names.index(name), col).setText(amount)
+
+    put("Rental income", "400,000")
+    put("Parking", "20000")
+    put("Property tax", "$60,000")
+    put("Insurance", "40,000.00")
+    put("Utilities", "90000")
+    put("Non-Op. Ex (interest, taxes)", "50,000")
+    put("In-suite renovations", "250,000")
+    total = lambda label, col=1: d.table.item(names.index(label), col).text()  # noqa: E731
+    assert total("Total revenue") == "$420,000.00" and total("Total operating expenses") == "$190,000.00"
+    assert total("NOI / EBITDA") == "$230,000.00" and total("Total CapEx") == "$250,000.00"
+    assert total("Net cash flow") == "($70,000.00)"
+    d.add_item("capex")                                 # a capex project of its own
+    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
+    d.table.item(names.index("New item"), 0).setText("Roof replacement")
+    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
+    put("Roof replacement", "80,000")
     d.add_year()   # copies the last year forward
-    assert d.table.item(1, 0).text() == "2028" and d.table.item(1, 1).text() == "$420,000.00"
+    assert d.years == [year, year + 1] and total("Total revenue", 2) == "$420,000.00"
+    assert total("Total CapEx", 2) == "$330,000.00"
     d.save()
-    assert [p.year for p in pfm.projections(v.pf, h.id)] == [2027, 2028]
+    assert [p.year for p in pfm.projections(v.pf, h.id)] == [year, year + 1]
+    p0 = pfm.projections(v.pf, h.id)[0]
+    assert (p0.revenue, p0.opex, p0.nonop, p0.capex) == (420_000_00, 190_000_00, 50_000_00, 330_000_00)
+    lines = {ln.item: ln for ln in pfm.projection_lines(v.pf, h.id)}
+    assert lines["Roof replacement"].kind == "capex" and lines["Rental income"].amounts[year] == 400_000_00
+    d2 = ProjectionsDialog(v.pf, h, actual)            # opens with the items as saved
+    assert [ln.item for ln in d2.state()[1]][:2] == ["Rental income", "Parking"]
     v.refresh()
     v.proj_pick.setCurrentIndex(0)   # portfolio, our 50%
     t = v.proj_table
-    assert t.horizontalHeaderItem(1).text() == "2027 (projected)" and t.item(0, 1).text() == "$210,000.00"
-    assert t.item(6, 1).text() == "($35,000.00)"
+    assert t.horizontalHeaderItem(1).text() == f"{year} (projected)" and t.item(0, 1).text() == "$210,000.00"
+    assert t.item(6, 1).text() == "($75,000.00)"
+    v.proj_pick.setCurrentIndex(1)   # the company: item by item
+    rows = [t.item(r, 0).text().strip() for r in range(t.rowCount())]
+    assert "Rental income" in rows and "Roof replacement" in rows and rows[0] == "REVENUE"
     v.close_portfolio()
 
 

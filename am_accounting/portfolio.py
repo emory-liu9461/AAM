@@ -1363,6 +1363,103 @@ def save_projections(pf: Portfolio, holding_id: int, rows: list[Projection]) -> 
             [(holding_id, p.year, p.revenue, p.opex, p.nonop, p.capex, p.note.strip()) for p in rows])
 
 
+# ---- projection line items: revenue, operating expenses and capex, item by item ----
+
+PROJ_ITEMS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS projection_items (
+    id         INTEGER PRIMARY KEY,
+    holding_id INTEGER NOT NULL,
+    kind       TEXT NOT NULL,              -- revenue | opex | capex
+    item       TEXT NOT NULL,
+    year       INTEGER NOT NULL,
+    amount     INTEGER NOT NULL DEFAULT 0,
+    sort       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_proj_items ON projection_items(holding_id, kind, sort);
+"""
+PROJ_KINDS = {"revenue": "Revenue", "opex": "Operating expenses", "capex": "CapEx"}
+PROJ_STARTERS = {
+    "revenue": ["Rental income", "Parking", "Laundry", "Other income"],
+    "opex": ["Property tax", "Insurance", "Utilities", "Repairs & maintenance", "Property management",
+             "Wages / superintendent", "Other operating"],
+    "capex": ["In-suite renovations", "Common areas", "Building systems"],
+}
+
+
+@dataclass
+class ProjectionLine:
+    """One projected item (e.g. Rental income) with an amount for each year."""
+    kind: str
+    item: str
+    amounts: dict[int, int] = field(default_factory=dict)   # {year: cents}
+
+    def total(self) -> int:
+        return sum(self.amounts.values())
+
+
+def projection_lines(pf: Portfolio, holding_id: int) -> list[ProjectionLine]:
+    pf.conn.executescript(PROJ_ITEMS_SCHEMA)
+    out: dict[tuple[str, str], ProjectionLine] = {}
+    for r in pf.conn.execute("SELECT * FROM projection_items WHERE holding_id=? ORDER BY sort, id", (holding_id,)):
+        ln = out.setdefault((r["kind"], r["item"]), ProjectionLine(r["kind"], r["item"]))
+        ln.amounts[r["year"]] = r["amount"]
+    return list(out.values())
+
+
+def save_projection_plan(pf: Portfolio, holding_id: int, years: list[int], lines: list[ProjectionLine],
+                         nonop: dict[int, int] | None = None, notes: dict[int, str] | None = None) -> None:
+    """Save a company's projections item by item; each year's revenue, Op. Ex and CapEx are the items added up
+    (Non-Op. Ex stays one figure a year)."""
+    if len(years) != len(set(years)):
+        raise ValueError("Each year can only appear once")
+    for ln in lines:
+        if ln.kind not in PROJ_KINDS:
+            raise ValueError(f"Unknown section {ln.kind!r}")
+        if not ln.item.strip():
+            raise ValueError("Each line needs a name")
+        if any(v < 0 for v in ln.amounts.values()):
+            raise ValueError(f"{ln.item}: amounts can't be negative")
+    totals = []
+    for y in sorted(years):
+        get = lambda kind: sum(ln.amounts.get(y, 0) for ln in lines if ln.kind == kind)  # noqa: E731
+        totals.append(Projection(y, get("revenue"), get("opex"), (nonop or {}).get(y, 0), get("capex"),
+                                 (notes or {}).get(y, "")))
+    save_projections(pf, holding_id, totals)          # checks the years; the totals the rest of the app reads
+    pf.conn.executescript(PROJ_ITEMS_SCHEMA)
+    with pf.conn:
+        pf.conn.execute("DELETE FROM projection_items WHERE holding_id=?", (holding_id,))
+        pf.conn.executemany(
+            "INSERT INTO projection_items(holding_id, kind, item, year, amount, sort) VALUES (?,?,?,?,?,?)",
+            [(holding_id, ln.kind, ln.item.strip(), y, ln.amounts.get(y, 0), k)
+             for k, ln in enumerate(lines) for y in sorted(years)])
+
+
+def ltm_lines(company_path: str | Path, as_of: date | None = None) -> list[tuple[str, str, int]]:
+    """[(kind, account name, last twelve months)] — revenue by income account, operating expenses by expense
+    account (interest, depreciation and income taxes left out) — to start projections from."""
+    from .operations import NON_OPERATING
+
+    as_of = as_of or date.today()
+    start = (as_of - timedelta(days=365)) + timedelta(days=1)
+    conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT a.name, a.type, SUM(l.credit_cents - l.debit_cents) FROM journal_lines l JOIN journal_entries e "
+            "ON e.id = l.entry_id JOIN accounts a ON a.id = l.account_id WHERE a.type IN ('income', 'expense') "
+            "AND e.kind != 'opening' AND e.date >= ? AND e.date <= ? GROUP BY a.id ORDER BY a.code",
+            (start.isoformat(), as_of.isoformat())).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for name, typ, net in rows:
+        if any(w in name.lower() for w in NON_OPERATING):
+            continue
+        amt = net if typ == "income" else -net
+        if amt > 0:
+            out.append(("revenue" if typ == "income" else "opex", name, amt))
+    return out
+
+
 def project_from_actuals(f: Financials, first_year: int, years: int, *, revenue_growth: float = 0.0,
                          opex_growth: float = 0.0, nonop_growth: float = 0.0, capex: int | None = None
                          ) -> list[Projection]:

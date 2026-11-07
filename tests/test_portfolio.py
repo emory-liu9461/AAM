@@ -505,3 +505,38 @@ def test_valuation_without_debt_takes_the_financing_loans(tmp_path):
                                          company_value_cents=3_250_000_00, debt_cents=2_000_000_00))
     p = pfm.performance(pf, h, date(2026, 11, 7))
     assert p.debt == 2_000_000_00 and p.value_100 == 1_250_000_00
+
+
+def test_projection_items_from_the_books(tmp_path):
+    from datetime import timedelta
+
+    from am_accounting.books import ParsedTransaction
+
+    b = Books.open(tmp_path / "op.amdb", create=True)
+    bank = b.account_by_code("1000").id
+    rent = b.add_account("4150", "Rental Income", "income", "operating").id
+    tax = b.add_account("6560", "Property Tax", "expense", "operating").id
+    intr = next(a.id for a in b.accounts() if a.name == "Interest Expense")
+    d = date.today() - timedelta(days=30)
+    b.import_transactions(bank, [ParsedTransaction(d, "RENTS", 30_000_00), ParsedTransaction(d, "CITY TAX", -4_000_00),
+                                 ParsedTransaction(d, "BANK INT", -1_000_00)])
+    for t in b.transactions():
+        b.set_category(t.id, {"RENTS": rent, "CITY": tax, "BANK": intr}[t.description.split()[0]], source="manual")
+    b.close()
+    got = pfm.ltm_lines(tmp_path / "op.amdb")
+    assert ("revenue", "Rental Income", 30_000_00) in got and ("opex", "Property Tax", 4_000_00) in got
+    assert not any(name == "Interest Expense" for _k, name, _a in got)          # non-operating: left out
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Op")
+    pf.save_holding(h)
+    lines = [pfm.ProjectionLine("revenue", "Rental Income", {2027: 360_000_00, 2028: 370_000_00}),
+             pfm.ProjectionLine("opex", "Property Tax", {2027: 48_000_00, 2028: 49_000_00}),
+             pfm.ProjectionLine("capex", "Roof", {2027: 80_000_00})]
+    pfm.save_projection_plan(pf, h.id, [2027, 2028], lines, {2027: 12_000_00, 2028: 11_000_00})
+    p27, p28 = pfm.projections(pf, h.id)
+    assert (p27.revenue, p27.opex, p27.nonop, p27.capex) == (360_000_00, 48_000_00, 12_000_00, 80_000_00)
+    assert p28.capex == 0 and p28.net_cash_flow == 370_000_00 - 49_000_00 - 11_000_00
+    assert [ln.item for ln in pfm.projection_lines(pf, h.id)] == ["Rental Income", "Property Tax", "Roof"]
+    with pytest.raises(ValueError):
+        pfm.save_projection_plan(pf, h.id, [2027], [pfm.ProjectionLine("revenue", "X", {2027: -1})])
+    pf.close()
