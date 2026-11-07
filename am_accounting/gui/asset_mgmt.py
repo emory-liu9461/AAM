@@ -957,65 +957,8 @@ def loans_html(widget, rows: list[pfm.Loan], as_of: date, selected: int | None) 
 # ---------------------------------------------------------------------------
 
 
-PROJ_ROWS = ["Revenue", "Op. Ex", "EBITDA", "", "Non-Op. Ex", "CapEx", "Net cash flow"]
-
-
-def fill_projection_lines_table(t: QTableWidget, actual: pfm.Financials | None, rows: list[pfm.Projection],
-                                lines: list[pfm.ProjectionLine], ltm: dict[str, int] | None = None) -> None:
-    """One company's projections item by item: revenue items, operating expense items, capex items (down),
-    the last 12 months actual and each projected year (across), with the totals, NOI and net cash flow."""
-    from .theme import c as tc
-
-    years = [p.year for p in rows]
-    by_year = {p.year: p for p in rows}
-    ltm = ltm or {}
-    out: list[tuple[str, str, list[int | None]]] = []      # (style, label, [actual] + years)
-    act = actual is not None
-    for kind, title in pfm.PROJ_KINDS.items():
-        out.append(("head", title.upper(), []))
-        for ln in (x for x in lines if x.kind == kind):
-            out.append(("item", "    " + ln.item, ([ltm.get(ln.item)] if act else []) +
-                        [ln.amounts.get(y, 0) for y in years]))
-        total_act = {"revenue": actual.revenue_ltm, "opex": actual.opex_ltm,
-                     "capex": actual.capex_ltm}[kind] if act else None
-        out.append(("total", ProjectionsDialog.LABELS[kind], ([total_act] if act else []) +
-                    [getattr(by_year[y], kind) for y in years]))
-        if kind == "opex":
-            out.append(("calc", "NOI / EBITDA", ([actual.ebitda_ltm] if act else []) +
-                        [by_year[y].ebitda for y in years]))
-            out.append(("item", "Non-Op. Ex (interest, taxes)", ([actual.nonop_ltm] if act else []) +
-                        [by_year[y].nonop for y in years]))
-    out.append(("calc", "Net cash flow", ([actual.ebitda_ltm - actual.nonop_ltm - actual.capex_ltm] if act else []) +
-                [by_year[y].net_cash_flow for y in years]))
-    heads = ([] if not act else ["Last 12 months (actual)"]) + [f"{y} (projected)" for y in years]
-    t.clear()
-    t.setColumnCount(len(heads) + 1)
-    t.setRowCount(len(out))
-    t.setHorizontalHeaderLabels([""] + heads)
-    for r_, (style, label, vals) in enumerate(out):
-        head = QTableWidgetItem(label)
-        bold = style in ("head", "total", "calc")
-        if bold:
-            f = head.font()
-            f.setBold(True)
-            head.setFont(f)
-        if style == "head":
-            head.setForeground(QColor(tc("link")))
-        t.setItem(r_, 0, head)
-        for c_, v in enumerate(vals):
-            cell = QTableWidgetItem("" if v is None else fmt_money(v))
-            cell.setTextAlignment(ALIGN_RIGHT)
-            if bold:
-                f = cell.font()
-                f.setBold(True)
-                cell.setFont(f)
-            if style == "calc" and v is not None and v < 0:
-                cell.setForeground(NEGATIVE)
-            t.setItem(r_, c_ + 1, cell)
-    t.setColumnWidth(0, 260)
-    for c_ in range(len(heads)):
-        t.setColumnWidth(c_ + 1, 165)
-    t.verticalHeader().setVisible(False)
+PROJ_ROWS = ["Revenue", "Op. Ex", "EBITDA", "", "Non-Op. Ex", "CapEx", "Net cash flow", "",
+             "Money in: loans & equity", "Money out: debt service & distributions", "Net cash flow after financing"]
 
 
 def fill_projection_table(t: QTableWidget, actual: pfm.Financials | None, rows: list[pfm.Projection],
@@ -1026,16 +969,18 @@ def fill_projection_table(t: QTableWidget, actual: pfm.Financials | None, rows: 
         cap = actual.capex_ltm if capex_actual is None else capex_actual
         cols.append(("Last 12 months (actual)", [actual.revenue_ltm, actual.opex_ltm, actual.ebitda_ltm, None,
                                                   actual.nonop_ltm, cap,
-                                                  actual.ebitda_ltm - actual.nonop_ltm - cap]))
+                                                  actual.ebitda_ltm - actual.nonop_ltm - cap, None, None, None,
+                                                  None]))
     for p in rows:
-        cols.append((f"{p.year} (projected)", [p.revenue, p.opex, p.ebitda, None, p.nonop, p.capex, p.net_cash_flow]))
+        cols.append((f"{p.year} (projected)", [p.revenue, p.opex, p.ebitda, None, p.nonop, p.capex, p.net_cash_flow,
+                                               None, p.fin_in, p.fin_out, p.cash_after_financing]))
     t.clear()
     t.setColumnCount(len(cols) + 1)
     t.setRowCount(len(PROJ_ROWS))
     t.setHorizontalHeaderLabels([""] + [c[0] for c in cols])
     for r_, label in enumerate(PROJ_ROWS):
         head = QTableWidgetItem(label)
-        if label in ("EBITDA", "Net cash flow"):
+        if label in ("EBITDA", "Net cash flow", "Net cash flow after financing"):
             f = head.font()
             f.setBold(True)
             head.setFont(f)
@@ -1046,7 +991,7 @@ def fill_projection_table(t: QTableWidget, actual: pfm.Financials | None, rows: 
             v = vals[r_]
             cell = QTableWidgetItem("" if v is None else fmt_money(v))
             cell.setTextAlignment(ALIGN_RIGHT)
-            if label in ("EBITDA", "Net cash flow"):
+            if label in ("EBITDA", "Net cash flow", "Net cash flow after financing"):
                 f = cell.font()
                 f.setBold(True)
                 cell.setFont(f)
@@ -1105,64 +1050,45 @@ def fill_period_table(t: QTableWidget, months: list[dict]) -> None:
     t.verticalHeader().setVisible(False)
 
 
-class ProjectionsDialog(QDialog):
-    """A company's future years, item by item: revenue lines, operating expense lines and capex projects (years
-    across). Totals, NOI / EBITDA and net cash flow follow; Non-Op. Ex (interest, taxes) is one line a year."""
+class ProjectionGrid(QWidget):
+    """Years across, items down for some of the projection sections (e.g. revenue and operating expenses), with
+    each section's total and the figures that follow from them. Changes are reported with ``changed``."""
 
-    def __init__(self, pf: pfm.Portfolio, holding: pfm.Holding, actual: pfm.Financials | None = None, parent=None):
+    changed = Signal()
+    LABELS = {"revenue": "Total revenue", "opex": "Total operating expenses", "capex": "Total CapEx",
+              "fin_in": "Total money in", "fin_out": "Total money out"}
+
+    def __init__(self, kinds: tuple[str, ...], *, nonop: bool = False, parent=None):
         super().__init__(parent)
-        self.pf, self.holding, self.actual = pf, holding, actual
-        self.setWindowTitle(f"Projections – {holding.name}")
-        self.resize(1180, 640)
+        self.kinds, self.has_nonop = kinds, nonop
         lay = QVBoxLayout(self)
-        intro = QLabel("Future years at 100% of the company, item by item — type each year's amount (e.g. 420000 or "
-                       "420,000.00). Totals, NOI / EBITDA and net cash flow are worked out. "
-                       + (f"Last 12 months actual: revenue {fmt_money(actual.revenue_ltm)}, Op. Ex "
-                          f"{fmt_money(actual.opex_ltm)}, Non-Op. Ex {fmt_money(actual.nonop_ltm)}, CapEx "
-                          f"{fmt_money(actual.capex_ltm)}." if actual else ""))
-        intro.setWordWrap(True)
-        intro.setObjectName("hint")
-        lay.addWidget(intro)
+        lay.setContentsMargins(0, 4, 0, 0)
         self.table = QTableWidget(0, 1)
         self.table.verticalHeader().setVisible(False)
-        self.table.itemChanged.connect(self._recalc)
+        self.table.itemChanged.connect(self._edited)
         lay.addWidget(self.table, 1)
-        btns = QHBoxLayout()
-        for text, slot in [("Add Year", self.add_year), ("Remove Year", self.remove_year),
-                           ("Add Revenue Item", lambda: self.add_item("revenue")),
-                           ("Add Expense Item", lambda: self.add_item("opex")),
-                           ("Add CapEx Item", lambda: self.add_item("capex")),
-                           ("Remove Item", self.remove_item),
-                           ("Fill from Last 12 Months…", self.fill_from_actuals)]:
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        btns.addStretch(1)
-        lay.addLayout(btns)
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        box.accepted.connect(self.save)
-        box.rejected.connect(self.reject)
-        lay.addWidget(box)
-        totals = pfm.projections(pf, holding.id)
-        lines = pfm.projection_lines(pf, holding.id)
-        years = [p.year for p in totals]
-        if totals and not lines:      # projections from before items: one line per section
-            lines = [pfm.ProjectionLine("revenue", "Revenue", {p.year: p.revenue for p in totals}),
-                     pfm.ProjectionLine("opex", "Operating expenses", {p.year: p.opex for p in totals}),
-                     pfm.ProjectionLine("capex", "CapEx", {p.year: p.capex for p in totals})]
-        if not lines:                 # a start: the usual items, no years yet
-            lines = [pfm.ProjectionLine(k, item) for k, items in pfm.PROJ_STARTERS.items() for item in items]
-        self._build(years, lines, {p.year: p.nonop for p in totals})
+        row = QHBoxLayout()
+        for k in kinds:
+            b = QPushButton({"revenue": "Add Revenue Item", "opex": "Add Expense Item", "capex": "Add CapEx Item",
+                             "fin_in": "Add Money In", "fin_out": "Add Money Out"}[k])
+            b.clicked.connect(lambda _=False, k=k: self.add_item(k))
+            row.addWidget(b)
+        rm = QPushButton("Remove Item")
+        rm.clicked.connect(self.remove_item)
+        row.addWidget(rm)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.years: list[int] = []
+        self.roles: list[tuple] = []
 
-    # ---- the grid ----
-    LABELS = {"revenue": "Total revenue", "opex": "Total operating expenses", "capex": "Total CapEx"}
+    def build(self, years: list[int], lines: list[pfm.ProjectionLine], nonop: dict[int, int]) -> None:
+        from .theme import c as tc
 
-    def _build(self, years: list[int], lines: list[pfm.ProjectionLine], nonop: dict[int, int]) -> None:
         t = self.table
         t.blockSignals(True)
         t.clear()
         self.years = sorted(years)
-        self.roles: list[tuple] = []
+        self.roles = []
         t.setColumnCount(len(self.years) + 1)
         t.setHorizontalHeaderLabels(["Item"] + [str(y) for y in self.years])
         t.setRowCount(0)
@@ -1171,20 +1097,17 @@ class ProjectionsDialog(QDialog):
             r_ = t.rowCount()
             t.insertRow(r_)
             name = QTableWidgetItem(label)
-            if not (editable and role[0] == "item"):
+            if role[0] != "item":
                 name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if bold or head:
                 f = name.font()
                 f.setBold(True)
                 name.setFont(f)
             if head:
-                from .theme import c as tc
-
                 name.setForeground(QColor(tc("link")))
             t.setItem(r_, 0, name)
             for c_, y in enumerate(self.years, 1):
-                v = (values or {}).get(y)
-                cell = QTableWidgetItem("" if head else fmt_money(v or 0) if editable else "")
+                cell = QTableWidgetItem("" if head or not editable else fmt_money((values or {}).get(y) or 0))
                 cell.setTextAlignment(ALIGN_RIGHT)
                 if not editable:
                     cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1195,16 +1118,19 @@ class ProjectionsDialog(QDialog):
                 t.setItem(r_, c_, cell)
             self.roles.append(role)
 
-        for kind, title in pfm.PROJ_KINDS.items():
-            row(("head", kind), title.upper(), head=True)
+        for kind in self.kinds:
+            row(("head", kind), pfm.PROJ_KINDS[kind].upper(), head=True)
             for ln in (x for x in lines if x.kind == kind):
                 row(("item", kind), ln.item, ln.amounts, editable=True)
             row(("total", kind), self.LABELS[kind], bold=True)
-            if kind == "opex":
-                row(("calc", "noi"), "NOI / EBITDA", bold=True)
-                row(("nonop",), "Non-Op. Ex (interest, taxes)", nonop, editable=True)
-        row(("calc", "ncf"), "Net cash flow", bold=True)
-        t.setColumnWidth(0, 260)
+        if "opex" in self.kinds:
+            row(("calc", "noi"), "NOI / EBITDA", bold=True)
+        if self.has_nonop:
+            row(("nonop",), "Non-Op. Ex (taxes, other)", nonop, editable=True)
+            row(("calc", "ops"), "Cash flow from operations", bold=True)
+        if "fin_out" in self.kinds:
+            row(("calc", "fin"), "Net financing & equity", bold=True)
+        t.setColumnWidth(0, 340)
         for c_ in range(1, len(self.years) + 1):
             t.setColumnWidth(c_, 140)
         t.blockSignals(False)
@@ -1221,19 +1147,25 @@ class ProjectionsDialog(QDialog):
         it = self.table.item(r_, c_)
         return self._cents(it.text()) if it else 0
 
-    def state(self) -> tuple[list[int], list[pfm.ProjectionLine], dict[int, int]]:
-        """(years, item lines, Non-Op. Ex by year) as the grid has them."""
-        lines, nonop = [], {}
+    def state(self) -> tuple[list[pfm.ProjectionLine], dict[int, int] | None]:
+        lines, nonop = [], None
         for r_, role in enumerate(self.roles):
             if role[0] == "item":
-                name = self.table.item(r_, 0).text().strip()
-                lines.append(pfm.ProjectionLine(role[1], name, {y: self._val(r_, c_)
-                                                                 for c_, y in enumerate(self.years, 1)}))
+                lines.append(pfm.ProjectionLine(role[1], self.table.item(r_, 0).text().strip(),
+                                                {y: self._val(r_, c_) for c_, y in enumerate(self.years, 1)}))
             elif role[0] == "nonop":
                 nonop = {y: self._val(r_, c_) for c_, y in enumerate(self.years, 1)}
-        return self.years, lines, nonop
+        return lines, nonop
 
-    def _recalc(self, *_) -> None:
+    def _edited(self, item=None) -> None:
+        if item is not None and item.column() > 0:     # typed amounts shown as money
+            self.table.blockSignals(True)
+            item.setText(fmt_money(self._cents(item.text())))
+            self.table.blockSignals(False)
+        self._recalc()
+        self.changed.emit()
+
+    def _recalc(self) -> None:
         t = self.table
         t.blockSignals(True)
         for c_, _y in enumerate(self.years, 1):
@@ -1245,44 +1177,27 @@ class ProjectionsDialog(QDialog):
                 elif role[0] == "nonop":
                     nonop = self._val(r_, c_)
             noi = sums["revenue"] - sums["opex"]
-            ncf = noi - nonop - sums["capex"]
+            calc = {"noi": noi, "ops": noi - nonop, "fin": sums["fin_in"] - sums["fin_out"]}
             for r_, role in enumerate(self.roles):
-                v = (sums[role[1]] if role[0] == "total" else noi if role == ("calc", "noi") else
-                     ncf if role == ("calc", "ncf") else None)
+                v = sums[role[1]] if role[0] == "total" else calc.get(role[1]) if role[0] == "calc" else None
                 if v is not None:
                     t.item(r_, c_).setText(fmt_money(v))
                     if role[0] == "calc":
                         t.item(r_, c_).setForeground(NEGATIVE if v < 0 else POSITIVE)
         t.blockSignals(False)
 
-    def add_year(self) -> None:
-        years, lines, nonop = self.state()
-        nxt = (max(years) + 1) if years else date.today().year + 1
-        if years:                     # the last year carried forward
-            for ln in lines:
-                ln.amounts[nxt] = ln.amounts.get(years[-1], 0)
-            nonop[nxt] = nonop.get(years[-1], 0)
-        self._build(years + [nxt], lines, nonop)
-
-    def remove_year(self) -> None:
-        years, lines, nonop = self.state()
-        if not years:
-            return
-        c_ = self.table.currentColumn()
-        drop = years[c_ - 1] if 1 <= c_ <= len(years) else years[-1]
-        self._build([y for y in years if y != drop], lines, nonop)
-
     def add_item(self, kind: str) -> None:
-        years, lines, nonop = self.state()
+        lines, nonop = self.state()
         names = {ln.item for ln in lines if ln.kind == kind}
         name, n = "New item", 2
         while name in names:
             name, n = f"New item {n}", n + 1
         lines.append(pfm.ProjectionLine(kind, name))
-        self._build(years, lines, nonop)
+        self.build(self.years, lines, nonop or {})
         r_ = max(i for i, role in enumerate(self.roles) if role == ("item", kind))
         self.table.setCurrentCell(r_, 0)
         self.table.editItem(self.table.item(r_, 0))
+        self.changed.emit()
 
     def remove_item(self) -> None:
         r_ = self.table.currentRow()
@@ -1291,10 +1206,384 @@ class ProjectionsDialog(QDialog):
         self.table.removeRow(r_)
         del self.roles[r_]
         self._recalc()
+        self.changed.emit()
+
+
+SUMMARY_ROWS = [("Revenue", "revenue"), ("Operating expenses", "opex"), ("NOI / EBITDA", "ebitda"),
+                ("Non-Op. Ex (taxes, other)", "nonop"), ("CapEx", "capex"),
+                ("Cash flow before financing", "net_cash_flow"), ("", None),
+                ("Money in: loans & equity", "fin_in"), ("Money out: debt service & distributions", "fin_out"),
+                ("Net financing & equity", "net_financing"), ("", None),
+                ("Net cash flow after financing", "cash_after_financing")]
+
+
+class ProjectionEditor(QWidget):
+    """A company's projections in four sub-tabs: Summary (everything flowing together), Revenue & OpEx, CapEx and
+    Financing & Equity — edited in place, saved together."""
+
+    saved = Signal()
+
+    def __init__(self, pf: pfm.Portfolio, holding: pfm.Holding, actual: pfm.Financials | None = None, parent=None):
+        super().__init__(parent)
+        self.pf, self.holding, self.actual = pf, holding, actual
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        bar = QHBoxLayout()
+        for text, slot, tip in [
+                ("Add Year", self.add_year, "Another year, the last one carried forward"),
+                ("Remove Year", self.remove_year, "The selected year (or the last)"),
+                ("Fill from Last 12 Months…", self.fill_from_actuals,
+                 "Revenue and expense items from the books, grown by a % a year; capex from the CapEx schedule; "
+                 "interest and principal from the loans"),
+                ("Fill Financing from the Loans", self.fill_financing,
+                 "Each loan's scheduled interest and principal by year (Financing & Cap Table)")]:
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            bar.addWidget(b)
+        bar.addStretch(1)
+        self.dirty_label = QLabel()
+        self.dirty_label.setObjectName("hint")
+        bar.addWidget(self.dirty_label)
+        self.revert_btn = QPushButton("Revert")
+        self.revert_btn.clicked.connect(self.load)
+        bar.addWidget(self.revert_btn)
+        self.save_btn = QPushButton("Save Projections")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self.save)
+        bar.addWidget(self.save_btn)
+        lay.addLayout(bar)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        sw = QWidget()
+        swl = QVBoxLayout(sw)
+        swl.setContentsMargins(0, 4, 0, 0)
+        self.returns_line = QLabel()            # projected IRR / MOIC to the exit
+        self.returns_line.setTextFormat(Qt.TextFormat.RichText)
+        swl.addWidget(self.returns_line)
+        self.summary_table = _table([""], None)
+        swl.addWidget(self.summary_table, 1)
+        self.tabs.addTab(sw, "Summary")
+        self.grids = {"ops": ProjectionGrid(("revenue", "opex"), nonop=True),
+                      "capex": ProjectionGrid(("capex",)),
+                      "fin": ProjectionGrid(("fin_in", "fin_out"))}
+        for key, title in (("ops", "Revenue && OpEx"), ("capex", "CapEx"), ("fin", "Financing && Equity")):
+            self.grids[key].changed.connect(self._changed)
+            self.tabs.addTab(self.grids[key], title)
+        self.tabs.addTab(self._build_exit(), "Exit && Returns")
+        lay.addWidget(self.tabs, 1)
+        self.years: list[int] = []
+        self.load()
+
+    # ---- exit & returns ----
+    def _build_exit(self) -> QWidget:
+        from PySide6.QtWidgets import QTextBrowser
+
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 4, 0, 0)
+        side = QWidget()
+        form = QFormLayout(side)
+        self.x_date = QDateEdit()
+        self.x_date.setCalendarPopup(True)
+        self.x_date.setDisplayFormat("MMM d, yyyy")
+        self.x_date.setToolTip("The planned exit (the same date as the Dashboard's Exit milestone)")
+        from .. import exit_returns as er
+
+        self.x_method = QComboBox()
+        for k, label in er.METHODS.items():
+            self.x_method.addItem(label, k)
+        self.x_basis = QComboBox()
+        for k, label in er.BASES.items():
+            self.x_basis.addItem(label[0].upper() + label[1:], k)
+        self.x_basis.setToolTip("Which projected year's NOI / EBITDA the cap rate or multiple is applied to")
+        self.x_cap = QDoubleSpinBox()
+        self.x_cap.setRange(0, 50)
+        self.x_cap.setDecimals(2)
+        self.x_cap.setSuffix(" % exit cap rate")
+        self.x_mult = QDoubleSpinBox()
+        self.x_mult.setRange(0, 99)
+        self.x_mult.setDecimals(2)
+        self.x_mult.setSuffix(" × NOI / EBITDA")
+        self.x_value = _money_box()
+        self.x_value.setToolTip("An exit value instead of NOI ÷ cap rate ($0 = use the cap rate)")
+        self.x_sell = QDoubleSpinBox()
+        self.x_sell.setRange(0, 49)
+        self.x_sell.setDecimals(2)
+        self.x_sell.setSuffix(" % selling costs")
+        self.x_sched = QCheckBox("Loans' scheduled balance")
+        self.x_debt = _money_box()
+        self.x_debt.setToolTip("The debt repaid from the sale")
+        for wdg in (self.x_cap, self.x_mult, self.x_value, self.x_sell, self.x_debt):
+            wdg.valueChanged.connect(self._exit_changed)
+        for wdg in (self.x_method, self.x_basis):
+            wdg.currentIndexChanged.connect(self._exit_changed)
+        self.x_date.dateChanged.connect(self._exit_changed)
+        self.x_sched.toggled.connect(self._exit_changed)
+        form.addRow("Exit date:", self.x_date)
+        form.addRow("Valued by:", self.x_method)
+        form.addRow("Applied to:", self.x_basis)
+        form.addRow("Exit cap rate:", self.x_cap)
+        form.addRow("Exit multiple:", self.x_mult)
+        form.addRow("… or exit value:", self.x_value)
+        form.addRow("Selling costs:", self.x_sell)
+        form.addRow("Debt repaid at exit:", self.x_debt)
+        form.addRow("", self.x_sched)
+        hint = QLabel("The exit value is the projected NOI / EBITDA at the exit ÷ the cap rate (or × the multiple). "
+                      "At the exit the asset is sold and the company wound up: the loans and every other debt "
+                      "account repaid, receivables collected, payables paid and all its cash paid out. "
+                      "The owners' money in is "
+                      "the cap table's paid-in amounts on their dates; each year to the exit adds the cash flow "
+                      "after debt service; the sale adds what's left after selling costs and repaying the debt.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        side.setMaximumWidth(420)
+        row.addWidget(side)
+        self.returns_page = QTextBrowser()
+        self.returns_page.setFrameShape(QTextBrowser.Shape.NoFrame)
+        row.addWidget(self.returns_page, 1)
+        return w
+
+    def _load_exit(self) -> None:
+        from .. import exit_returns as er
+
+        a = er.get(self.pf, self.holding)
+        widgets = (self.x_date, self.x_method, self.x_basis, self.x_cap, self.x_mult, self.x_value, self.x_sell,
+                   self.x_debt, self.x_sched)
+        for wdg in widgets:
+            wdg.blockSignals(True)
+        self.x_method.setCurrentIndex(max(0, self.x_method.findData(a.method)))
+        self.x_basis.setCurrentIndex(max(0, self.x_basis.findData(a.basis)))
+        self.x_mult.setValue(a.multiple)
+        d = date.fromisoformat(a.exit_date) if a.exit_date else date(
+            (max(self.years) if self.years else date.today().year + 5), 12, 31)
+        self.x_date.setDate(QDate(d.year, d.month, d.day))
+        self.x_cap.setValue(a.exit_cap_pct)
+        self.x_value.setValue(a.exit_value / 100)
+        self.x_sell.setValue(a.selling_pct)
+        self.x_sched.setChecked(a.debt_at_exit is None)
+        self.x_debt.setValue((a.debt_at_exit or 0) / 100)
+        for wdg in widgets:
+            wdg.blockSignals(False)
+
+    def exit_assumptions(self):
+        from .. import exit_returns as er
+
+        return er.ExitAssumptions(_iso(self.x_date.date()), self.x_cap.value(), round(self.x_value.value() * 100),
+                                  self.x_sell.value(), None if self.x_sched.isChecked() else
+                                  round(self.x_debt.value() * 100), self.x_method.currentData(),
+                                  self.x_mult.value(), self.x_basis.currentData())
+
+    def _exit_changed(self, *_) -> None:
+        self._fill_returns()
+        self._set_dirty(True)
+
+    def returns(self):
+        from .. import exit_returns as er
+
+        years, lines, nonop = self.collect()
+        return er.projected_returns(self.pf, self.holding, years, lines, nonop, self.exit_assumptions())
+
+    def _fill_returns(self) -> None:
+        """The owners' cash flows to the exit, and the IRR / MOIC."""
+        import html as _html
+
+        from .theme import c as tc
+
+        r = self.returns()
+        self.x_debt.setEnabled(not self.x_sched.isChecked())
+        if self.x_sched.isChecked():
+            self.x_debt.blockSignals(True)
+            self.x_debt.setValue(r.debt_repaid / 100)
+            self.x_debt.blockSignals(False)
+        by_cap = self.x_method.currentData() == "cap"
+        self.x_cap.setEnabled(not self.x_value.value() and by_cap)
+        self.x_mult.setEnabled(not self.x_value.value() and not by_cap)
+        text, muted, red, green, accent = (self.palette().text().color().name(), tc("muted"), tc("red"),
+                                           tc("green"), tc("link"))
+        esc = _html.escape
+
+        def m(c):
+            return f"<span style='color:{red}'>({fmt_money(-c)})</span>" if c < 0 else fmt_money(c)
+
+        irr = f"{r.irr * 100:.1f}%" if r.irr is not None else "—"
+        moic = f"{r.moic:.2f}x" if r.moic is not None else "—"
+        how = ("" if self.x_value.value() or not r.exit_value else
+               f" <span style='color:{muted}'>at a {self.x_cap.value():g}% cap rate</span>" if by_cap else
+               f" <span style='color:{muted}'>at {self.x_mult.value():g}×</span>")
+        rows = [("Exit date", r.exit_date.strftime("%b %d, %Y")),
+                (f"NOI / EBITDA ({r.noi_year} projected)", m(r.exit_noi)),
+                ("Exit value", m(r.exit_value) + how),
+                ("Less selling costs", m(-r.selling_costs)), ("Less loans repaid", m(-r.debt_repaid))]
+        if r.other_debt:
+            rows.append(("Less other debt in the books", m(-r.other_debt)))
+        if r.receivables:
+            rows.append(("Plus receivables collected", m(r.receivables)))
+        if r.payables:
+            rows.append(("Less payables paid", m(-r.payables)))
+        if r.cash:
+            rows.append(("Plus the company's cash, paid out", m(r.cash)))
+        rows.append(("<b>To the owners at the exit</b>", f"<b>{m(r.net_proceeds)}</b>"))
+        out = [f"<p style='color:{accent}; font-size:8.5pt; font-weight:700; margin:0 0 4px 0'>EXIT</p>",
+               f"<table cellspacing='0' cellpadding='2' style='color:{text}'>"]
+        out += [f"<tr><td style='padding-right:28px; color:{muted}'>{a}</td><td align='right'>{b}</td></tr>"
+                for a, b in rows]
+        out.append("</table>")
+        colour = green if (r.irr or 0) > 0 else red
+        out.append(f"<p style='color:{accent}; font-size:8.5pt; font-weight:700; margin:14px 0 4px 0'>RETURNS "
+                   f"<span style='color:{muted}; font-weight:400'>to the owners, 100% of the company</span></p>"
+                   f"<p style='font-size:13pt; margin:0'><b style='color:{colour}'>IRR {irr}</b> &nbsp; · &nbsp; "
+                   f"<b>MOIC {moic}</b> &nbsp; · &nbsp; profit {m(r.profit)}</p>"
+                   f"<p style='color:{muted}; margin:2px 0 0 0'>money in {fmt_money(r.money_in)} · money back "
+                   f"{fmt_money(r.money_back)}</p>")
+        if r.error:
+            out.append(f"<p style='color:{red}'>{esc(r.error)}</p>")
+        out.append(f"<p style='color:{accent}; font-size:8.5pt; font-weight:700; margin:14px 0 4px 0'>CASH FLOWS TO "
+                   f"THE OWNERS</p><table cellspacing='0' cellpadding='2' style='color:{text}'>")
+        out += [f"<tr><td style='padding-right:20px; color:{muted}'>{d:%b %d, %Y}</td><td style='padding-right:28px'>"
+                f"{esc(w)}</td><td align='right'>{m(v)}</td></tr>" for d, v, w in r.flows]
+        out.append("</table>")
+        self.returns_page.setHtml("".join(out))
+        self.returns_line.setText(f"Exit {r.exit_date:%b %Y}: projected <b style='color:{colour}'>IRR {irr}</b> · "
+                                  f"<b>MOIC {moic}</b> · profit {m(r.profit)} — Exit && Returns for the details"
+                                  .replace("&&", "&amp;"))
+
+    # ---- the model: years, every line, Non-Op. Ex ----
+    def collect(self) -> tuple[list[int], list[pfm.ProjectionLine], dict[int, int]]:
+        lines: list[pfm.ProjectionLine] = []
+        nonop: dict[int, int] = {}
+        for g in self.grids.values():
+            ls, n = g.state()
+            lines += ls
+            if n is not None:
+                nonop = n
+        order = list(pfm.PROJ_KINDS)
+        lines.sort(key=lambda ln: order.index(ln.kind))
+        return list(self.years), lines, nonop
+
+    def _show(self, years: list[int], lines: list[pfm.ProjectionLine], nonop: dict[int, int]) -> None:
+        self.years = sorted(years)
+        for g in self.grids.values():
+            g.blockSignals(True)
+            g.build(self.years, [ln for ln in lines if ln.kind in g.kinds], nonop)
+            g.blockSignals(False)
+        self._fill_summary()
+
+    def load(self) -> None:
+        totals = pfm.projections(self.pf, self.holding.id)
+        lines = pfm.projection_lines(self.pf, self.holding.id)
+        years = [p.year for p in totals]
+        if totals and not lines:      # projections from before items: one line per section
+            lines = [pfm.ProjectionLine("revenue", "Revenue", {p.year: p.revenue for p in totals}),
+                     pfm.ProjectionLine("opex", "Operating expenses", {p.year: p.opex for p in totals}),
+                     pfm.ProjectionLine("capex", "CapEx", {p.year: p.capex for p in totals})]
+        for kind, items in pfm.PROJ_STARTERS.items():      # the usual items in any empty section
+            if not any(ln.kind == kind for ln in lines):
+                lines += [pfm.ProjectionLine(kind, item) for item in items]
+        self.years = sorted(years)
+        self._load_exit()
+        self._show(years, lines, {p.year: p.nonop for p in totals})
+        self._set_dirty(False)
+
+    def _set_dirty(self, on: bool) -> None:
+        self.dirty = on
+        self.dirty_label.setText("Unsaved changes" if on else "")
+        self.revert_btn.setEnabled(on)
+
+    def _changed(self) -> None:
+        self._fill_summary()
+        self._set_dirty(True)
+
+    def totals(self) -> list[pfm.Projection]:
+        years, lines, nonop = self.collect()
+        out = []
+        for y in years:
+            get = lambda kind: sum(ln.amounts.get(y, 0) for ln in lines if ln.kind == kind)  # noqa: E731
+            out.append(pfm.Projection(y, get("revenue"), get("opex"), nonop.get(y, 0), get("capex"), "",
+                                      get("fin_in"), get("fin_out")))
+        return out
+
+    def _fill_summary(self) -> None:
+        """Everything flowing together: revenue → NOI → capex → financing → net cash flow (and the last 12 months)."""
+        rows = self.totals()
+        a = self.actual
+        heads = (["Last 12 months (actual)"] if a else []) + [f"{p.year} (projected)" for p in rows]
+        t = self.summary_table
+        t.clear()
+        t.setColumnCount(len(heads) + 1)
+        t.setRowCount(len(SUMMARY_ROWS))
+        t.setHorizontalHeaderLabels([""] + heads)
+        act = {"revenue": a.revenue_ltm, "opex": a.opex_ltm, "ebitda": a.ebitda_ltm, "nonop": a.nonop_ltm,
+               "capex": a.capex_ltm, "net_cash_flow": a.ebitda_ltm - a.nonop_ltm - a.capex_ltm} if a else {}
+        for r_, (label, attr) in enumerate(SUMMARY_ROWS):
+            bold = attr in ("ebitda", "net_cash_flow", "net_financing", "cash_after_financing")
+            head = QTableWidgetItem(label)
+            if bold:
+                f = head.font()
+                f.setBold(True)
+                head.setFont(f)
+            t.setItem(r_, 0, head)
+            if attr is None:
+                t.setRowHeight(r_, 10)
+                continue
+            vals = ([act.get(attr)] if a else []) + [getattr(p, attr) for p in rows]
+            for c_, v in enumerate(vals):
+                cell = QTableWidgetItem("" if v is None else fmt_money(v))
+                cell.setTextAlignment(ALIGN_RIGHT)
+                if bold:
+                    f = cell.font()
+                    f.setBold(True)
+                    cell.setFont(f)
+                    if v is not None and v < 0:
+                        cell.setForeground(NEGATIVE)
+                t.setItem(r_, c_ + 1, cell)
+        t.setColumnWidth(0, 280)
+        for c_ in range(len(heads)):
+            t.setColumnWidth(c_ + 1, 165)
+        if hasattr(self, "x_date"):
+            self._fill_returns()
+
+    # ---- actions ----
+    def add_year(self) -> None:
+        years, lines, nonop = self.collect()
+        nxt = (max(years) + 1) if years else date.today().year + 1
+        if years:                     # the last year carried forward
+            for ln in lines:
+                ln.amounts[nxt] = ln.amounts.get(years[-1], 0)
+            nonop[nxt] = nonop.get(years[-1], 0)
+        self._show(years + [nxt], lines, nonop)
+        self._set_dirty(True)
+
+    def remove_year(self) -> None:
+        years, lines, nonop = self.collect()
+        if not years:
+            return
+        g = self.tabs.currentWidget()
+        c_ = g.table.currentColumn() if isinstance(g, ProjectionGrid) else -1
+        drop = years[c_ - 1] if 1 <= c_ <= len(years) else years[-1]
+        self._show([y for y in years if y != drop], lines, nonop)
+        self._set_dirty(True)
+
+    def fill_financing(self) -> None:
+        years, lines, nonop = self.collect()
+        if not years:
+            error(self, "No years yet", "Add the years first (Add Year or Fill from Last 12 Months…).")
+            return
+        new = pfm.loan_lines(self.pf, self.holding, years)
+        if not new:
+            info(self, "No loan payments", "No loan with terms on Financing & Cap Table pays anything in these years.")
+            return
+        names = {ln.item for ln in new}
+        lines = [ln for ln in lines if not (ln.kind == "fin_out" and (
+            ln.item in names or (ln.item in ("Interest", "Principal repayments") and not ln.total())))] + new
+        self._show(years, lines, nonop)
+        self.tabs.setCurrentWidget(self.grids["fin"])
+        self._set_dirty(True)
 
     def fill_from_actuals(self) -> None:
         """Revenue and expense items from the books' last 12 months (one per account), grown by a % a year; capex
-        from the CapEx schedule's cost to complete, spread over the first years."""
+        from the CapEx schedule's cost to complete, spread over the first years; financing from the loans."""
         from PySide6.QtWidgets import QSpinBox
 
         from .. import capex as cx
@@ -1349,8 +1638,8 @@ class ProjectionsDialog(QDialog):
         groups: dict[str, int] = {}          # by line (a unit's cost under its line)
         for ln in cx.lines(self.pf, self.holding):
             if ln.to_complete > 0:
-                groups[ln.label if ln.parent_id is None else ln.parent_item] = \
-                    groups.get(ln.label if ln.parent_id is None else ln.parent_item, 0) + ln.to_complete
+                key = ln.label if ln.parent_id is None else ln.parent_item
+                groups[key] = groups.get(key, 0) + ln.to_complete
         k = min(spread.value(), len(years))
         for name, left in groups.items():
             each = round(left / k)
@@ -1358,18 +1647,50 @@ class ProjectionsDialog(QDialog):
                                                             if i < k else 0 for i, y in enumerate(years)}))
         if not any(ln.kind == "capex" for ln in lines) and self.actual is not None:
             lines.append(pfm.ProjectionLine("capex", "CapEx", {y: self.actual.capex_ltm for y in years}))
+        lines += pfm.loan_lines(self.pf, self.holding, years)
+        _y, old, _n = self.collect()          # keep what was typed for money in and distributions
+        lines += [ln for ln in old if ln.kind == "fin_in" or (ln.kind == "fin_out" and ln.item ==
+                                                               "Distributions to owners")]
         nonop_base = self.actual.nonop_ltm if self.actual is not None else 0
-        self._build(years, lines, {y: grow(nonop_base, ng.value(), i) for i, y in enumerate(years)})
+        self._show(years, lines, {y: grow(nonop_base, ng.value(), i) for i, y in enumerate(years)})
+        self._set_dirty(True)
 
-    def save(self) -> None:
-        years, lines, nonop = self.state()
+    def save(self) -> bool:
+        years, lines, nonop = self.collect()
         lines = [ln for ln in lines if ln.item]
+        from .. import exit_returns as er
+
         try:
             pfm.save_projection_plan(self.pf, self.holding.id, years, lines, nonop)
+            er.save(self.pf, self.holding, self.exit_assumptions())
         except ValueError as e:
             error(self, "Couldn't save the projections", str(e))
-            return
-        self.accept()
+            return False
+        self._set_dirty(False)
+        self.saved.emit()
+        return True
+
+
+class ProjectionsDialog(QDialog):
+    """The projection editor in a window (Summary, Revenue & OpEx, CapEx, Financing & Equity)."""
+
+    def __init__(self, pf: pfm.Portfolio, holding: pfm.Holding, actual: pfm.Financials | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Projections – {holding.name}")
+        self.resize(1180, 660)
+        lay = QVBoxLayout(self)
+        self.editor = ProjectionEditor(pf, holding, actual, self)
+        self.editor.save_btn.hide()
+        self.editor.revert_btn.hide()
+        lay.addWidget(self.editor, 1)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self.save)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def save(self) -> None:
+        if self.editor.save():
+            self.accept()
 
 
 def _scroll(page: QWidget) -> QWidget:
@@ -1874,17 +2195,19 @@ class AssetManagementView(QWidget):
         self.proj_pick.setMinimumWidth(280)
         self.proj_pick.currentIndexChanged.connect(lambda *_: self._fill_projections())
         prow.addWidget(self.proj_pick)
-        edit_p = QPushButton("Edit Projections…")
-        edit_p.clicked.connect(self._edit_projections)
-        prow.addWidget(edit_p)
         prow.addStretch(1)
         pl.addLayout(prow)
         self.proj_note = QLabel()
         self.proj_note.setObjectName("hint")
         self.proj_note.setWordWrap(True)
         pl.addWidget(self.proj_note)
+        from PySide6.QtWidgets import QStackedWidget
+
+        self.proj_stack = QStackedWidget()      # the portfolio's total, or one company's editor
         self.proj_table = _table([""], None)
-        pl.addWidget(self.proj_table, 1)
+        self.proj_stack.addWidget(self.proj_table)
+        pl.addWidget(self.proj_stack, 1)
+        self.proj_editor: ProjectionEditor | None = None
         self.tabs.addTab(pv, "Projections")
 
         # Holdings
@@ -2512,33 +2835,37 @@ class AssetManagementView(QWidget):
         self._fill_projections()
 
     def _fill_projections(self) -> None:
+        """The portfolio's projections added up (at our share), or one company's: Summary, Revenue & OpEx, CapEx and
+        Financing & Equity, edited in place."""
         hid = self.proj_pick.currentData()
         perfs = self.summary.performances if self.summary else []
+        if self.proj_editor is not None and self.proj_editor.dirty and \
+                self.proj_editor.holding.id != hid and confirm(
+                    self, "Unsaved projections", f"Save the changes to {self.proj_editor.holding.name}'s "
+                                                 "projections first?"):
+            self.proj_editor.save()
         if hid is None:
             rows = list(pfm.portfolio_projections(self.pf, **self._filter()).values())
             c = self.summary.consolidated if self.summary else None
             fill_projection_table(self.proj_table, c, rows, self.summary.capex_req_share if c else None)
+            self.proj_stack.setCurrentWidget(self.proj_table)
             self.proj_note.setText("Every active holding's projected years at our ownership share, added up, next to the "
-                                   "last 12 months actual. Pick a company to see (and edit) its own.")
-        else:
-            p = next((x for x in perfs if x.holding.id == hid), None)
-            if p is None:
-                return
-            lines = pfm.projection_lines(self.pf, hid)
-            if lines:                      # item by item
-                ltm = {}
-                if p.has_books:
-                    try:
-                        ltm = {name: amt for _k, name, amt in pfm.ltm_lines(p.holding.company_path,
-                                                                            self._as_of_date())}
-                    except Exception:  # noqa: BLE001
-                        ltm = {}
-                fill_projection_lines_table(self.proj_table, p.financials if p.has_books else None,
-                                            pfm.projections(self.pf, hid), lines, ltm)
-            else:
-                fill_projection_table(self.proj_table, p.financials if p.has_books else None,
-                                      pfm.projections(self.pf, hid), p.capex_req if p.has_books else None)
-            self.proj_note.setText(f"{p.holding.name} at 100%. Net cash flow = EBITDA − Non-Op. Ex − CapEx.")
+                                   "last 12 months actual. Pick a company to enter its own: revenue & opex, capex, "
+                                   "and financing & equity, all flowing into its summary.")
+            return
+        p = next((x for x in perfs if x.holding.id == hid), None)
+        if p is None:
+            return
+        if self.proj_editor is not None:
+            self.proj_stack.removeWidget(self.proj_editor)
+            self.proj_editor.deleteLater()
+        self.proj_editor = ProjectionEditor(self.pf, p.holding, p.financials if p.has_books else None)
+        self.proj_editor.saved.connect(lambda: self.proj_note.setText(
+            f"{p.holding.name} at 100% — saved. The portfolio total and the Dashboard use these projections."))
+        self.proj_stack.addWidget(self.proj_editor)
+        self.proj_stack.setCurrentWidget(self.proj_editor)
+        self.proj_note.setText(f"{p.holding.name} at 100%. Enter Revenue & OpEx, CapEx and Financing & Equity by "
+                               "year; the Summary shows them flowing together to the net cash flow after financing.")
 
     def _edit_projections(self) -> None:
         hid = self.proj_pick.currentData()

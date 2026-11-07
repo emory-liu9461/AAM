@@ -358,8 +358,10 @@ def company_financials(company_path: str | Path, as_of: date | None = None) -> F
         start = (as_of - timedelta(days=365) + timedelta(days=1)).isoformat()
         period = books.ledger_totals(start=start, end=as_of.isoformat())
         totals = books.ledger_totals(end=as_of.isoformat())
-        ar_ids = rx.control_ids(books, "invoice") if books._has_table("documents") else set()
-        ap_ids = rx.control_ids(books, "bill") if books._has_table("documents") else set()
+        try:            # the AR / AP accounts (with or without invoices and bills)
+            ar_ids, ap_ids = rx.control_ids(books, "invoice"), rx.control_ids(books, "bill")
+        except Exception:  # noqa: BLE001
+            ar_ids, ap_ids = set(), set()
         da = ("depreciation", "amortization", "amortisation")
         for a in books.accounts():
             net = totals.get(a.id, 0)
@@ -1312,9 +1314,20 @@ CREATE TABLE IF NOT EXISTS projections (
     nonop      INTEGER NOT NULL DEFAULT 0,   -- interest, income taxes, other non-operating expenses
     capex      INTEGER NOT NULL DEFAULT 0,   -- capital expenditure spend
     note       TEXT NOT NULL DEFAULT '',
+    fin_in     INTEGER NOT NULL DEFAULT 0,   -- money in: new loans, equity contributions
+    fin_out    INTEGER NOT NULL DEFAULT 0,   -- money out: interest, principal repaid, distributions
     PRIMARY KEY (holding_id, year)
 );
 """
+
+
+def _proj_ready(pf) -> None:
+    pf.conn.executescript(PROJ_SCHEMA)
+    cols = {r[1] for r in pf.conn.execute("PRAGMA table_info(projections)")}
+    with pf.conn:
+        for c in ("fin_in", "fin_out"):
+            if c not in cols:
+                pf.conn.execute(f"ALTER TABLE projections ADD COLUMN {c} INTEGER NOT NULL DEFAULT 0")
 
 
 @dataclass
@@ -1325,6 +1338,8 @@ class Projection:
     nonop: int = 0
     capex: int = 0
     note: str = ""
+    fin_in: int = 0           # financing & equity in (new loans, equity contributions)
+    fin_out: int = 0          # financing & equity out (interest, principal, distributions)
 
     @property
     def ebitda(self) -> int:
@@ -1332,16 +1347,26 @@ class Projection:
 
     @property
     def net_cash_flow(self) -> int:
+        """Before financing: EBITDA − Non-Op. Ex − CapEx."""
         return self.ebitda - self.nonop - self.capex
+
+    @property
+    def net_financing(self) -> int:
+        return self.fin_in - self.fin_out
+
+    @property
+    def cash_after_financing(self) -> int:
+        return self.net_cash_flow + self.net_financing
 
     def scaled(self, share: float) -> "Projection":
         return Projection(self.year, round(self.revenue * share), round(self.opex * share), round(self.nonop * share),
-                          round(self.capex * share), self.note)
+                          round(self.capex * share), self.note, round(self.fin_in * share),
+                          round(self.fin_out * share))
 
 
 def projections(pf: Portfolio, holding_id: int) -> list[Projection]:
-    pf.conn.executescript(PROJ_SCHEMA)
-    return [Projection(r["year"], r["revenue"], r["opex"], r["nonop"], r["capex"], r["note"])
+    _proj_ready(pf)
+    return [Projection(r["year"], r["revenue"], r["opex"], r["nonop"], r["capex"], r["note"], r["fin_in"], r["fin_out"])
             for r in pf.conn.execute("SELECT * FROM projections WHERE holding_id=? ORDER BY year", (holding_id,))]
 
 
@@ -1353,14 +1378,16 @@ def save_projections(pf: Portfolio, holding_id: int, rows: list[Projection]) -> 
     for p in rows:
         if not 1900 <= p.year <= 2200:
             raise ValueError(f"{p.year} isn't a valid year")
-        if min(p.revenue, p.opex, p.nonop, p.capex) < 0:
+        if min(p.revenue, p.opex, p.nonop, p.capex, p.fin_in, p.fin_out) < 0:
             raise ValueError(f"{p.year}: amounts can't be negative")
-    pf.conn.executescript(PROJ_SCHEMA)
+    _proj_ready(pf)
     with pf.conn:
         pf.conn.execute("DELETE FROM projections WHERE holding_id=?", (holding_id,))
         pf.conn.executemany(
-            "INSERT INTO projections(holding_id, year, revenue, opex, nonop, capex, note) VALUES (?,?,?,?,?,?,?)",
-            [(holding_id, p.year, p.revenue, p.opex, p.nonop, p.capex, p.note.strip()) for p in rows])
+            "INSERT INTO projections(holding_id, year, revenue, opex, nonop, capex, note, fin_in, fin_out) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            [(holding_id, p.year, p.revenue, p.opex, p.nonop, p.capex, p.note.strip(), p.fin_in, p.fin_out)
+             for p in rows])
 
 
 # ---- projection line items: revenue, operating expenses and capex, item by item ----
@@ -1377,12 +1404,15 @@ CREATE TABLE IF NOT EXISTS projection_items (
 );
 CREATE INDEX IF NOT EXISTS ix_proj_items ON projection_items(holding_id, kind, sort);
 """
-PROJ_KINDS = {"revenue": "Revenue", "opex": "Operating expenses", "capex": "CapEx"}
+PROJ_KINDS = {"revenue": "Revenue", "opex": "Operating expenses", "capex": "CapEx",
+              "fin_in": "Money in: loans & equity", "fin_out": "Money out: debt service & distributions"}
 PROJ_STARTERS = {
     "revenue": ["Rental income", "Parking", "Laundry", "Other income"],
     "opex": ["Property tax", "Insurance", "Utilities", "Repairs & maintenance", "Property management",
              "Wages / superintendent", "Other operating"],
     "capex": ["In-suite renovations", "Common areas", "Building systems"],
+    "fin_in": ["New loans / refinancing", "Equity contributions"],
+    "fin_out": ["Interest", "Principal repayments", "Distributions to owners"],
 }
 
 
@@ -1423,7 +1453,7 @@ def save_projection_plan(pf: Portfolio, holding_id: int, years: list[int], lines
     for y in sorted(years):
         get = lambda kind: sum(ln.amounts.get(y, 0) for ln in lines if ln.kind == kind)  # noqa: E731
         totals.append(Projection(y, get("revenue"), get("opex"), (nonop or {}).get(y, 0), get("capex"),
-                                 (notes or {}).get(y, "")))
+                                 (notes or {}).get(y, ""), get("fin_in"), get("fin_out")))
     save_projections(pf, holding_id, totals)          # checks the years; the totals the rest of the app reads
     pf.conn.executescript(PROJ_ITEMS_SCHEMA)
     with pf.conn:
@@ -1432,6 +1462,21 @@ def save_projection_plan(pf: Portfolio, holding_id: int, years: list[int], lines
             "INSERT INTO projection_items(holding_id, kind, item, year, amount, sort) VALUES (?,?,?,?,?,?)",
             [(holding_id, ln.kind, ln.item.strip(), y, ln.amounts.get(y, 0), k)
              for k, ln in enumerate(lines) for y in sorted(years)])
+
+
+def loan_lines(pf: Portfolio, h: Holding, years: list[int]) -> list[ProjectionLine]:
+    """Financing & equity out from the loans entered: each year's scheduled interest and principal (from the
+    amortization tables), one pair of lines per loan."""
+    out = []
+    for ln in loans(pf, h, with_books=False):
+        by = {r.number: r for r in schedule_by_year(amortization_schedule(ln))}
+        name = f"{ln.lender}" if ln.lender else ln.kind
+        if any(by.get(y) for y in years):
+            out.append(ProjectionLine("fin_out", f"Interest – {name}", {y: by[y].interest if y in by else 0
+                                                                        for y in years}))
+            out.append(ProjectionLine("fin_out", f"Principal – {name}", {y: by[y].principal if y in by else 0
+                                                                         for y in years}))
+    return out
 
 
 def ltm_lines(company_path: str | Path, as_of: date | None = None) -> list[tuple[str, str, int]]:
@@ -1475,7 +1520,7 @@ def project_from_actuals(f: Financials, first_year: int, years: int, *, revenue_
 def portfolio_projections(pf: Portfolio, *, owner: str | None = None, manager: str | None = None, **which
                           ) -> dict[int, Projection]:
     """Every active holding's projections at our ownership share, added up by year."""
-    pf.conn.executescript(PROJ_SCHEMA)
+    _proj_ready(pf)
     total: dict[int, Projection] = {}
     for h in select(pf, owner=owner, manager=manager, **which):
         if h.status != "active":
@@ -1487,6 +1532,8 @@ def portfolio_projections(pf: Portfolio, *, owner: str | None = None, manager: s
             t.opex += s.opex
             t.nonop += s.nonop
             t.capex += s.capex
+            t.fin_in += s.fin_in
+            t.fin_out += s.fin_out
     return dict(sorted(total.items()))
 
 

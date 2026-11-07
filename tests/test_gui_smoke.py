@@ -1363,58 +1363,91 @@ def test_waterfall_tab(app, tmp_path):
 
 
 def test_projections_window(app, tmp_path):
+    from datetime import date
+
+    from PySide6.QtCore import QDate
+
     from am_accounting import portfolio as pfm
-    from am_accounting.gui.asset_mgmt import AssetManagementView, ProjectionsDialog
+    from am_accounting.gui.asset_mgmt import AssetManagementView, ProjectionEditor, ProjectionsDialog
 
     v = AssetManagementView(tmp_path / "pf.ampf", lambda: [])
     h = pfm.Holding("Lakeshore", "Real estate", 50)
     v.pf.save_holding(h)
+    pfm.save_loan(v.pf, h.id, pfm.Loan("First National", "Mortgage", 1_000_000_00, rate_pct=5.0,
+                                       start_date=f"{date.today().year}-01-01", term_months=60, amort_months=300))
     actual = pfm.Financials("2026-10-31", revenue_ltm=400000_00, opex_ltm=180000_00, nonop_ltm=50000_00,
                             capex_ltm=30000_00)
     d = ProjectionsDialog(v.pf, h, actual)
-    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
-    assert names[0] == "REVENUE" and "Rental income" in names and "Property tax" in names and "CAPEX" in names
-    d.add_year()
-    year = d.years[0]
+    e = d.editor
+    assert [e.tabs.tabText(i) for i in range(e.tabs.count())] == ["Summary", "Revenue && OpEx", "CapEx",
+                                                                  "Financing && Equity", "Exit && Returns"]
+    e.add_year()
+    year = e.years[0]
 
-    def put(name, amount, col=1):
-        d.table.item(names.index(name), col).setText(amount)
+    def put(grid, name, amount, col=1):
+        t = e.grids[grid].table
+        names = [t.item(r, 0).text() for r in range(t.rowCount())]
+        t.item(names.index(name), col).setText(amount)
 
-    put("Rental income", "400,000")
-    put("Parking", "20000")
-    put("Property tax", "$60,000")
-    put("Insurance", "40,000.00")
-    put("Utilities", "90000")
-    put("Non-Op. Ex (interest, taxes)", "50,000")
-    put("In-suite renovations", "250,000")
-    total = lambda label, col=1: d.table.item(names.index(label), col).text()  # noqa: E731
-    assert total("Total revenue") == "$420,000.00" and total("Total operating expenses") == "$190,000.00"
-    assert total("NOI / EBITDA") == "$230,000.00" and total("Total CapEx") == "$250,000.00"
-    assert total("Net cash flow") == "($70,000.00)"
-    d.add_item("capex")                                 # a capex project of its own
-    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
-    d.table.item(names.index("New item"), 0).setText("Roof replacement")
-    names = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
-    put("Roof replacement", "80,000")
-    d.add_year()   # copies the last year forward
-    assert d.years == [year, year + 1] and total("Total revenue", 2) == "$420,000.00"
-    assert total("Total CapEx", 2) == "$330,000.00"
+    def get(grid, name, col=1):
+        t = e.grids[grid].table
+        names = [t.item(r, 0).text() for r in range(t.rowCount())]
+        return t.item(names.index(name), col).text()
+
+    put("ops", "Rental income", "400,000")
+    put("ops", "Parking", "20000")
+    put("ops", "Property tax", "$60,000")
+    put("ops", "Insurance", "40,000.00")
+    put("ops", "Utilities", "90000")
+    put("ops", "Non-Op. Ex (taxes, other)", "10,000")
+    assert get("ops", "Total revenue") == "$420,000.00" and get("ops", "NOI / EBITDA") == "$230,000.00"
+    assert get("ops", "Cash flow from operations") == "$220,000.00"
+    put("capex", "In-suite renovations", "250,000")
+    e.grids["capex"].add_item("capex")
+    t = e.grids["capex"].table
+    t.item([t.item(r, 0).text() for r in range(t.rowCount())].index("New item"), 0).setText("Roof replacement")
+    put("capex", "Roof replacement", "80,000")
+    assert get("capex", "Total CapEx") == "$330,000.00"
+    put("fin", "Equity contributions", "150,000")
+    put("fin", "Distributions to owners", "20,000")
+    assert get("fin", "Net financing & equity") == "$130,000.00"
+    # everything flows into the summary
+    sm = e.summary_table
+    rows = {sm.item(r, 0).text(): r for r in range(sm.rowCount()) if sm.item(r, 0).text()}
+    col = 2                                      # after the last 12 months
+    assert sm.item(rows["Cash flow before financing"], col).text() == "($110,000.00)"
+    assert sm.item(rows["Net cash flow after financing"], col).text() == "$20,000.00"
+    e.fill_financing()                           # the mortgage's interest and principal for the year
+    assert get("fin", "Interest – First National").startswith("$") and get("fin", "Interest – First National") != "$0.00"
+    assert get("fin", "Principal – First National") != "$0.00"
+    e.add_year()   # copies the last year forward
+    assert e.years == [year, year + 1] and get("ops", "Total revenue", 2) == "$420,000.00"
+    # exit at the end of the first year: IRR and MOIC on the Summary and on Exit & Returns
+    e.x_date.setDate(QDate(year, 12, 31))
+    e.x_cap.setValue(5.0)
+    assert "IRR" in e.returns_line.text() and "MOIC" in e.returns_line.text()
+    r = e.returns()
+    assert r.exit_noi == 230_000_00 and r.exit_value == 4_600_000_00 and "EXIT" in e.returns_page.toPlainText()
+    e.x_method.setCurrentIndex(e.x_method.findData("multiple"))
+    e.x_mult.setValue(10)
+    assert e.returns().exit_value == 2_300_000_00 and "at 10×" in e.returns_page.toPlainText()
+    e.x_method.setCurrentIndex(e.x_method.findData("cap"))
     d.save()
-    assert [p.year for p in pfm.projections(v.pf, h.id)] == [year, year + 1]
+    from am_accounting import exit_returns as er
+    assert er.get(v.pf, h).exit_date == f"{year}-12-31"
     p0 = pfm.projections(v.pf, h.id)[0]
-    assert (p0.revenue, p0.opex, p0.nonop, p0.capex) == (420_000_00, 190_000_00, 50_000_00, 330_000_00)
+    assert (p0.revenue, p0.opex, p0.nonop, p0.capex) == (420_000_00, 190_000_00, 10_000_00, 330_000_00)
+    assert p0.fin_in == 150_000_00 and p0.fin_out > 20_000_00
     lines = {ln.item: ln for ln in pfm.projection_lines(v.pf, h.id)}
-    assert lines["Roof replacement"].kind == "capex" and lines["Rental income"].amounts[year] == 400_000_00
-    d2 = ProjectionsDialog(v.pf, h, actual)            # opens with the items as saved
-    assert [ln.item for ln in d2.state()[1]][:2] == ["Rental income", "Parking"]
+    assert lines["Roof replacement"].kind == "capex" and lines["Interest – First National"].kind == "fin_out"
     v.refresh()
     v.proj_pick.setCurrentIndex(0)   # portfolio, our 50%
     t = v.proj_table
     assert t.horizontalHeaderItem(1).text() == f"{year} (projected)" and t.item(0, 1).text() == "$210,000.00"
-    assert t.item(6, 1).text() == "($75,000.00)"
-    v.proj_pick.setCurrentIndex(1)   # the company: item by item
-    rows = [t.item(r, 0).text().strip() for r in range(t.rowCount())]
-    assert "Rental income" in rows and "Roof replacement" in rows and rows[0] == "REVENUE"
+    assert t.item(8, 1).text() == "$75,000.00"           # money in, our half
+    v.proj_pick.setCurrentIndex(1)   # the company: edited right on the page
+    assert isinstance(v.proj_editor, ProjectionEditor) and v.proj_stack.currentWidget() is v.proj_editor
+    assert v.proj_editor.years == [year, year + 1] and not v.proj_editor.dirty
     v.close_portfolio()
 
 
