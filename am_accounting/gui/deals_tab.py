@@ -232,6 +232,360 @@ class DealDialog(QDialog):
         self.accept()
 
 
+class CloseDealDialog(QDialog):
+    """Close a deal under contract: set up its new operating company and its opening balance sheet — the purchase
+    price and closing costs, the debt and the equity (see closing.py)."""
+
+    def __init__(self, pf, deal: dl.Deal, create_company, parent=None):
+        super().__init__(parent)
+        from .. import closing as cl
+        from .. import portfolio as pfm
+
+        self.pf, self.deal, self.create_company = pf, deal, create_company
+        self.holding_id: int | None = None
+        s = cl.default_setup(deal)
+        self.setWindowTitle(f"Close Deal – {deal.name}")
+        self.resize(980, 620)
+        lay = QVBoxLayout(self)
+        intro = QLabel(f"Closing <b>{html.escape(deal.name)}</b> sets up a new operating company with its own books "
+                       "and posts its opening balance sheet: the property at what it cost (price + closing costs), "
+                       "the loans, the owners' equity, and any cash left over in the bank. It's added to the portfolio "
+                       "with the loans on Financing & Cap Table and the owners on the cap table.")
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(intro)
+        tabs = self.tabs = QTabWidget()
+        lay.addWidget(tabs, 1)
+
+        # 1 company
+        cw = QWidget()
+        form = QFormLayout(cw)
+        self.company = QLineEdit()
+        self.company.setPlaceholderText("The corporation, e.g. 1001234567 Ontario Inc.")
+        self.prop = QLineEdit(s.property_name)
+        self.entity = QComboBox()
+        self.entity.setEditable(True)
+        self.entity.addItems(["Corporation", "Limited partnership", "Partnership", "LLC", "Trust"])
+        self.fiscal = QComboBox()
+        for m in range(1, 13):
+            self.fiscal.addItem(date(2000, m, 1).strftime("%B"), m)
+        self.closing = _date_box(s.closing_date)
+        self.own = QDoubleSpinBox()
+        self.own.setRange(0.01, 100)
+        self.own.setDecimals(2)
+        self.own.setSuffix(" %")
+        self.own.setValue(100)
+        self.own.setToolTip("The portfolio's share of the company")
+        for label, w in (("Company (legal name):", self.company), ("Property name:", self.prop),
+                         ("Entity type:", self.entity), ("Fiscal year starts:", self.fiscal),
+                         ("Closing date:", self.closing), ("Portfolio's share:", self.own)):
+            form.addRow(label, w)
+        tabs.addTab(cw, "1 · Company")
+
+        # 2 purchase & closing costs
+        uw = QWidget()
+        ul = QVBoxLayout(uw)
+        self.costs = QTableWidget(0, 2)
+        self.costs.setHorizontalHeaderLabels(["Cost", "Amount"])
+        self.costs.verticalHeader().setVisible(False)
+        self.costs.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.costs.setColumnWidth(1, 200)
+        ul.addWidget(self.costs, 1)
+        crow = QHBoxLayout()
+        add = QPushButton("Add Cost")
+        add.clicked.connect(lambda: self._add_cost("", 0))
+        rem = QPushButton("Remove Cost")
+        rem.clicked.connect(lambda: self._remove(self.costs))
+        ltt = QPushButton("Work Out Land Transfer Tax (Ontario)")
+        ltt.setToolTip("Ontario's provincial land transfer tax on the purchase price — an estimate; Toronto adds its "
+                       "own municipal tax. Check the figure with your lawyer.")
+        ltt.clicked.connect(self._ltt)
+        self.single = QCheckBox("1–2 single-family homes")
+        self.land = QDoubleSpinBox()
+        self.land.setRange(0, 99)
+        self.land.setDecimals(1)
+        self.land.setSuffix(" % land")
+        self.land.setToolTip("Share of the purchase price that is land (not depreciated); the rest is the building")
+        for w in (add, rem, ltt, self.single):
+            crow.addWidget(w)
+        crow.addStretch(1)
+        crow.addWidget(QLabel("Purchase price split:"))
+        crow.addWidget(self.land)
+        ul.addLayout(crow)
+        tabs.addTab(uw, "2 · Purchase && Closing Costs")
+        for label, cents in s.costs:
+            self._add_cost(label, cents)
+
+        # 3 debt
+        dw = QWidget()
+        dlay = QVBoxLayout(dw)
+        self.loans = QTableWidget(0, 7)
+        self.loans.setHorizontalHeaderLabels(["Lender", "Facility", "Amount", "Rate", "Term (yrs)",
+                                              "Amortization (yrs)", "Interest only"])
+        self.loans.verticalHeader().setVisible(False)
+        self.loans.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        dlay.addWidget(self.loans, 1)
+        drow = QHBoxLayout()
+        b = QPushButton("Add Loan")
+        b.clicked.connect(lambda: self._add_loan(pfm.Loan("", "Mortgage", 0, term_months=60, amort_months=300)))
+        drow.addWidget(b)
+        b = QPushButton("Remove Loan")
+        b.clicked.connect(lambda: self._remove(self.loans))
+        drow.addWidget(b)
+        drow.addStretch(1)
+        dlay.addLayout(drow)
+        tabs.addTab(dw, "3 · Debt")
+        for ln in s.loans or [pfm.Loan("", "Mortgage", 0, term_months=60, amort_months=300)]:
+            self._add_loan(ln)
+
+        # 4 equity
+        ew = QWidget()
+        elay = QVBoxLayout(ew)
+        self.eq = QTableWidget(0, 5)
+        self.eq.setHorizontalHeaderLabels(["Owner", "Through company", "Class", "Amount", "As"])
+        self.eq.verticalHeader().setVisible(False)
+        self.eq.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.eq.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        elay.addWidget(self.eq, 1)
+        erow = QHBoxLayout()
+        b = QPushButton("Add Owner")
+        b.clicked.connect(lambda: self._add_equity(cl.EquityLine("", 0)))
+        erow.addWidget(b)
+        b = QPushButton("Remove Owner")
+        b.clicked.connect(lambda: self._remove(self.eq))
+        erow.addWidget(b)
+        b = QPushButton("Equity Covers the Rest")
+        b.setToolTip("Set the selected owner's amount so the money in equals closing costs")
+        b.clicked.connect(self._equity_rest)
+        erow.addWidget(b)
+        erow.addStretch(1)
+        elay.addLayout(erow)
+        hint = QLabel("Share capital is equity (by class); a shareholder loan is owed back to the owner (a liability). "
+                      "Both are on the cap table as money put in on closing.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        elay.addWidget(hint)
+        tabs.addTab(ew, "4 · Equity")
+        for e in s.equity or [cl.EquityLine("", 0)]:
+            self._add_equity(e)
+
+        # 5 review
+        self.review = QLabel()
+        self.review.setTextFormat(Qt.TextFormat.RichText)
+        self.review.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.review.setWordWrap(True)
+        rv = QWidget()
+        QVBoxLayout(rv).addWidget(self.review)
+        tabs.addTab(rv, "5 · Review")
+        tabs.currentChanged.connect(self._update)
+
+        self.totals = QLabel()
+        self.totals.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.totals)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.go = buttons.addButton("Close Deal && Create Company", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.go.setObjectName("primary")
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self._update()
+
+    # ---- rows ----
+    def _money(self, cents: int):
+        from .asset_mgmt import _money_box
+
+        box = _money_box()
+        box.setValue(cents / 100)
+        box.valueChanged.connect(self._update)
+        return box
+
+    def _add_cost(self, label: str, cents: int) -> None:
+        r = self.costs.rowCount()
+        self.costs.insertRow(r)
+        self.costs.setItem(r, 0, QTableWidgetItem(label))
+        self.costs.setCellWidget(r, 1, self._money(cents))
+        self._update()
+
+    def _add_loan(self, ln) -> None:
+        from .. import portfolio as pfm
+
+        t = self.loans
+        r = t.rowCount()
+        t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(ln.lender))
+        kind = QComboBox()
+        kind.addItems(pfm.LOAN_KINDS)
+        kind.setCurrentText(ln.kind)
+        t.setCellWidget(r, 1, kind)
+        t.setCellWidget(r, 2, self._money(ln.principal_cents))
+        rate = QDoubleSpinBox()
+        rate.setRange(0, 100)
+        rate.setDecimals(3)
+        rate.setSuffix(" %")
+        rate.setValue(ln.rate_pct or 0)
+        t.setCellWidget(r, 3, rate)
+        for c, months in ((4, ln.term_months), (5, ln.amort_months or ln.term_months)):
+            y = QDoubleSpinBox()
+            y.setRange(0, 50)
+            y.setDecimals(1)
+            y.setValue(months / 12)
+            t.setCellWidget(r, c, y)
+        io = QCheckBox()
+        io.setChecked(ln.repayment == "Interest only")
+        t.setCellWidget(r, 6, io)
+        t.resizeColumnsToContents()
+        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._update()
+
+    def _add_equity(self, e) -> None:
+        from .. import closing as cl
+
+        t = self.eq
+        r = t.rowCount()
+        t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(e.owner))
+        t.setItem(r, 1, QTableWidgetItem(e.company))
+        cls = QComboBox()
+        cls.setEditable(True)
+        cls.addItems(["Class A", "Class B", "Common", "Preferred"])
+        cls.setCurrentText(e.share_class)
+        t.setCellWidget(r, 2, cls)
+        t.setCellWidget(r, 3, self._money(e.amount_cents))
+        form = QComboBox()
+        form.addItems(cl.EQUITY_FORMS)
+        form.setCurrentText(e.form)
+        t.setCellWidget(r, 4, form)
+        t.setColumnWidth(3, 170)
+        self._update()
+
+    def _remove(self, t: QTableWidget) -> None:
+        r = t.currentRow()
+        if r >= 0:
+            t.removeRow(r)
+            self._update()
+
+    def _ltt(self) -> None:
+        from .. import closing as cl
+
+        s = self.setup()
+        for r in range(self.costs.rowCount()):
+            if (self.costs.item(r, 0).text() if self.costs.item(r, 0) else "") == "Land transfer tax":
+                self.costs.cellWidget(r, 1).setValue(cl.ontario_ltt(s.price, single_family=self.single.isChecked())
+                                                     / 100)
+                return
+        self._add_cost("Land transfer tax", cl.ontario_ltt(s.price, single_family=self.single.isChecked()))
+
+    def _equity_rest(self) -> None:
+        r = max(0, self.eq.currentRow())
+        if self.eq.rowCount() == 0:
+            return
+        box = self.eq.cellWidget(r, 3)
+        s = self.setup()
+        box.setValue(max(0, box.value() * 100 - s.cash_left) / 100)
+
+    # ---- the setup as entered ----
+    def setup(self):
+        from .. import closing as cl
+        from .. import portfolio as pfm
+
+        costs = []
+        for r in range(self.costs.rowCount()):
+            label = self.costs.item(r, 0).text().strip() if self.costs.item(r, 0) else ""
+            cents = round(self.costs.cellWidget(r, 1).value() * 100)
+            if label or cents:
+                costs.append((label or "Other closing costs", cents))
+        loans = []
+        for r in range(self.loans.rowCount()):
+            t = self.loans
+            amt = round(t.cellWidget(r, 2).value() * 100)
+            if not amt:
+                continue
+            io = t.cellWidget(r, 6).isChecked()
+            term, amort = round(t.cellWidget(r, 4).value() * 12), round(t.cellWidget(r, 5).value() * 12)
+            loans.append(pfm.Loan(t.item(r, 0).text().strip() if t.item(r, 0) else "", t.cellWidget(r, 1).currentText(),
+                                  amt, rate_pct=t.cellWidget(r, 3).value() or None, start_date=_date_of(self.closing),
+                                  term_months=term, repayment="Interest only" if io else "Amortizing",
+                                  amort_months=0 if io or amort == term else amort))
+        equity = []
+        for r in range(self.eq.rowCount()):
+            t = self.eq
+            amt = round(t.cellWidget(r, 3).value() * 100)
+            owner = t.item(r, 0).text().strip() if t.item(r, 0) else ""
+            comp = t.item(r, 1).text().strip() if t.item(r, 1) else ""
+            if amt or owner or comp:
+                equity.append(cl.EquityLine(owner, amt, t.cellWidget(r, 2).currentText().strip(), comp,
+                                            t.cellWidget(r, 4).currentText()))
+        return cl.ClosingSetup(self.company.text(), self.prop.text(), _date_of(self.closing) or "", costs, loans,
+                               equity, self.land.value(), self.entity.currentText(), self.fiscal.currentData(),
+                               self.own.value())
+
+    def _update(self, *_) -> None:
+        from .theme import c as tc
+
+        if not hasattr(self, "totals"):
+            return
+        s = self.setup()
+        left = s.cash_left
+        tail = (f"<span style='color:{tc('red')}'>short by <b>{fmt_money(-left)}</b></span>" if left < 0 else
+                f"cash left for the bank <b>{fmt_money(left)}</b>")
+        self.totals.setText(f"Uses <b>{fmt_money(s.uses)}</b> · Debt <b>{fmt_money(s.debt)}</b> · Equity "
+                            f"<b>{fmt_money(s.equity_total)}</b> · {tail}"
+                            + (f" · LTV {s.debt / s.price * 100:.0f}%" if s.price else ""))
+        if self.tabs.currentIndex() == 4:
+            self.review.setText(self._review(s))
+
+    def _review(self, s) -> str:
+        esc = html.escape
+        p = esc(s.property_name or "the property")
+        rows = []
+        for label, cents in s.costs:
+            if not cents:
+                continue
+            if label == "Purchase price" and s.land_pct:
+                land = round(cents * s.land_pct / 100)
+                rows += [(f"Property – {p} – Land", land, 0), (f"Property – {p} – Building", cents - land, 0)]
+            else:
+                rows.append((f"Property – {p} – {esc(label)}", cents, 0))
+        if s.cash_left > 0:
+            rows.append(("Bank (starting cash)", s.cash_left, 0))
+        for ln in s.loans:
+            rows.append((f"{esc(ln.kind)} – {esc(ln.lender or '?')}", 0, ln.principal_cents))
+        classes: dict[str, int] = {}
+        for e in s.equity:
+            if e.form == "Shareholder loan":
+                rows.append((f"Shareholder Loan – {esc(e.owner or e.company or '?')}", 0, e.amount_cents))
+            else:
+                classes[e.share_class] = classes.get(e.share_class, 0) + e.amount_cents
+        rows += [(f"Share Capital – {esc(c)}", 0, v) for c, v in classes.items()]
+        body = "".join(f"<tr><td style='padding:2px 24px 2px 0'>{a}</td><td align='right' style='padding:2px 12px'>"
+                       f"{fmt_money(d) if d else ''}</td><td align='right' style='padding:2px 12px'>"
+                       f"{fmt_money(c) if c else ''}</td></tr>" for a, d, c in rows)
+        dr, cr = sum(r[1] for r in rows), sum(r[2] for r in rows)
+        return (f"<p><b>{esc(s.company_name or 'The new company')}</b> — opening balance sheet on "
+                f"{esc(s.closing_date)}:</p><table cellspacing='0'><tr><td></td><td align='right'><b>Debit</b></td>"
+                f"<td align='right'><b>Credit</b></td></tr>{body}<tr><td><b>Total</b></td><td align='right'><b>"
+                f"{fmt_money(dr)}</b></td><td align='right'><b>{fmt_money(cr)}</b></td></tr></table>"
+                f"<p>Also: {p} in the portfolio ({s.ownership_pct:g}% ours) with the purchase price as its first "
+                f"valuation; {len(s.loans)} loan(s) on Financing &amp; Cap Table; {len(s.equity)} owner(s) on the cap "
+                f"table; sources &amp; uses filled in.</p>")
+
+    def save(self) -> None:
+        from .. import closing as cl
+
+        s = self.setup()
+        try:
+            s.check()
+        except ValueError as e:
+            error(self, "Can't close yet", str(e))
+            return
+        try:
+            self.holding_id = cl.close_deal(self.pf, self.deal.id, s, self.create_company)
+        except Exception as e:  # noqa: BLE001
+            error(self, "Couldn't close the deal", str(e))
+            return
+        self.accept()
+
+
 STAGE_TITLES = {"New": "New deals", "Due Diligence": "Under due diligence", "Under Contract": "Under contract"}
 STAGE_COLS = {"New": ["Deal", "Price", "Units", "Received"],
               "Due Diligence": ["Deal", "Price", "DD deadline", "Checklist"],
@@ -243,12 +597,13 @@ class DealPipelinePage(QWidget):
     """New deals, under due diligence and under contract side by side (closed and dead deals below on request).
     Double-click a deal to open it; the buttons move the selected deal along."""
 
-    def __init__(self, pf, parent=None, on_added=None):
+    def __init__(self, pf, parent=None, on_added=None, create_company=None):
         super().__init__(parent)
         from .asset_mgmt import Card, _table
 
         self.pf = pf
         self.on_added = on_added          # called with a new holding's id when a deal is added to the portfolio
+        self.create_company = create_company   # (name, entity_type=, fiscal_year_start_month=) -> company file
         lay = QVBoxLayout(self)
         bar = QHBoxLayout()
         for text, slot, tip in (
@@ -257,7 +612,8 @@ class DealPipelinePage(QWidget):
                 ("◂ Back", self.move_back, "Move the selected deal back a stage"),
                 ("Advance ▸", self.advance, "New → Due Diligence → Under Contract → Closed"),
                 ("Mark Dead", self.mark_dead, "The deal didn't go ahead (kept under Closed & dead)"),
-                ("Add to Portfolio…", self.add_to_portfolio, "Closed: add it to the portfolio as a holding"),
+                ("Close Deal…", self.close_deal, "Under contract: close it — set up its new operating company and "
+                                                 "opening balance sheet (price, closing costs, debt, equity)"),
                 ("Delete", self.delete, "Delete the selected deal")):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -475,13 +831,7 @@ class DealPipelinePage(QWidget):
         if not d:
             return
         if d.stage == "Under Contract":
-            if confirm(self, "Closed", f"Mark “{d.name}” closed?"):
-                dl.move(self.pf, d.id, "Closed")
-                self.show_closed.setChecked(True)
-                self.refresh()
-                self.select(d.id)
-                if confirm(self, "Add to the portfolio", f"Add “{d.name}” to the portfolio as a holding now?"):
-                    self.add_to_portfolio()
+            self.close_deal()
             return
         if d.stage in ("Closed", "Dead"):
             return
@@ -502,23 +852,31 @@ class DealPipelinePage(QWidget):
             dl.move(self.pf, d.id, "Dead")
             self.refresh()
 
-    def add_to_portfolio(self) -> None:
+    def close_deal(self) -> None:
+        """Under contract → closed: the new company, its opening balance sheet, and into the portfolio."""
         d = self._need()
         if not d:
             return
-        if d.stage != "Closed":
-            info(self, "Not closed yet", "Close the deal first (Advance ▸ when it's under contract).")
+        if d.holding_id is not None and any(h.id == d.holding_id for h in self.pf.holdings()):
+            info(self, "Already closed", f"“{d.name}” is already in the portfolio.")
             return
-        try:
-            hid = dl.add_to_portfolio(self.pf, d.id)
-        except ValueError as e:
-            error(self, "Couldn't add", str(e))
+        if d.stage not in ("Under Contract", "Closed"):
+            info(self, "Not under contract", "Move the deal to Under Contract first (Advance ▸).")
             return
-        info(self, "In the portfolio", f"“{d.name}” is a holding now, with its purchase price as the first "
-                                       "valuation. Link it to its books from its Dashboard (Edit Holding…).")
+        if self.create_company is None:
+            error(self, "Can't create companies here", "Open the Deal Pipeline from Asset Management.")
+            return
+        dlg = CloseDealDialog(self.pf, dl.deal(self.pf, d.id), self.create_company, self)
+        if not dlg.exec():
+            return
+        self.show_closed.setChecked(True)
         self.refresh()
+        self.select(d.id)
+        info(self, "Deal closed", f"“{d.name}” is closed: its company and opening balance sheet are set up, and it's "
+                                  "in the portfolio (Dashboard, Financing & Cap Table). Switch to it in Accounting to "
+                                  "start its bookkeeping.")
         if self.on_added:
-            self.on_added(hid)
+            self.on_added(dlg.holding_id)
 
     def delete(self) -> None:
         d = self._need()

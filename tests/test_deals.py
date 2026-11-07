@@ -67,11 +67,34 @@ def test_deals_move_through_the_pipeline(tmp_path):
 def test_deal_pipeline_page(app, tmp_path, monkeypatch):
     from am_accounting.gui import deals_tab as dt
 
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+
     monkeypatch.setattr(dt, "confirm", lambda *a: True)
     monkeypatch.setattr(dt, "info", lambda *a: None)
+    monkeypatch.setattr(dt, "error", lambda *a: (_ for _ in ()).throw(AssertionError(a[1:])))
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
     pf = pfm.Portfolio(tmp_path / "p.ampf")
     added = []
-    page = dt.DealPipelinePage(pf, on_added=added.append)
+
+    def create_company(name, **kw):
+        return str(reg.create(CompanyProfile(name, name, kw.get("entity_type", ""), role="operating")))
+
+    def fill_and_close(dlg):                         # the Close Deal window, filled in and saved
+        dlg.company.setText("1001234567 Ontario Inc.")
+        dlg.loans.setItem(0, 0, dt.QTableWidgetItem("First National"))
+        dlg.loans.cellWidget(0, 2).setValue(3_000_000)
+        dlg.eq.setItem(0, 0, dt.QTableWidgetItem("Pat Lee"))
+        dlg.eq.setCurrentCell(0, 0)
+        dlg._equity_rest()
+        assert dlg.setup().cash_left == 0 and "cash left for the bank <b>$0.00" in dlg.totals.text()
+        dlg.tabs.setCurrentIndex(4)
+        assert "opening balance sheet" in dlg.review.text() and "Mortgage – First National" in dlg.review.text()
+        dlg.save()
+        return 1
+
+    monkeypatch.setattr(dt.CloseDealDialog, "exec", fill_and_close)
+    page = dt.DealPipelinePage(pf, on_added=added.append, create_company=create_company)
     dlg = dt.DealDialog(pf, parent=page)
     dlg.name.setText("45 Elm St")
     dlg.price.setValue(4_200_000)
@@ -92,10 +115,90 @@ def test_deal_pipeline_page(app, tmp_path, monkeypatch):
     assert page.tables["Due Diligence"].item(0, 3).text() == f"0 / {len(dl.DD_ITEMS)}"
     assert page.selected().name == "45 Elm St"
     page.advance()                                                      # → under contract
-    page.advance()                                                      # → closed, added to the portfolio
+    page.advance()                              # → Close Deal: its company, opening balance sheet, the portfolio
     assert dl.deal(pf, dlg.deal.id).stage == "Closed" and added and page.show_closed.isChecked()
-    assert any(h.name == "45 Elm St" for h in pf.holdings())
+    h = next(h for h in pf.holdings() if h.name == "45 Elm St")
+    assert h.company_path and reg.find(h.company_path)
     page.select(next(d.id for d in dl.deals(pf) if d.name == "Dundas Plaza"))
     page.mark_dead()
     assert page.tables["Under Contract"].rowCount() == 0 and page.tables["Closed"].rowCount() == 2
+    pf.close()
+
+
+def test_ontario_land_transfer_tax():
+    from am_accounting.closing import ontario_ltt
+
+    assert ontario_ltt(500_000_00) == 6_475_00                      # the usual Ontario figure
+    assert ontario_ltt(1_000_000_00) == 16_475_00
+    assert ontario_ltt(4_200_000_00) == 80_475_00                   # multi-residential: 2% above $400K
+    assert ontario_ltt(4_200_000_00, single_family=True) == 91_475_00   # 2.5% above $2M for 1–2 homes
+
+
+def test_closing_a_deal_sets_up_its_company(tmp_path):
+    from am_accounting import closing as cl
+    from am_accounting import reports
+    from am_accounting.books import Books, CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+
+    def create_company(name, **kw):
+        return str(reg.create(CompanyProfile(name, name, kw.get("entity_type", ""), "",
+                                             kw.get("fiscal_year_start_month", 1), role="operating")))
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    d = dl.Deal("45 Elm St", "45 Elm St, Hamilton", stage="Under Contract", price_cents=4_200_000_00, units=24,
+                equity_cents=1_300_000_00, closing_date="2026-12-15")
+    dl.save(pf, d)
+    s = cl.default_setup(dl.deal(pf, d.id))
+    assert s.price == 4_200_000_00 and dict(s.costs)["Land transfer tax"] == 80_475_00
+    assert s.debt == 2_900_000_00 and s.cash_left == 0
+    s.company_name = "1001234567 Ontario Inc."
+    s.costs = [("Purchase price", 4_200_000_00), ("Land transfer tax", 80_475_00), ("Legal fees", 35_000_00),
+               ("Consultant reports (BCA, ESA, appraisal)", 22_500_00)]
+    s.land_pct = 20
+    s.loans[0].lender, s.loans[0].rate_pct = "First National", 4.9
+    s.equity = [cl.EquityLine("Pat Lee", 1_000_000_00, "Class A"),
+                cl.EquityLine("Kim Day", 400_000_00, "Class B", "Day Capital Ltd", "Shareholder loan")]
+    assert s.uses == 4_337_975_00 and s.cash_left == -37_975_00
+    with pytest.raises(ValueError, match="short"):
+        s.check()                                                   # not enough money in to close
+    s.equity[0].amount_cents = 1_100_000_00                         # enough to close, 62,025 left for the bank
+    assert s.cash_left == 62_025_00
+    hid = cl.close_deal(pf, d.id, s, create_company)
+    h = next(x for x in pf.holdings() if x.id == hid)
+    assert h.name == "45 Elm St" and h.type == "Real estate" and h.acquired == "2026-12-15" and h.company_path
+    assert dl.deal(pf, d.id).stage == "Closed" and dl.deal(pf, d.id).holding_id == hid
+    b = Books.open(h.company_path, create=False)
+    assert b.company_name == "1001234567 Ontario Inc." and b.profile().entity_type == "Corporation"
+    bs = reports.balance_sheet(b, "2026-12-31")
+    assert all(bs.checks.values())
+    names = {a.name: a for a in b.accounts()}
+    prop = names["Property – 45 Elm St"]
+    assert {a.name for a in b.children(prop.id)} == {
+        "Property – 45 Elm St – Land", "Property – 45 Elm St – Building", "Property – 45 Elm St – Land transfer tax",
+        "Property – 45 Elm St – Legal fees", "Property – 45 Elm St – Consultant reports (BCA, ESA, appraisal)"}
+    t = b.ledger_totals(end="2026-12-31")
+    assert t[names["Property – 45 Elm St – Land"].id] == 840_000_00
+    assert t[names["Mortgage – First National"].id] == -2_900_000_00
+    assert t[names["Share Capital – Class A"].id] == -1_100_000_00
+    assert t[names["Shareholder Loan – Kim Day"].id] == -400_000_00
+    bank = next(a for a in b.accounts() if a.is_bank)
+    assert t[bank.id] == 62_025_00
+    b.close()
+    ln = pfm.loans(pf, h, date(2026, 12, 31))[0]
+    assert ln.lender == "First National" and ln.balance == 2_900_000_00 and ln.book_entry_id == -1
+    from am_accounting import loan_link as ll
+    assert ll.book_loans(pf, h) == 0                                # not matched to Assets Held as well
+    owners = {x.name: x for x in pfm.cap_table(pf, pfm.performance(pf, h, date(2026, 12, 31)))}
+    assert owners["Pat Lee"].share_class == "Class A" and owners["Kim Day"].funded == 400_000_00
+    v = pf.valuations(hid)[0]
+    assert (v.company_value_cents, v.debt_cents, v.value_cents) == (4_200_000_00, 2_900_000_00, 1_300_000_00)
+    su = pfm.entered_sources_uses(pf, hid)
+    assert su["Debt financing"] == 2_900_000_00 and su["Closing & financing costs"] == 137_975_00
+    assert su["Cash reserve / other"] == 62_025_00
+    f = pfm.company_financials(h.company_path, date(2026, 12, 31))
+    assert f.capex_ltm == 0                                          # the purchase isn't the year's capex
+    with pytest.raises(ValueError):
+        cl.close_deal(pf, d.id, s, create_company)                  # only once
     pf.close()

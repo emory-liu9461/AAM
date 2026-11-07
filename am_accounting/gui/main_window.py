@@ -831,9 +831,12 @@ class MainWindow(QMainWindow):
             out.append((e.name, str(e.path), company_roles.read_role(e.path)))
         return out
 
-    def _create_company_for_holding(self, name: str) -> str:
-        """A new company file for a holding (from Asset Management); it appears in the company switcher."""
-        path = self.registry.create(CompanyProfile(name, role="operating"))
+    def _create_company_for_holding(self, name: str, *, entity_type: str = "",
+                                    fiscal_year_start_month: int = 1) -> str:
+        """A new company file for a holding (from Asset Management, or closing a deal); it appears in the company
+        switcher."""
+        path = self.registry.create(CompanyProfile(name, name, entity_type, "", fiscal_year_start_month,
+                                                   role="operating"))
         self._fill_switcher()
         return str(path)
 
