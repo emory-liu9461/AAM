@@ -1521,6 +1521,12 @@ class AssetManagementView(QWidget):
         self.summary_btn.setToolTip("The whole portfolio (or the group picked under Viewing) at a glance")
         self.summary_btn.clicked.connect(self.show_summary)
         bar.addWidget(self.summary_btn)
+        self.deals_btn = QPushButton("Deal Pipeline")
+        self.deals_btn.setCheckable(True)
+        self.deals_btn.setObjectName("primary")
+        self.deals_btn.setToolTip("Deals being looked at: new deals, under due diligence, under contract")
+        self.deals_btn.clicked.connect(self.show_deals)
+        bar.addWidget(self.deals_btn)
         bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
@@ -1873,6 +1879,12 @@ class AssetManagementView(QWidget):
         for name in ("Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
                      "Customers && Vendors", "Waterfall (LP / GP)", "Projections"):
             self.tabs.addTab(pages[name], name)
+        from .deals_tab import DealPipelinePage
+
+        self.deals_page = DealPipelinePage(self.pf, on_added=lambda _hid: self.refresh())
+        self.tabs.addTab(self.deals_page, "Deal Pipeline")
+        self.tabs.setTabVisible(self.tabs.indexOf(self.deals_page), False)   # opened with its button at the top
+        self.tabs.currentChanged.connect(self._top_buttons)
         self.tabs.setCurrentIndex(0)
         self.tabs.blockSignals(False)
         self.summary_btn.setChecked(True)
@@ -1886,6 +1898,17 @@ class AssetManagementView(QWidget):
 
     def show_summary(self) -> None:
         self.show_portfolio(self.summary_page)
+
+    def show_deals(self) -> None:
+        """The deal pipeline (beside Portfolio Summary)."""
+        self.deals_page.refresh()
+        self.tabs.setCurrentWidget(self.deals_page)
+        self._top_buttons()
+
+    def _top_buttons(self, *_) -> None:
+        page = self.tabs.currentWidget()
+        self.summary_btn.setChecked(self.tabs.currentIndex() == 0)
+        self.deals_btn.setChecked(page is getattr(self, "deals_page", None))
 
     def _filter(self) -> dict:
         v = self.viewing.currentData()
