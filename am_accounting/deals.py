@@ -108,6 +108,7 @@ class Deal:
     notes: str = ""
     holding_id: int | None = None
     stage_date: str | None = None
+    uw: str = ""              # underwriting assumptions (JSON — see Underwriting)
     id: int | None = None
     dd_done: int = 0          # checklist progress (read with the deal)
     dd_total: int = 0
@@ -143,11 +144,14 @@ class Deal:
 
 COLS = ["name", "address", "asset_type", "stage", "price_cents", "units", "sqft", "noi_cents", "equity_cents", "source",
         "contact", "lead", "received", "offer_date", "dd_deadline", "firm_date", "closing_date", "deposit_cents",
-        "next_step", "notes", "holding_id", "stage_date"]
+        "next_step", "notes", "holding_id", "stage_date", "uw"]
 
 
 def ready(pf) -> None:
     pf.conn.executescript(SCHEMA)
+    if "uw" not in {r[1] for r in pf.conn.execute("PRAGMA table_info(deals)")}:
+        with pf.conn:
+            pf.conn.execute("ALTER TABLE deals ADD COLUMN uw TEXT NOT NULL DEFAULT ''")
     cols = {r[1] for r in pf.conn.execute("PRAGMA table_info(deal_dd)")}
     with pf.conn:
         for col in ("section", "grp", "status"):
@@ -417,3 +421,143 @@ def add_to_portfolio(pf, deal_id: int, *, ownership_pct: float = 100.0) -> int:
     d.stage, d.holding_id = "Closed", h.id
     save(pf, d)
     return h.id
+
+
+# ---- underwriting: the one-page summary ----
+
+@dataclass
+class Underwriting:
+    """The assumptions behind a deal's one-page summary (all amounts in cents)."""
+    rent_inplace: int = 0          # average rent per unit a month, today
+    rent_market: int = 0           # … at market (the potential)
+    other_income: int = 0          # parking, laundry … a month, all units
+    vacancy_pct: float = 3.0
+    opex_annual: int = 0           # operating expenses a year (0 = opex_pct of revenue)
+    opex_pct: float = 40.0
+    reserve_per_unit: int = 300_00  # capital reserve a unit a year
+    closing_pct: float = 3.0       # closing costs as % of the price (land transfer tax, legal, reports, fees)
+    ltv_pct: float = 65.0
+    rate_pct: float = 5.0
+    amort_years: float = 25.0
+    interest_only: bool = False
+    term_years: float = 5.0
+
+    def to_json(self) -> str:
+        import json
+        from dataclasses import asdict
+
+        return json.dumps(asdict(self))
+
+    @classmethod
+    def from_json(cls, text: str, deal: "Deal | None" = None) -> "Underwriting":
+        import json
+
+        try:
+            data = json.loads(text) if text else {}
+        except ValueError:
+            data = {}
+        u = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        if not data and deal is not None and deal.price_cents and deal.equity_cents:   # from the deal's equity
+            u.ltv_pct = round(max(0.0, (deal.price_cents - deal.equity_cents) / deal.price_cents * 100), 1)
+        return u
+
+
+def underwriting(d: Deal) -> Underwriting:
+    return Underwriting.from_json(d.uw, d)
+
+
+@dataclass
+class Analysis:
+    gpr: int = 0                   # gross potential rent, a year
+    vacancy: int = 0
+    other: int = 0
+    egi: int = 0                   # effective gross income
+    opex: int = 0
+    noi: int = 0
+    reserve: int = 0
+    price: int = 0
+    closing: int = 0
+    all_in: int = 0
+    loan: int = 0
+    debt_service: int = 0
+    cash_flow: int = 0             # NOI − reserve − debt service
+    equity: int = 0                # all-in cost − loan
+    from_deal_noi: bool = False    # NOI as entered on the deal (no rents entered)
+
+    @property
+    def cap_rate(self) -> float | None:
+        return self.noi / self.price if self.price else None
+
+    @property
+    def dscr(self) -> float | None:
+        return self.noi / self.debt_service if self.debt_service else None
+
+    @property
+    def coc(self) -> float | None:
+        return self.cash_flow / self.equity if self.equity > 0 else None
+
+    @property
+    def debt_yield(self) -> float | None:
+        return self.noi / self.loan if self.loan else None
+
+    @property
+    def expense_ratio(self) -> float | None:
+        return self.opex / self.egi if self.egi else None
+
+    @property
+    def breakeven(self) -> float | None:
+        """Occupancy that just covers expenses, reserve and debt service."""
+        gross = self.gpr + self.other
+        return (self.opex + self.reserve + self.debt_service) / gross if gross else None
+
+
+def analyze(d: Deal, u: Underwriting, *, market: bool = False, rent_change: float = 0.0, rate: float | None = None,
+            price: int | None = None, ltv: float | None = None) -> Analysis:
+    """A year of the deal on these assumptions: in place (or at market rents), with optional changes for the
+    sensitivity tables (rent change as a fraction, a different rate, price or LTV)."""
+    from . import portfolio as pfm
+
+    a = Analysis()
+    a.price = d.price_cents if price is None else price
+    rent = (u.rent_market or u.rent_inplace) if market else u.rent_inplace
+    if rent and d.units:
+        a.gpr = round(rent * d.units * 12 * (1 + rent_change))
+        a.vacancy = round(a.gpr * u.vacancy_pct / 100)
+        a.other = round(u.other_income * 12 * (1 + rent_change))
+        a.egi = a.gpr - a.vacancy + a.other
+        a.opex = u.opex_annual or round(a.egi * u.opex_pct / 100)
+        a.noi = a.egi - a.opex
+    elif d.noi_cents:                       # only the NOI is known
+        a.from_deal_noi = True
+        a.noi = round(d.noi_cents * (1 + rent_change))
+    a.reserve = u.reserve_per_unit * d.units
+    a.closing = round(a.price * u.closing_pct / 100)
+    a.all_in = a.price + a.closing
+    a.loan = round(a.price * (u.ltv_pct if ltv is None else ltv) / 100)
+    if a.loan:
+        ln = pfm.Loan("", "Mortgage", a.loan, rate_pct=u.rate_pct if rate is None else rate,
+                      term_months=round(u.term_years * 12), amort_months=round(u.amort_years * 12),
+                      repayment="Interest only" if u.interest_only else "Amortizing")
+        a.debt_service = ln.annual_debt_service
+    a.cash_flow = a.noi - a.reserve - a.debt_service
+    a.equity = a.all_in - a.loan
+    return a
+
+
+RENT_STEPS = [-0.10, -0.05, 0.0, 0.05, 0.10]
+RATE_STEPS = [-1.0, -0.5, 0.0, 0.5, 1.0]
+PRICE_STEPS = [-0.10, -0.05, 0.0, 0.05, 0.10]
+LTV_STEPS = [-10.0, -5.0, 0.0, 5.0, 10.0]
+
+
+def sensitivity_rate_rent(d: Deal, u: Underwriting) -> tuple[list[float], list[float], list[list[int]]]:
+    """Cash flow after debt service: interest rate (rows) × rent change (columns)."""
+    rates = [max(0.0, u.rate_pct + x) for x in RATE_STEPS]
+    return rates, RENT_STEPS, [[analyze(d, u, rate=r, rent_change=c).cash_flow for c in RENT_STEPS] for r in rates]
+
+
+def sensitivity_price_ltv(d: Deal, u: Underwriting) -> tuple[list[int], list[float], list[list[float | None]]]:
+    """Cash-on-cash return: purchase price (rows) × loan-to-value (columns)."""
+    prices = [round(d.price_cents * (1 + x)) for x in PRICE_STEPS]
+    ltvs = [min(95.0, max(0.0, u.ltv_pct + x)) for x in LTV_STEPS]
+    return prices, ltvs, [[analyze(d, u, price=p, ltv=v).coc for v in ltvs] for p in prices]

@@ -6,9 +6,10 @@ from __future__ import annotations
 from datetime import date
 
 from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+                               QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from .. import capex as cx
 from .. import operations as op
@@ -255,6 +256,31 @@ class OperationsPage(_CompanyPage):
         self.roll.doubleClicked.connect(lambda *_: self.edit_unit())
         rl.addWidget(self.roll, 1)
         self.sub.addTab(rw, "Rent Roll")
+        # operating costs: the major cost categories and who provides each
+        cw = QWidget()
+        cwl = QVBoxLayout(cw)
+        cwl.setContentsMargins(0, 4, 0, 0)
+        cb = QHBoxLayout()
+        self.costs_info = QLabel()
+        self.costs_info.setObjectName("hint")
+        cb.addWidget(self.costs_info, 1)
+        for text, slot, tip in (
+                ("Add Cost…", self.add_cost, "Another cost category and its provider"),
+                ("Edit…", self.edit_cost, "The selected category: provider, account #, contact, contract, budget"),
+                ("Delete", self.delete_cost, "Take the selected category off the list"),
+                ("Add the Usual Categories", self.usual_costs, "Power, water, gas, insurance, snow removal, waste …"),
+                ("Fill Providers from the Books", self.providers_from_books,
+                 "Blank providers: the vendor paid the most for that category in the last 12 months")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            cb.addWidget(b)
+        cwl.addLayout(cb)
+        self.costs = _table(COST_COLS, 1)
+        self.costs.doubleClicked.connect(lambda *_: self.edit_cost())
+        cwl.addWidget(self.costs, 1)
+        self.sub.addTab(cw, "Operating Costs")
+        self._cost_rows: list = []
         # unit mix
         self.mix = _table(["Unit type", "Status", "Units", "Occupied", "Average rent", "Average market rent",
                            "Monthly rent", "Gap to market"], None)
@@ -303,6 +329,7 @@ class OperationsPage(_CompanyPage):
         self._fill_statement(stmt)
         self._fill_roll(rows, s)
         self._fill_mix(rows)
+        self._fill_costs()
 
     def _fill_cards(self, s: op.RentRollSummary, stmt: op.Statement) -> None:
         c = self.cards
@@ -349,6 +376,102 @@ class OperationsPage(_CompanyPage):
         t.horizontalHeader().setStretchLastSection(True)
         self.roll_info.setText(f"{s.units} units · {s.occupied} occupied · in-place {fmt_money(s.in_place)} a month"
                                if rows else "No rent roll yet — Import Rent Roll… or Add Unit….")
+
+    def _fill_costs(self) -> None:
+        from .. import op_costs as oc
+
+        t = self.costs
+        t.setRowCount(0)
+        self._cost_rows = []
+        p = self.perf()
+        if p is None:
+            return
+        h = p.holding
+        oc.start_once(self.pf, h.id)
+        rows = oc.lines(self.pf, h.id)
+        oc.with_books(rows, h.company_path, self.view._as_of_date())
+        has_books = bool(h.company_path)
+        for ln in rows:
+            r = t.rowCount()
+            t.insertRow(r)
+            provider = ln.provider or (f"{ln.top_vendor} (from the books)" if ln.top_vendor else "")
+            vals = [ln.category, provider, ln.account_no, ln.contact, ln.contract_end or "",
+                    fmt_money(ln.actual_cents) if ln.actual_cents else ("—" if has_books else ""),
+                    fmt_money(ln.budget_cents) if ln.budget_cents else "",
+                    ln.matched_account or ("not found" if has_books else ""), ln.notes]
+            soon = bool(ln.contract_end and (date.fromisoformat(ln.contract_end) - date.today()).days <= 60)
+            for c, v in enumerate(vals):
+                colour = MUTED if (c == 1 and not ln.provider) or c == 7 else None
+                if c == 4 and soon:
+                    colour = NEGATIVE
+                it = _cell(v, right=c in (5, 6), colour=colour)
+                if c == 1 and not ln.provider:
+                    ex = oc.EXAMPLES.get(ln.category)
+                    it.setToolTip(f"e.g. {ex}" if ex else "")
+                if c == 1 and ln.vendors:
+                    it.setToolTip("Paid in the last 12 months: " + ", ".join(
+                        f"{v} {fmt_money(cents)}" for v, cents in ln.vendors[:5]))
+                t.setItem(r, c, it)
+            self._cost_rows.append(ln)
+        if rows:
+            actual = sum(ln.actual_cents or 0 for ln in rows)
+            budget = sum(ln.budget_cents for ln in rows)
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, v in enumerate(["Total", "", "", "", "", fmt_money(actual) if has_books else "",
+                                   fmt_money(budget) if budget else "", "", ""]):
+                t.setItem(r, c, _cell(v, right=c in (5, 6), bold=True))
+            self._cost_rows.append(None)
+        t.resizeColumnsToContents()
+        t.horizontalHeader().setStretchLastSection(True)
+        named = sum(1 for ln in rows if ln.provider)
+        self.costs_info.setText(f"{len(rows)} cost categories · {named} with a provider · last 12 months from the "
+                                "books" + ("" if has_books else " (not linked to its books)")
+                                + ". Contracts ending within 60 days are in red.")
+
+    def _cost(self):
+        r = self.costs.currentRow()
+        return self._cost_rows[r] if 0 <= r < len(self._cost_rows) else None
+
+    def add_cost(self) -> None:
+        p = self.perf()
+        if p and CostDialog(self.pf, p.holding, parent=self).exec():
+            self._fill_costs()
+
+    def edit_cost(self) -> None:
+        p, ln = self.perf(), self._cost()
+        if p and ln and CostDialog(self.pf, p.holding, ln, self).exec():
+            self._fill_costs()
+
+    def delete_cost(self) -> None:
+        from .. import op_costs as oc
+
+        ln = self._cost()
+        if ln and confirm(self, "Delete", f"Take “{ln.category}” off the operating costs?"):
+            oc.delete(self.pf, ln.id)
+            self._fill_costs()
+
+    def usual_costs(self) -> None:
+        from .. import op_costs as oc
+
+        p = self.perf()
+        if p:
+            n = oc.add_standard(self.pf, p.holding.id)
+            self._fill_costs()
+            info(self, "Usual categories", f"{n} added." if n else "They're all on the list already.")
+
+    def providers_from_books(self) -> None:
+        from .. import op_costs as oc
+
+        p = self.perf()
+        if not p:
+            return
+        rows = [ln for ln in self._cost_rows if ln is not None]
+        n = oc.fill_providers(self.pf, p.holding.id, rows)
+        self._fill_costs()
+        info(self, "Providers", f"{n} provider(s) filled in from the books." if n else
+             "Nothing to fill in: the blank categories have no named vendor in the books (set the customer / vendor "
+             "on their payments in Transactions).")
 
     def _fill_mix(self, rows: list[op.Unit]) -> None:
         mix = op.unit_mix(rows)
@@ -418,6 +541,87 @@ class OperationsPage(_CompanyPage):
 # ---------------------------------------------------------------------------
 # CapEx
 # ---------------------------------------------------------------------------
+
+
+COST_COLS = ["Category", "Provider", "Account #", "Contact", "Contract ends", "Last 12 months", "Budget / yr",
+             "Account in the books", "Notes"]
+
+
+class CostDialog(QDialog):
+    """One operating cost: its category, provider (with the account number and contact), contract and budget."""
+
+    def __init__(self, pf, holding, line=None, parent=None):
+        super().__init__(parent)
+        from .. import op_costs as oc
+
+        self.pf, self.holding = pf, holding
+        self.ln = ln = line or oc.CostLine("")
+        self.setWindowTitle(f"Operating cost – {holding.name}")
+        self.resize(560, 0)
+        form = QFormLayout(self)
+        self.category = QComboBox()
+        self.category.setEditable(True)
+        self.category.addItems([c for c, _w, _e in oc.CATEGORIES])
+        self.category.setCurrentText(ln.category)
+        self.provider = QComboBox()
+        self.provider.setEditable(True)
+        self.provider.addItems([""] + [v for v, _c in ln.vendors])
+        self.provider.setCurrentText(ln.provider)
+        self.account_no = QLineEdit(ln.account_no)
+        self.account_no.setPlaceholderText("Your account number with them")
+        self.contact = QLineEdit(ln.contact)
+        self.contact.setPlaceholderText("Name, phone, email")
+        self.has_end = QCheckBox("Contract ends:")
+        self.end = QDateEdit(_qd(ln.contract_end))
+        self.end.setCalendarPopup(True)
+        self.end.setDisplayFormat("MMM d, yyyy")
+        self.has_end.setChecked(bool(ln.contract_end))
+        self.end.setEnabled(bool(ln.contract_end))
+        self.has_end.toggled.connect(self.end.setEnabled)
+        self.budget = _money_box()
+        self.budget.setValue(ln.budget_cents / 100)
+        self.account = QComboBox()
+        self.account.addItem("(found by its name)", "")
+        for name in oc.expense_accounts(holding.company_path):
+            self.account.addItem(name, name)
+        self.account.setCurrentIndex(max(0, self.account.findData(ln.book_account)))
+        self.notes = QLineEdit(ln.notes)
+        self.category.currentTextChanged.connect(self._example)
+        form.addRow("Category:", self.category)
+        form.addRow("Provider:", self.provider)
+        form.addRow("Account #:", self.account_no)
+        form.addRow("Contact:", self.contact)
+        form.addRow(self.has_end, self.end)
+        form.addRow("Budget a year:", self.budget)
+        form.addRow("Account in the books:", self.account)
+        form.addRow("Notes:", self.notes)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self._example()
+
+    def _example(self, *_) -> None:
+        from .. import op_costs as oc
+
+        ex = oc.EXAMPLES.get(self.category.currentText())
+        self.provider.lineEdit().setPlaceholderText(f"e.g. {ex}" if ex else "Who provides it")
+
+    def save(self) -> None:
+        from .. import op_costs as oc
+
+        ln = self.ln
+        ln.category, ln.provider = self.category.currentText(), self.provider.currentText()
+        ln.account_no, ln.contact, ln.notes = self.account_no.text(), self.contact.text(), self.notes.text()
+        ln.contract_end = self.end.date().toString("yyyy-MM-dd") if self.has_end.isChecked() else None
+        ln.budget_cents = round(self.budget.value() * 100)
+        ln.book_account = self.account.currentData() or ""
+        try:
+            oc.save(self.pf, self.holding.id, ln)
+        except ValueError as e:
+            error(self, "Couldn't save", str(e))
+            return
+        self.accept()
 
 
 class CapexLineDialog(QDialog):

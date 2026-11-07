@@ -236,3 +236,48 @@ def test_closing_a_deal_sets_up_its_company(tmp_path):
     with pytest.raises(ValueError):
         cl.close_deal(pf, d.id, s, create_company)                  # only once
     pf.close()
+
+
+def test_deal_underwriting_and_one_pager(app, tmp_path):
+    from am_accounting.gui import deals_tab as dt
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    u = dl.Underwriting(rent_inplace=1_450_00, rent_market=1_950_00, other_income=1_800_00, vacancy_pct=3,
+                        opex_pct=42, reserve_per_unit=400_00, closing_pct=3.2, ltv_pct=70, rate_pct=4.85,
+                        amort_years=40)
+    d = dl.Deal("45 Elm St", price_cents=6_000_000_00, units=24, sqft=19_800, uw=u.to_json())
+    dl.save(pf, d)
+    assert dl.underwriting(dl.deal(pf, d.id)) == u                              # kept with the deal
+    a = dl.analyze(d, u)
+    assert (a.gpr, a.vacancy, a.other, a.egi) == (417_600_00, 12_528_00, 21_600_00, 426_672_00)
+    assert a.opex == round(426_672_00 * 0.42) and a.noi == a.egi - a.opex and a.reserve == 9_600_00
+    assert a.loan == 4_200_000_00 and a.closing == 192_000_00 and a.equity == 1_992_000_00
+    assert a.cash_flow == a.noi - a.reserve - a.debt_service
+    assert a.cap_rate == pytest.approx(a.noi / 6_000_000_00) and a.dscr == pytest.approx(a.noi / a.debt_service)
+    pot = dl.analyze(d, u, market=True)
+    assert pot.gpr == 1_950_00 * 24 * 12 and pot.noi > a.noi
+    rates, rents, grid = dl.sensitivity_rate_rent(d, u)
+    assert rates[2] == 4.85 and grid[2][2] == a.cash_flow and grid[0][2] > grid[4][2] and grid[2][4] > grid[2][0]
+    prices, ltvs, grid2 = dl.sensitivity_price_ltv(d, u)
+    assert prices[2] == 6_000_000_00 and ltvs[2] == 70 and grid2[2][2] == pytest.approx(a.coc)
+    io = dl.analyze(d, dl.Underwriting(**{**u.__dict__, "interest_only": True}))
+    assert io.debt_service == round(4_200_000_00 * 0.0485)          # interest only: a year's interest
+    only_noi = dl.Deal("Plaza", price_cents=5_000_000_00, noi_cents=300_000_00)
+    b = dl.analyze(only_noi, dl.Underwriting())
+    assert b.from_deal_noi and b.noi == 300_000_00 and b.cap_rate == pytest.approx(0.06)
+    # the deal window opens on the one-page summary, and keeps the assumptions
+    dlg = dt.DealDialog(pf, dl.deal(pf, d.id))
+    assert dlg.tabs.tabText(0) == "Summary" and dlg.tabs.currentIndex() == 0
+    page = dlg.summary.toPlainText()
+    for word in ("Deal summary", "PROPERTY", "OPERATIONS", "DEBT", "EQUITY", "SENSITIVITY", "Net operating income",
+                 "Cash flow after debt", "Break-even occupancy", "$1,992,000"):
+        assert word in page
+    dlg.u_rate.setValue(5.5)
+    assert "5.5%" in dlg.summary.toPlainText()                      # follows every change
+    dlg.save()
+    assert dl.underwriting(dl.deal(pf, d.id)).rate_pct == 5.5
+    html = dt.summary_html(dl.deal(pf, d.id), dl.underwriting(dl.deal(pf, d.id)), None, printing=True)
+    from am_accounting.gui.reports_tab import write_pdf
+    write_pdf(html, str(tmp_path / "s.pdf"), landscape=True, font_pt=7)
+    assert (tmp_path / "s.pdf").stat().st_size > 5000
+    pf.close()

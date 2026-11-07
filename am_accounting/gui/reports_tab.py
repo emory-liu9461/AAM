@@ -286,13 +286,21 @@ class ReportsTab(QWidget):
             write_pdf(self._html(links=False), path)  # includes the entries you expanded
 
 
-def write_pdf(html: str, path: str) -> None:
+def write_pdf(html: str, path: str, *, landscape: bool = False, font_pt: float | None = None) -> None:
     from PySide6.QtGui import QPdfWriter
 
     writer = QPdfWriter(path)
-    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.Letter), QPageLayout.Orientation.Portrait,
-                                     QMarginsF(18, 18, 18, 18), QPageLayout.Unit.Millimeter))
+    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.Letter),
+                                     QPageLayout.Orientation.Landscape if landscape else
+                                     QPageLayout.Orientation.Portrait,
+                                     QMarginsF(12 if landscape else 18, 12 if landscape else 18,
+                                               12 if landscape else 18, 12 if landscape else 18),
+                                     QPageLayout.Unit.Millimeter))
     doc = QTextDocument()
+    if font_pt:
+        f = doc.defaultFont()
+        f.setPointSizeF(font_pt)
+        doc.setDefaultFont(f)
     doc.setHtml(html)
     doc.setPageSize(writer.pageLayout().paintRectPoints().size())
     doc.print_(writer)

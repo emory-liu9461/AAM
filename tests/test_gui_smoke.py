@@ -1689,6 +1689,22 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
         assert label in text
     assert set(re.findall(r'border="(\d+)"', ops.stmt.toHtml())) <= {"0"}
     assert ops.mix.rowCount() == 2
+    # operating costs: beside the rent roll, the usual categories to start
+    from am_accounting import op_costs as oc
+
+    assert [ops.sub.tabText(i) for i in range(ops.sub.count())] == [
+        "Monthly Operating Statement", "Rent Roll", "Operating Costs", "Unit Mix"]
+    assert ops.costs.rowCount() == len(oc.CATEGORIES) + 1 and ops.costs.item(0, 0).text() == "Property tax"
+    ops.costs.selectRow(1)
+    cd = ot.CostDialog(v.pf, ops.perf().holding, ops._cost(), ops)
+    assert cd.category.currentText() == "Electricity (hydro)" and "e.g." in cd.provider.lineEdit().placeholderText()
+    cd.provider.setCurrentText("Bright Power")
+    cd.account_no.setText("ACCT-77")
+    cd.budget.setValue(30_000)
+    cd.save()
+    ops._fill_costs()
+    assert ops.costs.item(1, 1).text() == "Bright Power" and ops.costs.item(1, 2).text() == "ACCT-77"
+    assert ops.costs.item(ops.costs.rowCount() - 1, 6).text() == "$30,000.00"
     dash = v.dash_page
     v.tabs.setCurrentWidget(dash)                # opening the tab shows the latest figures
     assert dash.title.text() == "Maple Court Ltd Dashboard"
