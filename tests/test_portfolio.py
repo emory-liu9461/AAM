@@ -482,3 +482,26 @@ def test_select_groups(tmp_path):
     assert {h.name for h in pfm.select(pf, any_manager=True)} == {"A"}
     assert {h.name for h in pfm.select(pf, owner="/h2")} == {"C"}
     pf.close()
+
+
+def test_valuation_without_debt_takes_the_financing_loans(tmp_path):
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("1001124102 Ontario Inc.")
+    pf.save_holding(h)
+    pfm.save_loan(pf, h.id, pfm.Loan("Equitable Bank", "Mortgage", 2_350_000_00, rate_pct=6.5,
+                                     start_date="2026-04-01", maturity="2027-04-01"))
+    assert pfm.loan_debt(pf, h, date(2026, 11, 6)) == 2_350_000_00
+    assert pfm.loan_debt(pf, h, date(2026, 1, 1)) is None or pfm.loan_debt(pf, h, date(2026, 1, 1)) == 0
+    # saved with the debt box left at $0
+    pf.add_valuation(h.id, pfm.Valuation("2026-11-06", 3_250_000_00, "Appraisal", "",
+                                         company_value_cents=3_250_000_00, debt_cents=0))
+    p = pfm.performance(pf, h, date(2026, 11, 6))
+    assert p.debt == 2_350_000_00 and p.company_value == 3_250_000_00 and p.value_100 == 900_000_00
+    assert abs(p.ltv - 2_350_000_00 / 3_250_000_00) < 1e-9
+    cv, debt, eq, from_loans = pfm.valuation_figures(pf, h, pf.valuations(h.id)[-1])
+    assert (cv, debt, eq, from_loans) == (3_250_000_00, 2_350_000_00, 900_000_00, True)
+    # debt entered on the valuation is kept
+    pf.add_valuation(h.id, pfm.Valuation("2026-11-07", 1_250_000_00, "Appraisal", "",
+                                         company_value_cents=3_250_000_00, debt_cents=2_000_000_00))
+    p = pfm.performance(pf, h, date(2026, 11, 7))
+    assert p.debt == 2_000_000_00 and p.value_100 == 1_250_000_00

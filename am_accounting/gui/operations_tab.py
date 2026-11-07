@@ -1266,9 +1266,10 @@ class DashboardPage(_CompanyPage):
             d["financing"].append(["Total", fmt_money(ft.balance), f"{ft.rate:.2f}%" if ft.rate is not None else "",
                                    ft.next_maturity or ""])
         vals = list(reversed(self.pf.valuations(h.id)))[:4]
-        d["valuations"] = [[v_.date, fmt_money(v_.company_value_cents if v_.company_value_cents is not None
-                                              else v_.value_cents + (v_.debt_cents or 0)),
-                            fmt_money(v_.value_cents), v_.method] for v_ in vals]
+        d["valuations"] = []
+        for v_ in vals:
+            cv, _debt, eq, _ = pfm.valuation_figures(self.pf, h, v_)
+            d["valuations"].append([v_.date, fmt_money(cv if cv is not None else eq), fmt_money(eq), v_.method])
         stmt = op.monthly_statement(self.pf, p, as_of)
         by = {x.label: x for x in stmt.lines}
 

@@ -26,6 +26,13 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
+# An asset taken on with a loan in one journal entry (a loan matched to Assets Held) is financing, not capital
+# spending, and no money was borrowed in cash — leave such entries out of capex and of debt funding.
+NOT_FINANCED = ("NOT (e.kind = 'manual' AND EXISTS (SELECT 1 FROM journal_lines l2 JOIN accounts a2 "
+                "ON a2.id = l2.account_id WHERE l2.entry_id = e.id AND a2.type = 'liability' "
+                "AND a2.subtype = 'long_term' AND l2.credit_cents > 0) AND NOT EXISTS (SELECT 1 FROM journal_lines l3 "
+                "JOIN accounts a3 ON a3.id = l3.account_id WHERE l3.entry_id = e.id AND a3.is_bank = 1))")
+
 TYPES = ["Real estate", "Operating company", "Holding company", "Joint venture", "Minority investment",
          "Fund / LP interest", "Loan / note receivable", "Other"]
 FLOW_KINDS = {  # kind: (label, sign for the holding company: -1 money out to the holding, +1 money back)
@@ -390,7 +397,7 @@ def company_financials(company_path: str | Path, as_of: date | None = None) -> F
         if fixed:  # capital spending: purchases debited to fixed-asset accounts in the twelve months
             q = (f"SELECT COALESCE(SUM(l.debit_cents), 0) FROM journal_lines l JOIN journal_entries e "
                  f"ON e.id = l.entry_id WHERE l.account_id IN ({','.join('?' * len(fixed))}) AND e.kind != 'opening' "
-                 f"AND e.date >= ? AND e.date <= ?")
+                 f"AND {NOT_FINANCED} AND e.date >= ? AND e.date <= ?")
             out.capex_ltm = books.conn.execute(q, [*fixed, start, as_of.isoformat()]).fetchone()[0]
     except Exception as e:  # noqa: BLE001
         out.error = str(e)
@@ -537,8 +544,8 @@ def _period_figures(company_path: str | Path, start: date, end: date) -> Financi
                  and not any(w in a.name.lower() for w in ("accumulated", "depreciation"))]
         if fixed:
             q = (f"SELECT COALESCE(SUM(l.debit_cents), 0) FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id "
-                 f"WHERE l.account_id IN ({','.join('?' * len(fixed))}) AND e.kind != 'opening' AND e.date >= ? "
-                 f"AND e.date <= ?")
+                 f"WHERE l.account_id IN ({','.join('?' * len(fixed))}) AND e.kind != 'opening' AND {NOT_FINANCED} "
+                 f"AND e.date >= ? AND e.date <= ?")
             f.capex_ltm = books.conn.execute(q, [*fixed, start.isoformat(), end.isoformat()]).fetchone()[0]
     finally:
         books.close()
@@ -639,16 +646,20 @@ def performance(pf: Portfolio, h: Holding, as_of: date | None = None, *, with_fi
         p.financials = company_financials(h.company_path, as_of)
     vals = [v for v in pf.valuations(h.id) if v.date <= as_of.isoformat()]
     books_ok = bool(p.financials and not p.financials.error)
+    from_loans = False
     if vals:
         v = vals[-1]
-        p.value_100, p.value_date, p.value_method = v.value_cents, v.date, v.method
-        p.debt = v.debt_cents if v.debt_cents is not None else (p.financials.debt if books_ok else 0)
-        p.company_value = v.company_value_cents if v.company_value_cents is not None else v.value_cents + p.debt
+        cv, debt, eq, from_loans = valuation_figures(pf, h, v)
+        p.value_100, p.value_date, p.value_method = eq, v.date, v.method
+        if debt is None:
+            debt = p.financials.debt if books_ok else 0
+            cv = cv if v.company_value_cents is not None else eq + debt
+        p.debt, p.company_value = debt, cv
     elif books_ok:
         p.value_100, p.value_date, p.value_method = p.financials.equity, p.financials.as_of, "Book value (from books)"
         p.debt = p.financials.debt
         p.company_value = p.value_100 + p.debt
-    if h.id and not (vals and vals[-1].debt_cents is not None):
+    if h.id and not from_loans and not (vals and vals[-1].debt_cents is not None):
         # loans entered on the Financing table that aren't in the company's books add to its debt
         extra = sum(ln.balance for ln in loans(pf, h, as_of, with_books=False) if ln.account_id is None)
         if extra:
@@ -1420,6 +1431,8 @@ class Loan:
     term_months: int = 0
     repayment: str = "Amortizing"  # or "Interest only"
     amort_months: int = 0         # amortizing over (0 = the term)
+    asset_account_id: int | None = None   # the asset the loan is matched to on the balance sheet (None = Assets Held)
+    book_entry_id: int | None = None      # the journal entry putting it on the balance sheet (-1 = removed in the books)
 
     @property
     def amortization(self) -> int:
@@ -1495,7 +1508,8 @@ def _loans_ready(pf: Portfolio) -> None:
     pf.conn.executescript(LOAN_SCHEMA)
     cols = {c[1] for c in pf.conn.execute("PRAGMA table_info(loans)")}
     for col, decl in (("term_months", "INTEGER NOT NULL DEFAULT 0"), ("repayment", "TEXT NOT NULL DEFAULT 'Amortizing'"),
-                      ("amort_months", "INTEGER NOT NULL DEFAULT 0")):
+                      ("amort_months", "INTEGER NOT NULL DEFAULT 0"), ("asset_account_id", "INTEGER"),
+                      ("book_entry_id", "INTEGER")):
         if col not in cols:
             pf.conn.execute(f"ALTER TABLE loans ADD COLUMN {col} {decl}")
             if col == "repayment":  # 'Interest only' used to be a payment frequency
@@ -1540,18 +1554,19 @@ def save_loan(pf: Portfolio, holding_id: int, ln: Loan) -> int:
             date.fromisoformat(d)
     vals = (holding_id, ln.lender.strip(), ln.kind, ln.account_id, ln.principal_cents, ln.balance_cents, ln.rate_pct,
             ln.rate_type, ln.start_date, ln.maturity, ln.payment_cents, ln.payment_freq, ln.note.strip(),
-            ln.term_months, ln.repayment, ln.amort_months)
+            ln.term_months, ln.repayment, ln.amort_months, ln.asset_account_id, ln.book_entry_id)
     with pf.conn:
         if ln.id is None:
             ln.id = pf.conn.execute(
                 "INSERT INTO loans(holding_id, lender, kind, account_id, principal_cents, balance_cents, rate_pct, "
                 "rate_type, start_date, maturity, payment_cents, payment_freq, note, term_months, repayment, "
-                "amort_months) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "amort_months, asset_account_id, book_entry_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 vals).lastrowid
         else:
             pf.conn.execute("UPDATE loans SET holding_id=?, lender=?, kind=?, account_id=?, principal_cents=?, "
                             "balance_cents=?, rate_pct=?, rate_type=?, start_date=?, maturity=?, payment_cents=?, "
-                            "payment_freq=?, note=?, term_months=?, repayment=?, amort_months=? WHERE id=?",
+                            "payment_freq=?, note=?, term_months=?, repayment=?, amort_months=?, asset_account_id=?, "
+                            "book_entry_id=? WHERE id=?",
                             vals + (ln.id,))
     ln.holding_id = holding_id
     return ln.id
@@ -1570,7 +1585,8 @@ def loans(pf: Portfolio, h: Holding, as_of: date | None = None, *, with_books: b
     out = [Loan(r["lender"], r["kind"], r["principal_cents"], r["balance_cents"], r["rate_pct"], r["rate_type"],
                 r["start_date"], r["maturity"], r["payment_cents"], r["payment_freq"], r["note"], r["account_id"],
                 r["id"], r["holding_id"], term_months=r["term_months"], repayment=r["repayment"],
-                amort_months=r["amort_months"])
+                amort_months=r["amort_months"], asset_account_id=r["asset_account_id"],
+                book_entry_id=r["book_entry_id"])
            for r in pf.conn.execute("SELECT * FROM loans WHERE holding_id=? ORDER BY maturity IS NULL, maturity, id",
                                     (h.id,))]
     if with_books and h.company_path and Path(h.company_path).exists():
@@ -1586,6 +1602,30 @@ def loans(pf: Portfolio, h: Holding, as_of: date | None = None, *, with_books: b
                                 "Line of credit" if "line of credit" in n.lower() else "Term loan",
                                 account_id=i, holding_id=h.id, account_name=n, book_balance=bal, terms_missing=True))
     return out
+
+
+def loan_debt(pf: Portfolio, h: Holding, on: date | None = None) -> int | None:
+    """What's owed on the loans on the Financing table on a day (None when no loans are entered)."""
+    if not h.id:
+        return None
+    on = on or date.today()
+    ls = [ln for ln in loans(pf, h, on) if not (ln.start_date and ln.start_date > on.isoformat())]
+    return sum(ln.balance or 0 for ln in ls) if ls else None
+
+
+def valuation_figures(pf: Portfolio, h: Holding, v: Valuation) -> tuple[int | None, int | None, int, bool]:
+    """(company value, debt, equity, debt taken from the loans) of a valuation. A valuation saved with no debt
+    while the Financing table has loans on its date takes the debt from the loans (the debt box wasn't filled in),
+    and its equity is the company value less that debt."""
+    debt, from_loans = v.debt_cents, False
+    if not debt:
+        lb = loan_debt(pf, h, date.fromisoformat(v.date))
+        if lb:
+            debt, from_loans = lb, True
+    if v.company_value_cents is not None:
+        return v.company_value_cents, debt, (v.company_value_cents - (debt or 0)) if from_loans else v.value_cents, \
+            from_loans
+    return (v.value_cents + debt if debt is not None else None), debt, v.value_cents, from_loans
 
 
 @dataclass
@@ -1669,7 +1709,8 @@ def capex_since(company_path: str | Path, start: str | None, end: date) -> int:
         if not ids:
             return 0
         q = (f"SELECT COALESCE(SUM(l.debit_cents), 0) FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id "
-             f"WHERE l.account_id IN ({','.join('?' * len(ids))}) AND e.kind != 'opening' AND e.date <= ?"
+             f"WHERE l.account_id IN ({','.join('?' * len(ids))}) AND e.kind != 'opening' AND {NOT_FINANCED} "
+             f"AND e.date <= ?"
              + (" AND e.date >= ?" if start else ""))
         return conn.execute(q, [*ids, end.isoformat(), *([start] if start else [])]).fetchone()[0]
     except sqlite3.Error:

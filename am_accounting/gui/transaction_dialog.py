@@ -89,7 +89,19 @@ class TransactionDialog(QDialog):
         self.use_acct = QPushButton()
         self.use_acct.clicked.connect(self._use_contact_account)
         cat_row.addWidget(self.use_acct)
+        split = QPushButton("Split…")
+        split.setToolTip("Spread this transaction over several categories (e.g. part repairs, part supplies)")
+        split.clicked.connect(self._split)
+        cat_row.addWidget(split)
         form.addRow("Category:", cat_row)
+        parts = books.splits(tx.id)
+        if len(parts) > 1:
+            lbl = QLabel("Split: " + html.escape(" + ".join(f"{books.account(a).name} {fmt_money(c)}"
+                                                             for a, c, _m, _r in parts))
+                         + " — Split… to change it; picking one category replaces the split.")
+            lbl.setObjectName("hint")
+            lbl.setWordWrap(True)
+            form.addRow("", lbl)
         self.memo = QLineEdit(tx.memo)
         self.memo.setPlaceholderText("Note (optional)")
         form.addRow("Note:", self.memo)
@@ -142,6 +154,12 @@ class TransactionDialog(QDialog):
         if acct:
             self.category.setCurrentIndex(max(0, self.category.findData(acct)))
 
+    def _split(self) -> None:
+        if SplitDialog(self.books, self.tx.id, self).exec():
+            self.tx = self.books.transaction(self.tx.id)
+            self.category.setCurrentIndex(max(0, self.category.findData(self.tx.category_id)))
+            self.save()   # keep the name and note chosen here too, and close
+
     def _loan_payment(self) -> None:
         from .loans_dialog import LoanSplitDialog
 
@@ -182,6 +200,133 @@ class TransactionDialog(QDialog):
                 self.books.set_memo(tx.id, self.memo.text().strip())
             if name and cat is None:
                 parties.apply_learned(self.books, [self.books.transaction(tx.id)])
+        except ValueError as e:
+            error(self, "Couldn't save", str(e))
+            return
+        self.accept()
+
+
+class SplitDialog(QDialog):
+    """One bank transaction over several categories: a line per category with its amount (and a note), adding up to
+    the transaction's amount."""
+
+    def __init__(self, books: Books, tx_id: int, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QVBoxLayout
+
+        self.books = books
+        self.tx = tx = books.transaction(tx_id)
+        self.total = abs(tx.amount_cents)
+        self.setWindowTitle("Split Transaction")
+        self.resize(760, 380)
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<b>{html.escape(tx.description)}</b> · {tx.date} · "
+                      f"<b>{fmt_money(tx.amount_cents, parens=False)}</b>")
+        head.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(head)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Category", "Amount", "Note"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(1, 150)
+        self.table.setColumnWidth(2, 220)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        add = QPushButton("Add Line")
+        add.clicked.connect(lambda: self.add_line())
+        rem = QPushButton("Remove Line")
+        rem.clicked.connect(self.remove_line)
+        rest = QPushButton("Put the Rest Here")
+        rest.setToolTip("Set the selected line's amount to what's left to assign")
+        rest.clicked.connect(self.rest_here)
+        row.addWidget(add)
+        row.addWidget(rem)
+        row.addWidget(rest)
+        row.addStretch(1)
+        self.left = QLabel()
+        self.left.setTextFormat(Qt.TextFormat.RichText)
+        row.addWidget(self.left)
+        lay.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self._refs: list[str] = []
+        parts = books.splits(tx.id)
+        if parts:
+            for a, c, m, r in parts:
+                self.add_line(a, c, m, r)
+        else:
+            self.add_line(tx.category_id, self.total)
+            self.add_line()
+        self._update()
+
+    def add_line(self, account_id: int | None = None, cents: int = 0, memo: str = "", ref: str = "") -> None:
+        from PySide6.QtWidgets import QDoubleSpinBox
+
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        combo = QComboBox()
+        combo.setMaxVisibleItems(25)
+        fill_account_combo(combo, self.books, include_none="— pick a category —", exclude={self.tx.bank_account_id})
+        combo.setCurrentIndex(max(0, combo.findData(account_id)))
+        self.table.setCellWidget(r, 0, combo)
+        box = QDoubleSpinBox()
+        box.setRange(0, 1e12)
+        box.setDecimals(2)
+        box.setPrefix("$ ")
+        box.setGroupSeparatorShown(True)
+        box.setValue(cents / 100)
+        box.valueChanged.connect(self._update)
+        self.table.setCellWidget(r, 1, box)
+        self.table.setCellWidget(r, 2, QLineEdit(memo))
+        self._refs.append(ref)
+
+    def remove_line(self) -> None:
+        r = self.table.currentRow()
+        if r >= 0 and self.table.rowCount() > 1:
+            self.table.removeRow(r)
+            del self._refs[r]
+            self._update()
+
+    def lines(self) -> list[tuple[int | None, int, str, str]]:
+        out = []
+        for r in range(self.table.rowCount()):
+            a = self.table.cellWidget(r, 0).currentData()
+            out.append((a if isinstance(a, int) else None, round(self.table.cellWidget(r, 1).value() * 100),
+                        self.table.cellWidget(r, 2).text().strip(), self._refs[r]))
+        return out
+
+    def assigned(self) -> int:
+        return sum(c for _a, c, _m, _r in self.lines())
+
+    def rest_here(self) -> None:
+        r = max(0, self.table.currentRow())
+        box = self.table.cellWidget(r, 1)
+        box.setValue((box.value() * 100 + self.total - self.assigned()) / 100)
+
+    def _update(self, *_) -> None:
+        left = self.total - self.assigned()
+        self.left.setText(f"Assigned <b>{fmt_money(self.assigned())}</b> of {fmt_money(self.total)}"
+                          + (" · <span style='color:#1b7f3b'>✓ all assigned</span>" if not left else
+                             f" · <span style='color:#b3261e'>{fmt_money(abs(left))} "
+                             f"{'left to assign' if left > 0 else 'too much'}</span>"))
+
+    def save(self) -> None:
+        parts = [x for x in self.lines() if x[1]]
+        if any(a is None for a, _c, _m, _r in parts):
+            error(self, "Couldn't save", "Pick a category on every line with an amount")
+            return
+        if self.assigned() != self.total:
+            error(self, "Couldn't save", f"The lines add up to {fmt_money(self.assigned())}, not "
+                                         f"{fmt_money(self.total)}")
+            return
+        try:
+            if len(parts) == 1:                      # one category again
+                self.books.set_category(self.tx.id, parts[0][0], source="manual")
+            else:
+                self.books.set_splits(self.tx.id, parts, source="manual")
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return

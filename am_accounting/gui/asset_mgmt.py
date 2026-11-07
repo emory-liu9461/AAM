@@ -340,10 +340,16 @@ class ValuationDialog(QDialog):
             if not f.error:
                 books_debt = f.debt
                 self.debt.setValue(f.debt / 100)
+        loan_debt = pfm.loan_debt(pf, holding)
+        if loan_debt:                 # the loans on Financing & Cap Table
+            self.debt.setValue(loan_debt / 100)
         form.addRow("Date:", self.date)
         form.addRow("Company value (100%):", self.company_value)
         form.addRow("Debt in place:", self.debt)
-        if books_debt is not None:
+        if loan_debt:
+            form.addRow("", QLabel(f"<span style='color:gray'>Loans on Financing &amp; Cap Table today: "
+                                   f"{fmt_money(loan_debt)}</span>"))
+        elif books_debt is not None:
             form.addRow("", QLabel(f"<span style='color:gray'>Debt in its books today: {fmt_money(books_debt)}</span>"))
         form.addRow("", self.equity_only)
         form.addRow("Equity value (100%):", self.equity)
@@ -459,7 +465,26 @@ class LoanDialog(QDialog):
                 self._book[i] = bal
                 self.account.addItem(f"{n}  ·  {fmt_money(bal)} owing", i)
         self.account.setCurrentIndex(max(0, self.account.findData(ln.account_id)))
+        if holding.company_path:
+            self.account.setItemText(0, "(new account — created in the books)")
         form.addRow("Account in the books:", self.account)
+        self.asset = QComboBox()        # the other side on the balance sheet
+        self.asset.addItem("Assets Held", None)
+        if holding.company_path and Path(holding.company_path).exists():
+            import sqlite3
+
+            con = sqlite3.connect(f"file:{Path(holding.company_path)}?mode=ro", uri=True)
+            try:
+                for i, code, name in con.execute("SELECT id, code, name FROM accounts WHERE type='asset' AND is_bank=0 "
+                                                 "AND active=1 AND lower(name)!='assets held' ORDER BY code"):
+                    self.asset.addItem(f"{code} · {name}", i)
+            finally:
+                con.close()
+        self.asset.setCurrentIndex(max(0, self.asset.findData(ln.asset_account_id)))
+        self.asset.setToolTip("On the balance sheet the loan is matched to this asset (the property or business it "
+                              "paid for). Record the advance from the bank instead if the money came into the bank.")
+        if holding.company_path:
+            form.addRow("Balance sheet: matched to", self.asset)
         self.principal = _money_box()
         self.principal.setValue((ln.principal_cents or (ln.book_balance or 0)) / 100)
         self.principal.setToolTip("The original amount borrowed (or the credit line's limit)")
@@ -580,7 +605,8 @@ class LoanDialog(QDialog):
             self.rate_type.currentText(), _iso(self.start.date()), None,
             round(self.payment.value() * 100) if self.own_payment.isChecked() else 0, self.freq.currentText(),
             self.note.text(), acct, self.loan.id, self.loan.holding_id, term_months=term, repayment=repay,
-            amort_months=0 if repay == "Interest only" or amort == term else amort)
+            amort_months=0 if repay == "Interest only" or amort == term else amort,
+            asset_account_id=self.asset.currentData(), book_entry_id=self.loan.book_entry_id)
 
     def _update(self, *_) -> None:
         acct = self.account.currentData()
@@ -2567,11 +2593,10 @@ class AssetManagementView(QWidget):
         vals = list(reversed(self.pf.valuations(h.id)))
         self.co_vals.setRowCount(len(vals))
         for r, v in enumerate(vals):
-            cv = v.company_value_cents if v.company_value_cents is not None else (
-                v.value_cents + v.debt_cents if v.debt_cents is not None else None)
+            cv, debt, eq, _ = pfm.valuation_figures(self.pf, h, v)
             _set_row(self.co_vals, r, [v.date, fmt_money(cv) if cv is not None else "",
-                                       fmt_money(v.debt_cents) if v.debt_cents is not None else "",
-                                       fmt_money(v.value_cents), fmt_money(round(v.value_cents * h.ownership_pct / 100)),
+                                       fmt_money(debt) if debt is not None else "",
+                                       fmt_money(eq), fmt_money(round(eq * h.ownership_pct / 100)),
                                        v.method, v.note], {1, 2, 3, 4})
 
     def _open_company_overview(self, index) -> None:
@@ -2690,6 +2715,7 @@ class AssetManagementView(QWidget):
             self.fin_info.setText("<i>No holdings yet.</i>")
             return
         as_of = self._as_of_date()
+        self._book_loans(p.holding, quiet=True)     # loans entered here are on the company's balance sheet
         self._fin_rows = pfm.loans(self.pf, p.holding, as_of)
         self.fin_loan_cells = loan_cells(self._fin_rows, as_of)
         tot = pfm.financing_totals(self._fin_rows)
@@ -2781,12 +2807,13 @@ class AssetManagementView(QWidget):
             error(self, "No books", "Link this company to its books first (Company Overview → Edit…).")
             return
         try:
-            acct, opening = ll.ensure_account(self.pf, books, ll.CompanyLoan(p.holding, ln))
+            acct, _ = ll.ensure_account(self.pf, books, ll.CompanyLoan(p.holding, ln))
+            done = ll.book_loan(self.pf, books, ll.CompanyLoan(p.holding, ln))
             name = books.account(acct).name
         finally:
             books.close()
         info(self, "Linked to the books", f"{ln.lender} is linked to “{name}” in {p.holding.name}'s books."
-             + (f" Opening balance {fmt_money(opening)} (the scheduled balance when the books start)." if opening
+             + (" It's on the balance sheet, matched to Assets Held (Journal Entries)." if done in ("posted", "updated")
                 else "") + "\n\nRecord its payments in Accounting → Transactions → Loans….")
         self.refresh()
 
@@ -2826,14 +2853,27 @@ class AssetManagementView(QWidget):
         if loan_row is not None and 0 <= loan_row < len(self._fin_rows):
             self._fin_select(loan_row)
 
+    def _book_loans(self, holding, quiet: bool = False) -> None:
+        """Loans on the company's balance sheet (the loan account against Assets Held)."""
+        from .. import loan_link as ll
+
+        try:
+            ll.book_loans(self.pf, holding)
+        except Exception as e:  # noqa: BLE001 — the books may be busy or read-only; the loan is saved
+            if quiet:
+                return
+            error(self, "Not in the books yet", f"The loan is saved but couldn't be put in the books: {e}")
+
     def _fin_add_loan(self) -> None:
         p = self._fin_perf()
         if p and LoanDialog(self.pf, p.holding, parent=self).exec():
+            self._book_loans(p.holding)
             self.refresh()
 
     def _fin_edit_loan(self) -> None:
         p, ln = self._fin_perf(), self._selected_loan()
         if p and ln and LoanDialog(self.pf, p.holding, ln, self).exec():
+            self._book_loans(p.holding)
             self.refresh()
 
     def _fin_delete_loan(self) -> None:
@@ -2844,7 +2884,16 @@ class AssetManagementView(QWidget):
             error(self, "In the books", f"{ln.lender} is a debt account in the company's books. Edit it to add "
                                         "its terms; to remove it, change the books.")
             return
-        if confirm(self, "Delete loan", f"Delete {ln.lender}'s terms from the portfolio? (The books aren't touched.)"):
+        if confirm(self, "Delete loan", f"Delete {ln.lender} from the portfolio? Its entry matching it to Assets Held "
+                                        "comes out of the books; its account and payments stay."):
+            from .. import loan_link as ll
+
+            books = self._fin_books()
+            if books is not None:
+                try:
+                    ll.unbook_loan(books, ln)
+                finally:
+                    books.close()
             pfm.delete_loan(self.pf, ln.id)
             self.refresh()
 

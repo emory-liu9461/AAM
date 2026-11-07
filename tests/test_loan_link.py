@@ -25,7 +25,7 @@ def test_loan_payments_split_into_principal_and_interest(tmp_path):
     loans = ll.company_loans(b)
     assert [c.loan.lender for c in loans] == ["TD Bank", "BDC"]
     td, bdc = loans
-    acct, opening = ll.ensure_account(pf, b, td)          # older than the books: opening balance
+    acct, opening = ll.ensure_account(pf, b, td, opening=True)   # older than the books: opening balance
     assert b.account(acct).name == "Mortgage – TD Bank" and b.account(acct).type == "liability"
     sched = td.loan.scheduled_balance(date(2026, 1, 1))
     assert opening == sched and ll.book_balance(b, acct, "2026-01-02") == sched
@@ -78,3 +78,54 @@ def test_consecutive_payments_use_the_falling_balance(tmp_path):
     assert ll.book_balance(b, acct, "2026-04-02") == rows[2].balance          # books match the table
     pf.close()
     b.close()
+
+
+def test_loans_go_on_the_balance_sheet_against_assets_held(tmp_path):
+    from am_accounting import reports
+
+    b = Books.open(tmp_path / "op.amdb", create=True)
+    bank = b.account_by_code("1000").id
+    b.import_transactions(bank, [ParsedTransaction(date(2026, 1, 2), "RENT DEPOSIT", 20_000_00),
+                                 ParsedTransaction(date(2026, 5, 1), "EQUITABLE MTG PMT", -12_729_17)])
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("1001124102 Ontario Inc.", company_path=str(tmp_path / "op.amdb"))
+    pf.save_holding(h)
+    pfm.save_loan(pf, h.id, pfm.Loan("Equitable Bank", "Mortgage", 2_350_000_00, rate_pct=6.5,
+                                     start_date="2026-04-01", term_months=12, repayment="Interest only"))
+    pfm.save_loan(pf, h.id, pfm.Loan("Old Bank", "Term loan", 100_000_00, rate_pct=5.0, start_date="2024-01-01",
+                                     term_months=60))
+    assert ll.book_loans(pf, h) == 2
+    assert ll.book_loans(pf, h) == 0                                   # nothing twice
+    b = Books.open(tmp_path / "op.amdb")
+    by = {x.lender: x for x in pfm.loans(pf, h, with_books=False)}
+    eq, old = by["Equitable Bank"], by["Old Bank"]
+    held = next(a for a in b.accounts() if a.name == "Assets Held")
+    assert held.type == "asset" and held.subtype == "fixed_asset"
+    assert ll.book_balance(b, eq.account_id, "2026-04-02") == 2_350_000_00     # borrowed on its start date
+    assert ll.book_balance(b, eq.account_id, "2026-03-31") == 0
+    sched = old.scheduled_balance(date(2026, 1, 1))
+    assert ll.book_balance(b, old.account_id, "2026-01-02") == sched            # owed when the books start
+    bs = reports.balance_sheet(b, "2026-06-30")
+    assert all(bs.checks.values()) and bs.value("Assets Held") == 2_350_000_00 + sched
+    assert pfm.loans(pf, h, date(2026, 6, 30))[0].balance in (2_350_000_00, sched)     # balance read from the books
+    f = pfm.company_financials(str(tmp_path / "op.amdb"), date(2026, 6, 30))
+    assert f.capex_ltm == 0 and f.debt == 2_350_000_00 + sched                 # financing, not capital spending
+    assert pfm.capex_since(str(tmp_path / "op.amdb"), None, date(2026, 6, 30)) == 0
+    b.close()
+    # matched to another asset instead
+    b = Books.open(tmp_path / "op.amdb")
+    bldg = b.add_account("1610", "Building", "asset", "fixed_asset").id
+    b.close()
+    eq.asset_account_id = bldg
+    pfm.save_loan(pf, h.id, eq)
+    assert ll.book_loans(pf, h) == 1
+    b = Books.open(tmp_path / "op.amdb")
+    assert b.ledger_totals()[bldg] == 2_350_000_00
+    # deleted in Journal Entries: left as it is
+    b.delete_journal_entry({x.lender: x for x in pfm.loans(pf, h, with_books=False)}["Equitable Bank"].book_entry_id)
+    b.close()
+    assert ll.book_loans(pf, h) == 0
+    eq2 = next(x for x in pfm.loans(pf, h, with_books=False) if x.lender == "Equitable Bank")
+    assert eq2.book_entry_id == -1
+    pf.close()

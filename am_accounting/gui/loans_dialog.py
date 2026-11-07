@@ -153,7 +153,8 @@ class LoanPaymentsDialog(QDialog):
         if not pf:
             return
         try:
-            acct, opening = ll.ensure_account(pf, self.books, self.cls[r])
+            acct, _ = ll.ensure_account(pf, self.books, self.cls[r])
+            done = ll.book_loan(pf, self.books, self.cls[r])
         except ValueError as e:
             error(self, "Couldn't create the account", str(e))
             return
@@ -161,8 +162,9 @@ class LoanPaymentsDialog(QDialog):
             pf.close()
         self.changed = True
         msg = f"“{self.books.account(acct).name}” is in the chart of accounts and linked to the loan."
-        if opening:
-            msg += f"\n\nOpening balance {fmt_money(opening)} (the scheduled balance when these books start)."
+        if done in ("posted", "updated"):
+            msg += ("\n\nIt's on the balance sheet, matched to Assets Held (see Journal Entries) — record the advance "
+                    "from the bank instead if the money came into the bank account.")
         info(self, "Account created", msg)
         self.refresh()
 

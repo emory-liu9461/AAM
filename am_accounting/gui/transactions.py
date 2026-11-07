@@ -228,6 +228,10 @@ class TransactionsTab(QWidget):
         who_btn.setToolTip("Set who the selected transactions were with (one or many)")
         who_btn.clicked.connect(self.set_party_selected)
         actions.addWidget(who_btn)
+        split_btn = QPushButton("Split…")
+        split_btn.setToolTip("Spread the selected transaction over several categories")
+        split_btn.clicked.connect(self.split_selected)
+        actions.addWidget(split_btn)
         attach_btn = QPushButton("Open 📎")
         attach_btn.setToolTip("Open the invoice or receipt matched to the selected transaction (from the Invoice Dump)")
         attach_btn.clicked.connect(self.open_attachment)
@@ -330,6 +334,18 @@ class TransactionsTab(QWidget):
             self.changed.emit()
             return True
         return False
+
+    def split_selected(self) -> None:
+        from .common import info
+        from .transaction_dialog import SplitDialog
+
+        ids = self.selected_ids()
+        if len(ids) != 1:
+            info(self, "Split", "Select one transaction to split over several categories.")
+            return
+        if SplitDialog(self.books, ids[0], self).exec():
+            self.refresh()
+            self.changed.emit()
 
     def add_transaction(self) -> None:
         from .manual_entry import ManualTransactionDialog

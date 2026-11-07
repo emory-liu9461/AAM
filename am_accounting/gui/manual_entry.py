@@ -162,27 +162,34 @@ class JournalEntryDialog(QDialog):
         form.addRow("Description:", self.memo)
         lay.addLayout(form)
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Account", "Debit", "Credit"])
+        self.table.setHorizontalHeaderLabels(["Debit / Credit", "Account", "Amount"])
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(1, 150)
-        self.table.setColumnWidth(2, 150)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 130)
+        self.table.setColumnWidth(2, 170)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         lay.addWidget(self.table, 1)
         row = QHBoxLayout()
-        add = QPushButton("Add Line")
-        add.clicked.connect(lambda: self.add_line())
+        add = QPushButton("Add Debit")
+        add.clicked.connect(lambda: self.add_line(side="debit", fill=True))
+        addc = QPushButton("Add Credit")
+        addc.clicked.connect(lambda: self.add_line(side="credit", fill=True))
         rem = QPushButton("Remove Line")
         rem.clicked.connect(self.remove_line)
-        row.addWidget(add)
-        row.addWidget(rem)
+        bal = QPushButton("Balance This Line")
+        bal.setToolTip("Set the selected line's amount so debits equal credits")
+        bal.clicked.connect(self.balance_line)
+        for w in (add, addc, rem, bal):
+            row.addWidget(w)
         row.addStretch(1)
         self.totals = QLabel()
         self.totals.setTextFormat(Qt.TextFormat.RichText)
         row.addWidget(self.totals)
         lay.addLayout(row)
-        hint = QLabel("Debits increase assets and expenses; credits increase liabilities, equity and income. "
-                      "The two columns must add up to the same amount.")
+        hint = QLabel("For each line choose Debit or Credit, the account and the amount — e.g. buying a property: "
+                      "Debit the property, Credit the mortgage and Credit equity for the owners' money. Debits "
+                      "increase assets and expenses; credits increase liabilities, equity and income. Debits must "
+                      "equal credits.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -190,23 +197,40 @@ class JournalEntryDialog(QDialog):
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
-        for acct, dr, cr in (entry["lines"] if entry else [(None, 0, 0), (None, 0, 0)]):
-            self.add_line(acct, dr, cr)
+        if entry:
+            for acct, dr, cr in entry["lines"]:
+                self.add_line(acct, dr or cr, side="debit" if dr else "credit")
+        else:
+            self.add_line(side="debit")
+            self.add_line(side="credit")
         self._update()
 
-    def add_line(self, account_id: int | None = None, debit: int = 0, credit: int = 0) -> None:
+    def add_line(self, account_id: int | None = None, cents: int = 0, *, side: str = "debit",
+                 fill: bool = False) -> None:
+        """A line: Debit or Credit, the account, the amount (``fill``: what's needed to balance the entry)."""
+        if fill and not cents:
+            dr, cr = self.sums()
+            cents = max(0, (dr - cr) if side == "credit" else (cr - dr))
         r = self.table.rowCount()
         self.table.insertRow(r)
+        sd = QComboBox()
+        sd.addItem("Debit", "debit")
+        sd.addItem("Credit", "credit")
+        sd.setCurrentIndex(0 if side == "debit" else 1)
+        sd.currentIndexChanged.connect(self._update)
+        self.table.setCellWidget(r, 0, sd)
         combo = QComboBox()
         combo.setMaxVisibleItems(25)
         fill_account_combo(combo, self.books, include_none="— pick an account —")
         combo.setCurrentIndex(max(0, combo.findData(account_id)))
-        self.table.setCellWidget(r, 0, combo)
-        for c, v in ((1, debit), (2, credit)):
-            box = _money()
-            box.setValue(v / 100)
-            box.valueChanged.connect(self._update)
-            self.table.setCellWidget(r, c, box)
+        self.table.setCellWidget(r, 1, combo)
+        box = _money()
+        box.setValue(cents / 100)
+        box.valueChanged.connect(self._update)
+        self.table.setCellWidget(r, 2, box)
+        self.table.setCurrentCell(r, 1)
+        if hasattr(self, "totals"):
+            self._update()
 
     def remove_line(self) -> None:
         r = self.table.currentRow()
@@ -215,16 +239,33 @@ class JournalEntryDialog(QDialog):
             self._update()
 
     def lines(self) -> list[tuple[int | None, int, int]]:
+        """[(account, debit cents, credit cents)]"""
         out = []
         for r in range(self.table.rowCount()):
-            acct = self.table.cellWidget(r, 0).currentData()
-            out.append((acct if isinstance(acct, int) else None, round(self.table.cellWidget(r, 1).value() * 100),
-                        round(self.table.cellWidget(r, 2).value() * 100)))
+            acct = self.table.cellWidget(r, 1).currentData()
+            cents = round(self.table.cellWidget(r, 2).value() * 100)
+            debit = self.table.cellWidget(r, 0).currentData() == "debit"
+            out.append((acct if isinstance(acct, int) else None, cents if debit else 0, 0 if debit else cents))
         return out
 
+    def sums(self) -> tuple[int, int]:
+        ls = self.lines()
+        return sum(x[1] for x in ls), sum(x[2] for x in ls)
+
+    def balance_line(self) -> None:
+        r = self.table.currentRow()
+        if r < 0:
+            return
+        box = self.table.cellWidget(r, 2)
+        mine = round(box.value() * 100)
+        dr, cr = self.sums()
+        debit = self.table.cellWidget(r, 0).currentData() == "debit"
+        other = (cr if debit else dr)
+        same = (dr if debit else cr) - mine
+        box.setValue(max(0, other - same) / 100)
+
     def _update(self, *_) -> None:
-        dr = sum(x[1] for x in self.lines())
-        cr = sum(x[2] for x in self.lines())
+        dr, cr = self.sums()
         diff = dr - cr
         self.totals.setText(f"Debits <b>{fmt_money(dr)}</b> · Credits <b>{fmt_money(cr)}</b>"
                             + (" · <span style='color:#1b7f3b'>✓ balanced</span>" if dr and not diff else

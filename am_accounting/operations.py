@@ -875,7 +875,10 @@ def _account_ids(company_path: str) -> dict[str, list[int]]:
 
 
 def _monthly_moves(company_path: str, account_ids: list[int], start: date, end: date) -> dict[str, tuple[int, int]]:
-    """{'YYYY-MM': (debits, credits)} posted to these accounts (opening balances left out)."""
+    """{'YYYY-MM': (debits, credits)} posted to these accounts (opening balances and loans matched to an asset —
+    no money moved — left out)."""
+    from .portfolio import NOT_FINANCED
+
     if not account_ids:
         return {}
     conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
@@ -884,7 +887,7 @@ def _monthly_moves(company_path: str, account_ids: list[int], start: date, end: 
         return {ym: (d, c) for ym, d, c in conn.execute(
             f"SELECT substr(e.date, 1, 7), SUM(l.debit_cents), SUM(l.credit_cents) FROM journal_lines l "
             f"JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_id IN ({q}) AND e.kind != 'opening' "
-            f"AND e.date >= ? AND e.date <= ? GROUP BY substr(e.date, 1, 7)",
+            f"AND {NOT_FINANCED} AND e.date >= ? AND e.date <= ? GROUP BY substr(e.date, 1, 7)",
             [*account_ids, start.isoformat(), end.isoformat()])}
     finally:
         conn.close()

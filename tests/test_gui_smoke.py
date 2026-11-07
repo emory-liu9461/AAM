@@ -132,7 +132,8 @@ def test_dashboard_tab(app, tmp_path):
     w.create_sample_company()
     assert w.books.company_name == SAMPLE_NAME
     dash = w.dashboard_tab
-    assert dash.data.data_through == date.today().isoformat()
+    latest = max(t.date for t in w.books.transactions())          # the sample runs up to today
+    assert dash.data.data_through == latest and (date.today() - date.fromisoformat(latest)).days <= 3
     assert [p.days for p in dash.data.income] == [30, 90, 120]
     assert "Last updated" in dash.updated.text()
     w.open_report_from_dashboard("Income Statement (P&L)|30")
@@ -1442,24 +1443,42 @@ def test_manual_transaction_and_journal_entries(app, tmp_path):
     je = JournalEntryDialog(b)
     je.date.setDate(QDate(2026, 6, 30))
     je.memo.setText("Depreciation H1")
-    je.table.cellWidget(0, 0).setCurrentIndex(je.table.cellWidget(0, 0).findData(dep))
-    je.table.cellWidget(0, 1).setValue(1200)
-    je.table.cellWidget(1, 0).setCurrentIndex(je.table.cellWidget(1, 0).findData(acc))
+    assert [je.table.cellWidget(r, 0).currentText() for r in range(2)] == ["Debit", "Credit"]
+    je.table.cellWidget(0, 1).setCurrentIndex(je.table.cellWidget(0, 1).findData(dep))
+    je.table.cellWidget(0, 2).setValue(1200)
+    je.table.cellWidget(1, 1).setCurrentIndex(je.table.cellWidget(1, 1).findData(acc))
     je.table.cellWidget(1, 2).setValue(1000)
     assert "out by $200.00" in je.totals.text()
-    je.table.cellWidget(1, 2).setValue(1200)
-    assert "balanced" in je.totals.text()
+    je.table.setCurrentCell(1, 1)
+    je.balance_line()
+    assert je.table.cellWidget(1, 2).value() == 1200 and "balanced" in je.totals.text()
     je.save()
     assert b.ledger_totals(end="2026-12-31")[dep] == 1200_00
     lst = JournalEntriesDialog(b)
     assert lst.table.rowCount() == 1 and lst.table.item(0, 1).text() == "Depreciation H1"
     lst.table.selectRow(0)
     ch = JournalEntryDialog(b, lst._current())
-    ch.table.cellWidget(0, 1).setValue(1500)
+    assert ch.table.cellWidget(0, 0).currentText() == "Debit" and ch.table.cellWidget(1, 0).currentText() == "Credit"
+    ch.table.cellWidget(0, 2).setValue(1500)
     ch.table.cellWidget(1, 2).setValue(1500)
     ch.save()
     lst.refresh()
     assert lst.table.rowCount() == 1 and b.ledger_totals(end="2026-12-31")[dep] == 1500_00
+    # a property bought with a mortgage and the owners' money: one debit, two credits
+    prop = b.add_account("1610", "Property", "asset", "fixed_asset").id
+    mtg = b.add_account("2710", "Mortgage", "liability", "long_term").id
+    eqa = b.add_account("3950", "Partners' Capital", "equity", "").id
+    je = JournalEntryDialog(b)
+    je.memo.setText("Purchase of 12 Main St")
+    je.table.cellWidget(0, 1).setCurrentIndex(je.table.cellWidget(0, 1).findData(prop))
+    je.table.cellWidget(0, 2).setValue(1_000_000)
+    je.table.cellWidget(1, 1).setCurrentIndex(je.table.cellWidget(1, 1).findData(mtg))
+    je.table.cellWidget(1, 2).setValue(750_000)
+    je.add_line(eqa, side="credit", fill=True)               # the rest: what balances the entry
+    assert je.table.cellWidget(2, 2).value() == 250_000 and "balanced" in je.totals.text()
+    je.save()
+    t = b.ledger_totals(end="2026-12-31")
+    assert t[prop] == 1_000_000_00 and t[mtg] == -750_000_00 and t[eqa] == -250_000_00
     b.close()
 
 
