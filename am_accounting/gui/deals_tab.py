@@ -7,8 +7,9 @@ from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-                               QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QProgressBar,
+                               QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import deals as dl
 from ..money import fmt_money
@@ -120,30 +121,52 @@ class DealDialog(QDialog):
             right.addRow(label, w)
         tabs.addTab(det, "Details")
 
-        # due-diligence checklist
+        # the deal checklist: sections → groups → items, each with a status, a due date and notes
         ddw = QWidget()
         dlay = QVBoxLayout(ddw)
+        top = QHBoxLayout()
         self.progress = QLabel()
-        dlay.addWidget(self.progress)
-        self.dd = QTableWidget(0, 4)
-        self.dd.setHorizontalHeaderLabels(["Done", "Item", "Due", "Note"])
-        self.dd.verticalHeader().setVisible(False)
-        self.dd.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.dd.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.dd.setColumnWidth(0, 50)
-        self.dd.setColumnWidth(2, 140)
+        self.progress.setTextFormat(Qt.TextFormat.RichText)
+        top.addWidget(self.progress, 1)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setMaximumWidth(260)
+        top.addWidget(self.bar)
+        dlay.addLayout(top)
+        self.dd = QTreeWidget()
+        self.dd.setColumnCount(4)
+        self.dd.setHeaderLabels(["Deliverable", "Status", "Due", "Notes"])
+        self.dd.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.dd.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.dd.setColumnWidth(1, 130)
+        self.dd.setColumnWidth(2, 130)
+        self.dd.setEditTriggers(QTreeWidget.EditTrigger.DoubleClicked | QTreeWidget.EditTrigger.EditKeyPressed
+                                | QTreeWidget.EditTrigger.SelectedClicked)
         dlay.addWidget(self.dd, 1)
         brow = QHBoxLayout()
-        for text, slot in (("Add Item", lambda: self._add_item(dl.DDItem(""))), ("Remove Item", self._remove_item),
-                           ("Add the Usual Items", self._usual)):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            brow.addWidget(b)
+        for text, slot, tip in (
+                ("Add Item", self._add_item_here, "A deliverable under the selected group or section"),
+                ("Add Group", self._add_group_here, "A group under the selected section (e.g. Operating Bills)"),
+                ("Add Section", self._add_section, "A new section (e.g. Insurance)"),
+                ("Remove", self._remove_item, "Remove the selected item, group or section"),
+                ("Load the Standard Checklist", self._usual, "Add the standard items that aren't here yet"),
+                ("Export to Excel…", self._export, "The checklist as a spreadsheet to send or print")):
+            btn = QPushButton(text)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            brow.addWidget(btn)
         brow.addStretch(1)
         dlay.addLayout(brow)
-        tabs.addTab(ddw, "Due Diligence")
+        hint = QLabel("Set each deliverable's status — In Progress, Done or N/A — and add notes. Double-click a name to "
+                      "rename it. Progress counts Done out of everything that applies (N/A left out).")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        dlay.addWidget(hint)
+        tabs.addTab(ddw, "Deal Checklist")
+        self.tabs = tabs
         for it in (dl.checklist(pf, d.id) if d.id else []):
             self._add_item(it)
+        self.dd.expandAll()
 
         # notes
         self.notes = QPlainTextEdit(d.notes)
@@ -169,42 +192,156 @@ class DealDialog(QDialog):
         if price and self.equity.value():
             parts.append(f"LTV {(price - self.equity.value()) / price * 100:.0f}% if the rest is debt")
         self.metrics.setText(" · ".join(parts))
-        done = sum(1 for r in range(self.dd.rowCount()) if self.dd.cellWidget(r, 0).isChecked())
-        self.progress.setText(f"<b>{done} of {self.dd.rowCount()}</b> done" if self.dd.rowCount() else
-                              "No checklist yet — Add the Usual Items, or your own. It starts by itself when the deal "
-                              "moves to due diligence.")
+        self._progress()
 
-    def _add_item(self, it: dl.DDItem) -> None:
-        r = self.dd.rowCount()
-        self.dd.insertRow(r)
-        box = QCheckBox()
-        box.setChecked(it.done)
-        box.toggled.connect(self._update)
-        self.dd.setCellWidget(r, 0, box)
-        self.dd.setItem(r, 1, QTableWidgetItem(it.item))
-        self.dd.setCellWidget(r, 2, _date_box(it.due))
-        self.dd.setItem(r, 3, QTableWidgetItem(it.note))
-        self._update()
+    # ---- the checklist tree ----
+    KIND = Qt.ItemDataRole.UserRole
+
+    def _node(self, parent, text: str, kind: str) -> QTreeWidgetItem:
+        from .theme import c as tc
+
+        n = QTreeWidgetItem([text])
+        n.setData(0, self.KIND, kind)
+        n.setFlags(n.flags() | Qt.ItemFlag.ItemIsEditable)
+        f = n.font(0)
+        f.setBold(True)
+        n.setFont(0, f)
+        if kind == "section":
+            from PySide6.QtGui import QColor
+
+            n.setForeground(0, QColor(tc("link")))
+        (parent.addChild(n) if parent is not None else self.dd.addTopLevelItem(n))
+        return n
+
+    def _find(self, parent, text: str, kind: str) -> QTreeWidgetItem | None:
+        kids = ([parent.child(i) for i in range(parent.childCount())] if parent is not None else
+                [self.dd.topLevelItem(i) for i in range(self.dd.topLevelItemCount())])
+        return next((k for k in kids if k.data(0, self.KIND) == kind and k.text(0) == text), None)
+
+    def _add_item(self, it: dl.DDItem, parent: QTreeWidgetItem | None = None) -> QTreeWidgetItem:
+        if parent is None:
+            sec = self._find(None, it.section or "Other", "section") or self._node(None, it.section or "Other",
+                                                                                   "section")
+            parent = sec
+            if it.grp:
+                parent = self._find(sec, it.grp, "group") or self._node(sec, it.grp, "group")
+        leaf = QTreeWidgetItem([it.item, "", "", it.note])
+        leaf.setData(0, self.KIND, "item")
+        leaf.setFlags(leaf.flags() | Qt.ItemFlag.ItemIsEditable)
+        parent.addChild(leaf)
+        box = QComboBox()
+        box.addItems([x or "—" for x in dl.STATUSES])
+        box.setCurrentIndex(dl.STATUSES.index(it.status) if it.status in dl.STATUSES else 0)
+        box.currentIndexChanged.connect(lambda *_, b=box: (self._paint(b), self._progress()))
+        self._paint(box)
+        self.dd.setItemWidget(leaf, 1, box)
+        self.dd.setItemWidget(leaf, 2, _date_box(it.due))
+        parent.setExpanded(True)
+        self._progress()
+        return leaf
+
+    @staticmethod
+    def _paint(box: QComboBox) -> None:
+        """Done green, In Progress amber, N/A grey — like the spreadsheet."""
+        from .theme import is_dark
+
+        status = dl.STATUSES[box.currentIndex()]
+        light = {"Done": ("#c6efce", "#006100"), "In Progress": ("#ffeb9c", "#9c5700"), "N/A": ("#ededed", "#595959")}
+        dark = {"Done": ("#1f4d2b", "#9be3ae"), "In Progress": ("#5a4a12", "#ffd970"), "N/A": ("#3a3a3a", "#b0b0b0")}
+        bg, fg = (dark if is_dark() else light).get(status, (None, None))
+        box.setStyleSheet(f"QComboBox {{ background: {bg}; color: {fg}; }}" if bg else "")
+
+    def _status(self, leaf: QTreeWidgetItem) -> str:
+        return dl.STATUSES[self.dd.itemWidget(leaf, 1).currentIndex()]
+
+    def _leaves(self, node=None):
+        kids = ([node.child(i) for i in range(node.childCount())] if node is not None else
+                [self.dd.topLevelItem(i) for i in range(self.dd.topLevelItemCount())])
+        for k in kids:
+            if k.data(0, self.KIND) == "item":
+                yield k
+            else:
+                yield from self._leaves(k)
+
+    def _progress(self) -> None:
+        if not hasattr(self, "bar"):
+            return
+        items = self.items()
+        p = dl.progress(items)
+        self.bar.setValue(round((p.pct or 0) * 100))
+        self.progress.setText(f"<b>{p.done} of {p.needed}</b> done" + (f" · {p.in_progress} in progress"
+                                                                         if p.in_progress else "")
+                              + (f" · {p.na} N/A" if p.na else "") if p.total else
+                              "No checklist yet — Load the Standard Checklist, or add your own. It starts by itself "
+                              "when the deal moves to due diligence.")
+        for i in range(self.dd.topLevelItemCount()):          # each section's progress beside its name
+            sec = self.dd.topLevelItem(i)
+            sp = dl.progress([dl.DDItem("x", status=self._status(x)) for x in self._leaves(sec)])
+            sec.setText(1, f"{sp.done} / {sp.needed}" if sp.total else "")
+            sec.setText(3, f"{sp.in_progress} in progress" if sp.in_progress else "")
+
+    def _add_item_here(self) -> None:
+        n = self.dd.currentItem()
+        parent = n.parent() if n is not None and n.data(0, self.KIND) == "item" else n
+        if parent is None:
+            parent = self._find(None, "Other", "section") or self._node(None, "Other", "section")
+        leaf = self._add_item(dl.DDItem("New item"), parent)
+        self.dd.setCurrentItem(leaf)
+        self.dd.editItem(leaf, 0)
+
+    def _add_group_here(self) -> None:
+        n = self.dd.currentItem()
+        while n is not None and n.data(0, self.KIND) != "section":
+            n = n.parent()
+        if n is None:
+            n = self._find(None, "Other", "section") or self._node(None, "Other", "section")
+        g = self._node(n, "New group", "group")
+        n.setExpanded(True)
+        self.dd.setCurrentItem(g)
+        self.dd.editItem(g, 0)
+
+    def _add_section(self) -> None:
+        s_ = self._node(None, "New section", "section")
+        self.dd.setCurrentItem(s_)
+        self.dd.editItem(s_, 0)
 
     def _remove_item(self) -> None:
-        r = self.dd.currentRow()
-        if r >= 0:
-            self.dd.removeRow(r)
-            self._update()
+        n = self.dd.currentItem()
+        if n is None:
+            return
+        many = n.data(0, self.KIND) != "item" and n.childCount()
+        if many and not confirm(self, "Remove", f"Remove “{n.text(0)}” and everything under it?"):
+            return
+        (n.parent().removeChild(n) if n.parent() else self.dd.takeTopLevelItem(self.dd.indexOfTopLevelItem(n)))
+        self._progress()
 
     def _usual(self) -> None:
-        have = {(self.dd.item(r, 1).text() if self.dd.item(r, 1) else "").lower() for r in range(self.dd.rowCount())}
-        for x in dl.DD_ITEMS:
-            if x.lower() not in have:
-                self._add_item(dl.DDItem(x, due=_date_of(self.dd_deadline)))
+        have = {(it.section.lower(), it.grp.lower(), it.item.lower()) for it in self.items()}
+        for it in dl.standard_items(_date_of(self.dd_deadline)):
+            if (it.section.lower(), it.grp.lower(), it.item.lower()) not in have:
+                self._add_item(it)
+        self.dd.expandAll()
 
     def items(self) -> list[dl.DDItem]:
         out = []
-        for r in range(self.dd.rowCount()):
-            text = self.dd.item(r, 1).text() if self.dd.item(r, 1) else ""
-            note = self.dd.item(r, 3).text() if self.dd.item(r, 3) else ""
-            out.append(dl.DDItem(text, self.dd.cellWidget(r, 0).isChecked(), _date_of(self.dd.cellWidget(r, 2)), note))
+        for i in range(self.dd.topLevelItemCount()):
+            sec = self.dd.topLevelItem(i)
+            for leaf in self._leaves(sec):
+                parent = leaf.parent()
+                grp = parent.text(0).strip() if parent is not sec else ""
+                out.append(dl.DDItem(leaf.text(0), due=_date_of(self.dd.itemWidget(leaf, 2)), note=leaf.text(3),
+                                     section=sec.text(0).strip(), grp=grp, status=self._status(leaf)))
         return out
+
+    def _export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        name = self.name.text().strip() or "Deal"
+        path, _ = QFileDialog.getSaveFileName(self, "Export the deal checklist", f"Deal Checklist - {name}.xlsx",
+                                              "Excel (*.xlsx)")
+        if path:
+            dl.export_checklist(path, name, self.items())
+            info(self, "Exported", f"The checklist is saved to {path}.")
 
     def save(self) -> None:
         d = self.deal
@@ -609,6 +746,7 @@ class DealPipelinePage(QWidget):
         for text, slot, tip in (
                 ("New Deal…", self.new_deal, "Add a deal you're looking at"),
                 ("Open…", self.open_deal, "The selected deal's details, due-diligence checklist and notes"),
+                ("Checklist…", self.open_checklist, "The selected deal's checklist: deliverables, status, notes"),
                 ("◂ Back", self.move_back, "Move the selected deal back a stage"),
                 ("Advance ▸", self.advance, "New → Due Diligence → Under Contract → Closed"),
                 ("Mark Dead", self.mark_dead, "The deal didn't go ahead (kept under Closed & dead)"),
@@ -730,8 +868,10 @@ class DealPipelinePage(QWidget):
                         _short_date(d.received)]
             elif stage == "Due Diligence":
                 left = "" if days is None else (f" ({days} d)" if days >= 0 else " (past)")
-                vals = [d.name, short(d.price_cents) if d.price_cents else "—",
-                        _short_date(d.dd_deadline) + left, f"{d.dd_done} / {d.dd_total}" if d.dd_total else "—"]
+                need = d.dd_total - d.dd_na
+                vals = [d.name, short(d.price_cents) if d.price_cents else "—", _short_date(d.dd_deadline) + left,
+                        (f"{d.dd_done} / {need}" + (f" · {d.dd_progress} in progress" if d.dd_progress else ""))
+                        if d.dd_total else "—"]
             elif stage == "Under Contract":
                 what, when = d.key_date
                 left = "" if days is None else (f" ({days} d)" if days >= 0 else " (past)")
@@ -820,11 +960,18 @@ class DealPipelinePage(QWidget):
             self.refresh()
             self.select(dlg.deal.id)
 
-    def open_deal(self) -> None:
+    def open_deal(self, tab: int = 0) -> None:
         d = self._need()
-        if d and DealDialog(self.pf, dl.deal(self.pf, d.id), self).exec():
+        if not d:
+            return
+        dlg = DealDialog(self.pf, dl.deal(self.pf, d.id), self)
+        dlg.tabs.setCurrentIndex(tab)
+        if dlg.exec():
             self.refresh()
             self.select(d.id)
+
+    def open_checklist(self) -> None:
+        self.open_deal(tab=1)
 
     def advance(self) -> None:
         d = self._need()

@@ -17,10 +17,29 @@ from datetime import date
 STAGES = ["New", "Due Diligence", "Under Contract", "Closed", "Dead"]
 PIPELINE = STAGES[:3]          # the columns on the pipeline page
 ASSET_TYPES = ["Multifamily", "Mixed use", "Retail", "Office", "Industrial", "Land", "Operating business", "Other"]
-DD_ITEMS = ["Financials / T12 review", "Rent roll & lease audit", "Site visit & unit inspections",
-            "Building condition assessment", "Phase I environmental (ESA)", "Appraisal", "Title search",
-            "Zoning & permits", "Insurance quote", "Property tax review", "Service contracts review",
-            "Lender commitment", "Legal review / purchase agreement"]
+STATUSES = ["", "In Progress", "Done", "N/A"]   # blank = not started
+# The standard deal checklist: (section, group, item) — a blank group puts the item straight under its section.
+CHECKLIST: list[tuple[str, str, str]] = [
+    *[("Deliverables", "APS", x) for x in ("LOI", "Signed APS")],
+    *[("Deliverables", "Rent Roll", x) for x in ("Summary", "Leases", "N1s")],
+    *[("Deliverables", "Operating Bills", x) for x in ("Property Tax", "Hydro Bills", "Water Bill", "Gas Bill",
+                                                        "Insurance Bill", "Capex Bill")],
+    *[("Deliverables", "Legals / Financials", x) for x in ("Corp Info", "Financial Statements")],
+    *[("Appraisal", "", x) for x in ("APS", "Operating Budget", "Rent Roll", "Property Taxes", "Site Contact",
+                                     "Leases")],
+    ("BCA", "", "Site Contact"),
+    ("ESA", "", "Site Contact"),
+    *[("Financing", "Property Info", x) for x in ("Rent Roll", "Suite Layout and Finishes",
+                                                  "Historical Operating Statements",
+                                                  "TTM Property Tax, Insurance, Utilities",
+                                                  "Stabilized Appraisal Report", "Energy Report",
+                                                  "Signed Attestations", "ESA Report")],
+    ("Financing", "Sponsor & Property Questions", "Sponsor & Property Questions"),
+    *[("Financing", "Legal / Financial", x) for x in ("Org. Chart", "Financial Statements – 3 yr", "PNW Documents",
+                                                      "RE Portfolio (CMHC format)", "Credit Reports",
+                                                      "NOA, T1, T4", "Guarantors' PNW Documents")],
+]
+DD_ITEMS = [item for _s, _g, item in CHECKLIST]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS deals (
@@ -56,7 +75,10 @@ CREATE TABLE IF NOT EXISTS deal_dd (
     done     INTEGER NOT NULL DEFAULT 0,
     due      TEXT,
     note     TEXT NOT NULL DEFAULT '',
-    sort     INTEGER NOT NULL DEFAULT 0
+    sort     INTEGER NOT NULL DEFAULT 0,
+    section  TEXT NOT NULL DEFAULT '',
+    grp      TEXT NOT NULL DEFAULT '',
+    status   TEXT NOT NULL DEFAULT ''          -- '' | In Progress | Done | N/A
 );
 CREATE INDEX IF NOT EXISTS ix_deal_dd ON deal_dd(deal_id, sort);
 """
@@ -89,6 +111,8 @@ class Deal:
     id: int | None = None
     dd_done: int = 0          # checklist progress (read with the deal)
     dd_total: int = 0
+    dd_progress: int = 0      # in progress
+    dd_na: int = 0            # not applicable
 
     @property
     def cap_rate(self) -> float | None:
@@ -124,6 +148,13 @@ COLS = ["name", "address", "asset_type", "stage", "price_cents", "units", "sqft"
 
 def ready(pf) -> None:
     pf.conn.executescript(SCHEMA)
+    cols = {r[1] for r in pf.conn.execute("PRAGMA table_info(deal_dd)")}
+    with pf.conn:
+        for col in ("section", "grp", "status"):
+            if col not in cols:
+                pf.conn.execute(f"ALTER TABLE deal_dd ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+                if col == "status":
+                    pf.conn.execute("UPDATE deal_dd SET status='Done' WHERE done=1")
 
 
 def _row(r) -> Deal:
@@ -139,10 +170,11 @@ def deals(pf, stages: list[str] | None = None) -> list[Deal]:
         q += f" WHERE stage IN ({','.join('?' * len(stages))})"
         args = list(stages)
     out = [_row(r) for r in pf.conn.execute(q + " ORDER BY id", args)]
-    prog = {i: (d, t) for i, d, t in pf.conn.execute(
-        "SELECT deal_id, SUM(done), COUNT(*) FROM deal_dd GROUP BY deal_id")}
+    prog = {i: (d, t, p, n) for i, d, t, p, n in pf.conn.execute(
+        "SELECT deal_id, SUM(status='Done'), COUNT(*), SUM(status='In Progress'), SUM(status='N/A') FROM deal_dd "
+        "GROUP BY deal_id")}
     for d in out:
-        d.dd_done, d.dd_total = prog.get(d.id, (0, 0))
+        d.dd_done, d.dd_total, d.dd_progress, d.dd_na = prog.get(d.id, (0, 0, 0, 0))
     return sorted(out, key=lambda d: (STAGES.index(d.stage) if d.stage in STAGES else 9,
                                       d.key_date[1] or "9999", d.name.lower()))
 
@@ -225,11 +257,20 @@ class DDItem:
     note: str = ""
     id: int | None = None
     sort: int = 0
+    section: str = ""
+    grp: str = ""
+    status: str = ""          # '' (not started) | In Progress | Done | N/A
+
+    def __post_init__(self):
+        if self.done and not self.status:
+            self.status = "Done"
+        self.done = self.status == "Done"
 
 
 def checklist(pf, deal_id: int) -> list[DDItem]:
     ready(pf)
-    return [DDItem(r["item"], bool(r["done"]), r["due"], r["note"], r["id"], r["sort"])
+    return [DDItem(r["item"], False, r["due"], r["note"], r["id"], r["sort"], r["section"], r["grp"],
+                   r["status"] or ("Done" if r["done"] else ""))
             for r in pf.conn.execute("SELECT * FROM deal_dd WHERE deal_id=? ORDER BY sort, id", (deal_id,))]
 
 
@@ -239,16 +280,100 @@ def save_checklist(pf, deal_id: int, items: list[DDItem]) -> None:
     for it in items:
         if it.due:
             date.fromisoformat(it.due)
+        if it.status not in STATUSES:
+            raise ValueError(f"The status is one of {', '.join(x for x in STATUSES if x)} (or blank)")
     with pf.conn:
         pf.conn.execute("DELETE FROM deal_dd WHERE deal_id=?", (deal_id,))
-        pf.conn.executemany("INSERT INTO deal_dd(deal_id, item, done, due, note, sort) VALUES (?,?,?,?,?,?)",
-                            [(deal_id, it.item.strip(), int(it.done), it.due or None, it.note.strip(), k)
-                             for k, it in enumerate(items) if it.item.strip()])
+        pf.conn.executemany(
+            "INSERT INTO deal_dd(deal_id, item, done, due, note, sort, section, grp, status) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(deal_id, it.item.strip(), int(it.status == "Done"), it.due or None, it.note.strip(), k,
+              it.section.strip(), it.grp.strip(), it.status) for k, it in enumerate(items) if it.item.strip()])
+
+
+def standard_items(due: str | None = None) -> list[DDItem]:
+    return [DDItem(item, due=due, section=sec, grp=grp) for sec, grp, item in CHECKLIST]
 
 
 def start_checklist(pf, deal_id: int) -> None:
     d = deal(pf, deal_id)
-    save_checklist(pf, deal_id, [DDItem(x, due=d.dd_deadline) for x in DD_ITEMS])
+    save_checklist(pf, deal_id, standard_items(d.dd_deadline))
+
+
+@dataclass
+class Progress:
+    done: int = 0
+    in_progress: int = 0
+    na: int = 0
+    total: int = 0
+
+    @property
+    def needed(self) -> int:
+        return self.total - self.na
+
+    @property
+    def pct(self) -> float | None:
+        """Share of the items that apply that are done."""
+        return self.done / self.needed if self.needed else None
+
+    def text(self) -> str:
+        if not self.total:
+            return "—"
+        out = f"{self.done} / {self.needed} done"
+        return out + (f" · {self.in_progress} in progress" if self.in_progress else "")
+
+
+def progress(items: list[DDItem]) -> Progress:
+    p = Progress(total=len(items))
+    for it in items:
+        p.done += it.status == "Done"
+        p.in_progress += it.status == "In Progress"
+        p.na += it.status == "N/A"
+    return p
+
+
+def export_checklist(path: str, deal_name: str, items: list[DDItem]) -> None:
+    """A deal's checklist as an Excel sheet: sections, groups and items, with status (coloured) and notes."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Deal Checklist"
+    navy, pale = PatternFill("solid", fgColor="0B1F5C"), PatternFill("solid", fgColor="DDEBF7")
+    fills = {"Done": ("C6EFCE", "006100"), "In Progress": ("FFEB9C", "9C5700"), "N/A": ("EDEDED", "595959")}
+    ws.append([f"Deal Checklist – {deal_name}"])
+    ws.merge_cells("A1:F1")
+    ws["A1"].font, ws["A1"].fill = Font(bold=True, size=16, color="FFFFFF"), navy
+    ws.append([])
+    ws.append(["Section", "Group", "Item", "Status", "Due", "Notes"])
+    for c in ws[3]:
+        c.font, c.fill = Font(bold=True, color="FFFFFF"), navy
+    sec = grp = None
+    for it in items:
+        if it.section != sec:
+            sec, grp = it.section, None
+            ws.append([sec or "Other"])
+            for c in ws[ws.max_row][:6]:
+                c.fill = pale
+            ws.cell(ws.max_row, 1).font = Font(bold=True, color="0B1F5C")
+        if it.grp and it.grp != grp:
+            grp = it.grp
+            ws.append(["", grp])
+            ws.cell(ws.max_row, 2).font = Font(bold=True)
+        ws.append(["", "" if it.grp else it.item, it.item if it.grp else "", it.status, it.due or "", it.note])
+        if not it.grp:
+            ws.cell(ws.max_row, 2).font = Font(bold=True)
+        if it.status in fills:
+            bg, fg = fills[it.status]
+            c = ws.cell(ws.max_row, 4)
+            c.fill, c.font, c.alignment = PatternFill("solid", fgColor=bg), Font(color=fg), Alignment(horizontal="center")
+    p = progress(items)
+    ws.append([])
+    ws.append(["Progress", "", p.text()])
+    ws.cell(ws.max_row, 1).font = Font(bold=True)
+    for col, w in zip("ABCDEF", (16, 28, 40, 14, 12, 40)):
+        ws.column_dimensions[col].width = w
+    wb.save(path)
 
 
 # ---- summary ----

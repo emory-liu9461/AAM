@@ -29,16 +29,31 @@ def test_deals_move_through_the_pipeline(tmp_path):
     d = dl.deal(pf, a.id)
     assert d.stage == "Due Diligence" and d.key_date == ("DD deadline", soon) and d.days_to() == 20
     items = dl.checklist(pf, a.id)
-    assert len(items) == len(dl.DD_ITEMS) and all(it.due == soon for it in items)
-    items[0].done = items[1].done = True
-    items.append(dl.DDItem("Rezoning letter"))
+    assert len(items) == len(dl.CHECKLIST) and all(it.due == soon for it in items)
+    assert (items[0].section, items[0].grp, items[0].item) == ("Deliverables", "APS", "LOI")
+    assert {it.section for it in items} == {"Deliverables", "Appraisal", "BCA", "ESA", "Financing"}
+    items[0].status = "N/A"
+    items[1].status = items[2].status = "Done"
+    items[3].status = "In Progress"
+    items.append(dl.DDItem("Rezoning letter", section="Deliverables", grp="Legals / Financials"))
     dl.save_checklist(pf, a.id, items)
     got = next(x for x in dl.deals(pf) if x.id == a.id)
-    assert (got.dd_done, got.dd_total) == (2, len(dl.DD_ITEMS) + 1)
+    assert (got.dd_done, got.dd_total, got.dd_progress, got.dd_na) == (2, len(dl.CHECKLIST) + 1, 1, 1)
+    p = dl.progress(dl.checklist(pf, a.id))
+    assert p.needed == len(dl.CHECKLIST) and p.text() == f"2 / {len(dl.CHECKLIST)} done · 1 in progress"
+    with pytest.raises(ValueError):
+        dl.save_checklist(pf, a.id, [dl.DDItem("x", status="Maybe")])
+    xl = tmp_path / "checklist.xlsx"
+    dl.export_checklist(str(xl), "45 Elm St", dl.checklist(pf, a.id))
+    import openpyxl
+    ws = openpyxl.load_workbook(xl).active
+    rows = [[c.value for c in r] for r in ws.iter_rows()]
+    assert rows[0][0] == "Deal Checklist – 45 Elm St" and ["Deliverables"] == [x for x in rows[3] if x]
+    assert any(r[2] == "Signed APS" and r[3] == "Done" for r in rows)
     dl.advance(pf, a.id)
     assert dl.deal(pf, a.id).stage == "Under Contract"
     dl.back(pf, a.id)
-    assert dl.deal(pf, a.id).stage == "Due Diligence" and len(dl.checklist(pf, a.id)) == len(dl.DD_ITEMS) + 1
+    assert dl.deal(pf, a.id).stage == "Due Diligence" and len(dl.checklist(pf, a.id)) == len(dl.CHECKLIST) + 1
     dl.move(pf, b.id, "Dead")
     t = dl.totals(dl.deals(pf))
     assert t["Due Diligence"].count == 1 and t["Due Diligence"].price == 4_200_000_00 and t["Dead"].count == 1
@@ -112,7 +127,26 @@ def test_deal_pipeline_page(app, tmp_path, monkeypatch):
     page.select(dlg.deal.id)
     page.advance()                                                      # → due diligence
     assert page.tables["Due Diligence"].rowCount() == 1 and page.tables["New"].rowCount() == 0
-    assert page.tables["Due Diligence"].item(0, 3).text() == f"0 / {len(dl.DD_ITEMS)}"
+    assert page.tables["Due Diligence"].item(0, 3).text() == f"0 / {len(dl.CHECKLIST)}"
+    # the deal checklist: sections → groups → items with a status each
+    dd = dt.DealDialog(pf, dl.deal(pf, dlg.deal.id))
+    assert dd.dd.topLevelItemCount() == 5 and dd.dd.topLevelItem(0).text(0) == "Deliverables"
+    aps = dd.dd.topLevelItem(0).child(0)
+    assert aps.text(0) == "APS" and aps.child(1).text(0) == "Signed APS"
+    dd.dd.itemWidget(aps.child(0), 1).setCurrentIndex(dl.STATUSES.index("N/A"))
+    dd.dd.itemWidget(aps.child(1), 1).setCurrentIndex(dl.STATUSES.index("Done"))
+    aps.child(1).setText(3, "signed Nov 3")
+    assert "background" in dd.dd.itemWidget(aps.child(1), 1).styleSheet()
+    assert dd.dd.topLevelItem(0).text(1) == "1 / 12" and dd.bar.value() == round(100 / (len(dl.CHECKLIST) - 1))
+    dd.dd.setCurrentItem(aps)
+    dd._add_item_here()                                                # a deliverable of the user's own
+    dd.dd.currentItem().setText(0, "Deposit receipt")
+    dd.save()
+    items = dl.checklist(pf, dlg.deal.id)
+    assert any(it.item == "Deposit receipt" and it.grp == "APS" for it in items)
+    assert next(it for it in items if it.item == "Signed APS").note == "signed Nov 3"
+    page.refresh()
+    assert page.tables["Due Diligence"].item(0, 3).text() == f"1 / {len(dl.CHECKLIST)}"
     assert page.selected().name == "45 Elm St"
     page.advance()                                                      # → under contract
     page.advance()                              # → Close Deal: its company, opening balance sheet, the portfolio
