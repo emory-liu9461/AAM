@@ -1669,6 +1669,7 @@ class AssetManagementView(QWidget):
     open_company = Signal(str)   # switch to Accounting with this company file
     open_loans = Signal(str)     # … and open its Loans window (record loan payments)
     open_unnamed = Signal(str)   # … Transactions with no customer / vendor (to assign vendors)
+    open_review = Signal(str)    # … Transactions to categorize / review
 
     def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None):
         super().__init__()
@@ -1733,6 +1734,23 @@ class AssetManagementView(QWidget):
             bar.addWidget(b)
         lay.addLayout(bar)
 
+        # what needs attention for the company shown (rent roll, expenses, capex) — like Accounting's dashboard
+        self.attention = QFrame()
+        self.attention.setObjectName("attention")
+        att = QHBoxLayout(self.attention)
+        att.setContentsMargins(12, 6, 8, 6)
+        self.attention_text = QLabel()
+        self.attention_text.setTextFormat(Qt.TextFormat.RichText)
+        self.attention_text.setWordWrap(True)
+        self.attention_text.linkActivated.connect(self._attention_go)
+        att.addWidget(self.attention_text, 1)
+        self.attention_btn = QPushButton("Review")
+        self.attention_btn.clicked.connect(lambda: self._attention_go(self._attention_first))
+        att.addWidget(self.attention_btn)
+        self.attention.hide()
+        self._attention_first = ""
+        self._attention_for = None
+        lay.addWidget(self.attention)
         self.tabs = QTabWidget()
         lay.addWidget(self.tabs, 1)
         # Overview
@@ -2061,6 +2079,10 @@ class AssetManagementView(QWidget):
         self.tabs.addTab(self.deals_page, "Deal Pipeline")
         self.tabs.setTabVisible(self.tabs.indexOf(self.deals_page), False)   # opened with its button at the top
         self.tabs.currentChanged.connect(self._top_buttons)
+        self.tabs.currentChanged.connect(lambda *_: self._update_attention())
+        for combo in (self.dash_page.pick, self.ops_page.pick, self.cash_page.pick, self.capex_page.pick,
+                      self.fin_pick):
+            combo.currentIndexChanged.connect(lambda *_: self._update_attention())
         self.tabs.setCurrentIndex(0)
         self.tabs.blockSignals(False)
         self.summary_btn.setChecked(True)
@@ -2172,6 +2194,7 @@ class AssetManagementView(QWidget):
                 if p.holding.id == keep:
                     self.table.selectRow(r)
         self._show_detail()
+        self._update_attention(force=True)
 
     def _fill_holdings(self, t: QTableWidget, s: pfm.Summary) -> None:
         perfs = s.performances
@@ -2823,6 +2846,73 @@ class AssetManagementView(QWidget):
             i = combo.findData(self.co_pick.currentData())
             if i >= 0 and i != combo.currentIndex():
                 combo.setCurrentIndex(i)
+
+    def _company_shown(self):
+        """The holding the current company page shows (None on the portfolio / deal pipeline)."""
+        w = self.tabs.currentWidget()
+        if self.tabs.currentIndex() == 0 or w is getattr(self, "deals_page", None):
+            return None
+        pick = {getattr(self, "dash_page", None): getattr(getattr(self, "dash_page", None), "pick", None),
+                getattr(self, "ops_page", None): getattr(getattr(self, "ops_page", None), "pick", None),
+                getattr(self, "cash_page", None): getattr(getattr(self, "cash_page", None), "pick", None),
+                getattr(self, "capex_page", None): getattr(getattr(self, "capex_page", None), "pick", None),
+                getattr(self, "financing_page", None): getattr(self, "fin_pick", None)}.get(w, self.co_pick)
+        hid = pick.currentData() if pick is not None else None
+        return next((x.holding for x in (self.summary.performances if self.summary else []) if x.holding.id == hid),
+                    None)
+
+    def _update_attention(self, *_, force: bool = False) -> None:
+        """The banner: rent roll, expenses and capex issues for the company shown, each a link to fix it."""
+        import html as _html
+
+        from .. import health
+
+        h = self._company_shown()
+        if h is None:
+            self.attention.hide()
+            return
+        key = (h.id, self._as_of_date())
+        if key == self._attention_for and not force:
+            self.attention.setVisible(bool(self._attention_first))
+            return
+        self._attention_for = key
+        issues = health.company_issues(self.pf, h, self._as_of_date())
+        self._attention_first = issues[0].where if issues else ""
+        if not issues:
+            self.attention.hide()
+            return
+        parts = []
+        for area in health.AREAS:
+            mine = [i for i in issues if i.area == area]
+            if mine:
+                parts.append(f"<b>{area}:</b> " + " · ".join(
+                    f"<a href='{i.where}' style='color:inherit'>{_html.escape(i.text)}</a>" for i in mine))
+        from .theme import colors
+
+        col = colors()
+        self.attention.setStyleSheet(
+            f"QFrame#attention {{ background: {col['attention_bg']}; border: 1px solid {col['attention_border']}; "
+            f"border-radius: 8px; }} QFrame#attention QLabel {{ color: {col['attention_text']}; }}")
+        self.attention_text.setText(f"Needs attention — {_html.escape(h.name)}: " + " &nbsp;|&nbsp; ".join(parts))
+        self.attention.show()
+
+    def _attention_go(self, where: str) -> None:
+        """Open the place an issue is fixed."""
+        h = self._company_shown()
+        if where == "rent_roll":
+            self.tabs.setCurrentWidget(self.ops_page)
+            self.ops_page.sub.setCurrentIndex(1)
+        elif where == "operating_costs":
+            self.tabs.setCurrentWidget(self.ops_page)
+            self.ops_page.sub.setCurrentIndex(2)
+        elif where == "customers_vendors":
+            self.tabs.setCurrentWidget(self.ops_page)
+            self.ops_page.sub.setCurrentWidget(self.cv_page)
+        elif where == "capex":
+            self.tabs.setCurrentWidget(self.capex_page)
+            self.capex_page.lower.setCurrentIndex(1)
+        elif where == "transactions" and h is not None and h.company_path:
+            self.open_review.emit(h.company_path)
 
     def _cv_follow_ops(self) -> None:
         i = self.cv_pick.findData(self.ops_page.pick.currentData())

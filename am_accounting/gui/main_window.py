@@ -794,6 +794,7 @@ class MainWindow(QMainWindow):
                 self.asset_view.open_company.connect(self.open_company_books)
                 self.asset_view.open_loans.connect(self.open_company_loans)
                 self.asset_view.open_unnamed.connect(self.open_company_unnamed)
+                self.asset_view.open_review.connect(self.open_company_review)
                 self.stack.addWidget(self.asset_view)
             self._dock_was_visible = self.review_dock.isVisible()
             self.review_dock.hide()
@@ -876,6 +877,17 @@ class MainWindow(QMainWindow):
         self.set_mode("accounting")
         self.switch_books(path)
         self._fill_switcher()
+
+    def open_company_review(self, path: str) -> None:
+        """From Asset Management's attention banner: that company's Transactions still to categorize / review."""
+        self.open_company_books(path)
+        if self._is_current(path):
+            self.tabs.setCurrentWidget(self.tx_tab)
+            tx = self.tx_tab
+            unc = sum(1 for t in self.books.transactions() if t.category_id is None)
+            tx.status_filter.setCurrentIndex(max(0, tx.status_filter.findData("uncategorized" if unc else
+                                                                             "unreviewed")))
+            tx.refresh()
 
     def open_company_unnamed(self, path: str) -> None:
         """From Operating Costs: that company's Transactions with no customer / vendor, to assign them."""
