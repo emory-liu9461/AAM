@@ -1531,6 +1531,52 @@ def test_manual_transaction_and_journal_entries(app, tmp_path):
     je.save()
     t = b.ledger_totals(end="2026-12-31")
     assert t[prop] == 1_000_000_00 and t[mtg] == -750_000_00 and t[eqa] == -250_000_00
+    # customers and vendors on journal entry lines: rent for unit 200, a hydro bill from the hydro company
+    from am_accounting import contacts, party_totals
+
+    rent = b.add_account("4160", "Rental Income", "income", "operating").id
+    hydro = b.add_account("6410", "Hydro", "expense", "operating").id
+    ar = next(a.id for a in b.accounts() if a.type == "asset" and "receivable" in a.name.lower())
+    ap = next(a.id for a in b.accounts() if a.type == "liability" and "payable" in a.name.lower())
+    je = JournalEntryDialog(b)
+    je.date.setDate(QDate(2026, 7, 1))
+    je.memo.setText("July rent and hydro")
+    assert je.table.columnCount() == 4 and je.table.horizontalHeaderItem(3).text() == "Customer / Vendor"
+    je.table.cellWidget(0, 1).setCurrentIndex(je.table.cellWidget(0, 1).findData(ar))
+    je.table.cellWidget(0, 2).setValue(1_800)
+    je.table.cellWidget(1, 1).setCurrentIndex(je.table.cellWidget(1, 1).findData(rent))
+    je.table.cellWidget(1, 2).setValue(1_800)
+    je.table.cellWidget(1, 3).setCurrentText("Unit 200")
+    je.add_line(hydro, 420_00, side="debit", party="Toronto Hydro")
+    je.add_line(ap, side="credit", fill=True)
+    assert "balanced" in je.totals.text()
+    je.save()
+    e = next(x for x in b.journal_entries(kind="manual") if x["memo"] == "July rent and hydro")
+    assert e["parties"] == ["", "Unit 200", "Toronto Hydro", ""]
+    bd = party_totals.breakdown(b, "2026-01-01", "2026-12-31")
+    assert any(c.name == "Unit 200" and c.amount == 1_800_00 for c in bd.customers)
+    assert any(v.name == "Toronto Hydro" and v.by_account == {"Hydro": 420_00} for v in bd.vendors)
+    assert {c.name for c in contacts.all_contacts(b)} >= {"Unit 200", "Toronto Hydro"}   # on the list
+    # owing, by customer and vendor: AR from the rent, AP from the hydro bill
+    from am_accounting import arap
+
+    ar_items = {i.party: i.balance_cents for i in arap.outstanding(b, "invoice", date(2026, 12, 31))}
+    ap_items = {i.party: i.balance_cents for i in arap.outstanding(b, "bill", date(2026, 12, 31))}
+    assert ar_items.get("Unit 200") == 1_800_00 and ap_items.get("Toronto Hydro") == 420_00
+    assert next(c for c in bd.customers if c.name == "Unit 200").outstanding == 1_800_00
+    assert next(v for v in bd.vendors if v.name == "Toronto Hydro").outstanding == 420_00
+    sums = {x.contact.name: x for x in contacts.summaries(b)}
+    assert sums["Unit 200"].receivable_cents == 1_800_00 and sums["Toronto Hydro"].payable_cents == 420_00
+    cash = b.account_by_code("1000").id                               # the tenant pays $1,000 of it
+    b.replace_journal_entry(None, "2026-07-05", "Unit 200 rent received",
+                            [(cash, 1_000_00, 0, ""), (ar, 0, 1_000_00, "Unit 200")])
+    bd2 = party_totals.breakdown(b, "2026-01-01", "2026-12-31")
+    assert next(c for c in bd2.customers if c.name == "Unit 200").outstanding == 800_00
+    again = JournalEntryDialog(b, e)                                  # opens with the names
+    assert again.table.cellWidget(2, 3).currentText() == "Toronto Hydro"
+    lst.refresh()
+    assert any("(Toronto Hydro)" in (lst.table.item(r, 2).text() if lst.table.item(r, 2) else "")
+               for r in range(lst.table.rowCount()))
     b.close()
 
 

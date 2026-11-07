@@ -2,6 +2,7 @@
 
 Every income and expense amount in the books is traced back to who it was with:
 
+* a journal entry's line → the customer / vendor entered on it;
 * a bank transaction → its name (set by you, from a matched e-Transfer or cheque, or a name rule);
 * an invoice or bill → its customer / vendor.
 
@@ -72,11 +73,14 @@ def breakdown(books: Books, start: str, end: str) -> Breakdown:
             doc_party[entry_id] = amap.get(party.strip().lower(), party.strip())
     listed = {c.name.lower() for c in contacts.all_contacts(books)}
     sides: dict[str, dict[str, PartyTotal]] = {"customers": {}, "vendors": {}}
+    entry_party = books.entry_parties()
+    has_party = "party" in {r[1] for r in books.conn.execute("PRAGMA table_info(journal_lines)")}
     rows = books.conn.execute(
-        "SELECT e.id, e.date, e.transaction_id, l.account_id, l.debit_cents, l.credit_cents FROM journal_lines l "
+        "SELECT e.id, e.date, e.transaction_id, l.account_id, l.debit_cents, l.credit_cents, "
+        f"{'l.party' if has_party else chr(39) * 2} FROM journal_lines l "
         "JOIN journal_entries e ON e.id = l.entry_id WHERE e.kind != 'opening' AND e.date >= ? AND e.date <= ?",
         (start, end))
-    for entry_id, d, tx_id, acct, debit, credit in rows:
+    for entry_id, d, tx_id, acct, debit, credit, line_party in rows:
         if acct in revenue_ids:
             side, amt = "customers", credit - debit
         elif acct in expense_ids:
@@ -85,7 +89,10 @@ def breakdown(books: Books, start: str, end: str) -> Breakdown:
             continue
         if not amt:
             continue
-        who = doc_party.get(entry_id)
+        line_party = ((line_party or "").strip()                                       # on the line, or its side
+                      or entry_party.get(entry_id, ("", ""))[0 if side == "customers" else 1])
+        who = amap.get(line_party.lower(), line_party) if line_party else ""
+        who = who or doc_party.get(entry_id)
         if not who and tx_id is not None and tx_id in names:
             who = names[tx_id].name
         who = who or UNASSIGNED
@@ -128,5 +135,95 @@ def company_breakdown(company_path: str | Path, end: date | None = None, months:
         return breakdown(books, start, end.isoformat())
     except Exception as e:  # noqa: BLE001
         return Breakdown(start, end.isoformat(), [], [], error=str(e))
+    finally:
+        books.close()
+
+
+@dataclass
+class AssignmentCheck:
+    """What isn't tied to a customer or vendor yet."""
+    revenue_unassigned: int = 0          # revenue in the period with no customer
+    revenue_entries: int = 0
+    expenses_unassigned: int = 0         # expenses in the period with no vendor
+    expense_entries: int = 0
+    ar_unallocated: int = 0              # owed to you, not allocated to a customer on the list
+    ar_items: list = field(default_factory=list)
+    ap_unallocated: int = 0              # you owe, not allocated to a vendor on the list
+    ap_items: list = field(default_factory=list)
+    unlisted_customers: list[str] = field(default_factory=list)   # names used but not on Customers & Vendors
+    unlisted_vendors: list[str] = field(default_factory=list)
+    revenue: int = 0
+    expenses: int = 0
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not (self.revenue_unassigned or self.expenses_unassigned or self.ar_items or self.ap_items
+                    or self.unlisted_customers or self.unlisted_vendors)
+
+    def lines(self) -> list[str]:
+        from .money import fmt_money
+
+        out = []
+        if self.revenue_unassigned:
+            out.append(f"{fmt_money(self.revenue_unassigned)} of revenue ({self.revenue_entries} entries) has no "
+                       f"customer")
+        if self.expenses_unassigned:
+            out.append(f"{fmt_money(self.expenses_unassigned)} of expenses ({self.expense_entries} entries) has no "
+                       f"vendor")
+        if self.ar_items:
+            out.append(f"{fmt_money(self.ar_unallocated)} owed to you ({len(self.ar_items)} item(s)) isn't allocated "
+                       f"to a customer")
+        if self.ap_items:
+            out.append(f"{fmt_money(self.ap_unallocated)} you owe ({len(self.ap_items)} item(s)) isn't allocated to a "
+                       f"vendor")
+        if self.unlisted_customers:
+            out.append(f"{len(self.unlisted_customers)} customer name(s) not on the Customers & Vendors list: "
+                       + ", ".join(self.unlisted_customers[:5]) + (" …" if len(self.unlisted_customers) > 5 else ""))
+        if self.unlisted_vendors:
+            out.append(f"{len(self.unlisted_vendors)} vendor name(s) not on the Customers & Vendors list: "
+                       + ", ".join(self.unlisted_vendors[:5]) + (" …" if len(self.unlisted_vendors) > 5 else ""))
+        return out
+
+
+def assignment_check(books: Books, start: str, end: str) -> AssignmentCheck:
+    """Revenue without a customer, expenses without a vendor, AR / AP not allocated to someone on the
+    Customers & Vendors list, and names in use that aren't on the list."""
+    from . import arap, contacts
+
+    b = breakdown(books, start, end)
+    c = AssignmentCheck(revenue=b.revenue, expenses=b.expenses)
+    for p in b.customers:
+        if p.name == UNASSIGNED:
+            c.revenue_unassigned, c.revenue_entries = p.amount, p.count
+        elif not p.listed and p.amount:
+            c.unlisted_customers.append(p.name)
+    for p in b.vendors:
+        if p.name == UNASSIGNED:
+            c.expenses_unassigned, c.expense_entries = p.amount, p.count
+        elif not p.listed and p.amount:
+            c.unlisted_vendors.append(p.name)
+    listed = {x.name.lower() for x in contacts.all_contacts(books)}
+    end_d = date.fromisoformat(end)
+    for kind, attr in (("invoice", "ar"), ("bill", "ap")):
+        items = [i for i in arap.outstanding(books, kind, end_d) if i.balance_cents
+                 and (i.party or "").lower() not in listed]
+        setattr(c, f"{attr}_items", items)
+        setattr(c, f"{attr}_unallocated", sum(i.balance_cents for i in items))
+    return c
+
+
+def company_assignment_check(company_path: str | Path, end: date | None = None, start: str | None = None,
+                             months: int = 12) -> AssignmentCheck:
+    end = end or date.today()
+    start = start or (end - timedelta(days=round(months * 365.25 / 12)) + timedelta(days=1)).isoformat()
+    try:
+        books = Books.open(company_path, create=False)
+    except Exception as e:  # noqa: BLE001
+        return AssignmentCheck(error=f"Couldn't open the company file: {e}")
+    try:
+        return assignment_check(books, start, end.isoformat())
+    except Exception as e:  # noqa: BLE001
+        return AssignmentCheck(error=str(e))
     finally:
         books.close()

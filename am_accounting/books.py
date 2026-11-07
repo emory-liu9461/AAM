@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS journal_lines (
     entry_id     INTEGER NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
     account_id   INTEGER NOT NULL REFERENCES accounts(id),
     debit_cents  INTEGER NOT NULL DEFAULT 0,
-    credit_cents INTEGER NOT NULL DEFAULT 0
+    credit_cents INTEGER NOT NULL DEFAULT 0,
+    party        TEXT NOT NULL DEFAULT ''        -- customer / vendor on a hand-made entry's line
 );
 CREATE INDEX IF NOT EXISTS ix_jl_entry ON journal_lines(entry_id);
 CREATE INDEX IF NOT EXISTS ix_jl_account ON journal_lines(account_id);
@@ -257,6 +258,9 @@ class Books:
                              [(c, c) for c, *_ in coa.DEFAULT_ACCOUNTS])
             conn.commit()
         conn.executescript(SCHEMA)
+        if "party" not in {r[1] for r in conn.execute("PRAGMA table_info(journal_lines)")}:
+            conn.execute("ALTER TABLE journal_lines ADD COLUMN party TEXT NOT NULL DEFAULT ''")
+            conn.commit()
         books = cls(conn, path)
         if books._meta("schema_version") is None:
             books._initialise(template)
@@ -961,14 +965,30 @@ class Books:
             docs = {r[0] for r in self.conn.execute("SELECT entry_id FROM documents WHERE entry_id IS NOT NULL")}
         return [e for e in self.journal_entries(kind="manual") if e["id"] not in docs]
 
+    def entry_parties(self) -> dict[int, tuple[str, str]]:
+        """{journal entry: (customer, vendor)} named on its lines — the customer from its revenue / asset lines
+        (e.g. Rental income · Unit 200), the vendor from its expense / liability lines (Hydro · Toronto Hydro), each
+        only when those lines carry one name. A line left blank (the receivable, the payable) takes it."""
+        if "party" not in {r[1] for r in self.conn.execute("PRAGMA table_info(journal_lines)")}:
+            return {}
+        sides: dict[int, tuple[set, set]] = {}
+        for entry_id, party, typ in self.conn.execute(
+                "SELECT l.entry_id, l.party, a.type FROM journal_lines l JOIN accounts a ON a.id = l.account_id "
+                "WHERE l.party != ''"):
+            c, v = sides.setdefault(entry_id, (set(), set()))
+            (c if typ in ("income", "asset") else v).add(" ".join(party.split()))
+        return {e: (next(iter(c)) if len(c) == 1 else "", next(iter(v)) if len(v) == 1 else "")
+                for e, (c, v) in sides.items()}
+
     def replace_journal_entry(self, entry_id: int | None, entry_date: str, memo: str,
-                              lines: Sequence[tuple[int, int, int]]) -> int:
-        """Save a hand-made journal entry (a new one, or replacing ``entry_id``)."""
+                              lines: Sequence[tuple]) -> int:
+        """Save a hand-made journal entry (a new one, or replacing ``entry_id``). Each line is
+        (account, debit, credit) or (account, debit, credit, customer / vendor)."""
         date.fromisoformat(entry_date)
-        lines = [(a, d, c) for a, d, c in lines if d or c]
-        if any(d < 0 or c < 0 or (d and c) for _a, d, c in lines):
+        lines = [(ln[0], ln[1], ln[2], (ln[3] if len(ln) > 3 else "").strip()) for ln in lines if ln[1] or ln[2]]
+        if any(d < 0 or c < 0 or (d and c) for _a, d, c, _p in lines):
             raise ValueError("Each line is a debit or a credit, not both, and not negative")
-        if len(lines) < 2 or len({a for a, _d, _c in lines}) < 2:
+        if len(lines) < 2 or len({a for a, _d, _c, _p in lines}) < 2:
             raise ValueError("A journal entry needs at least two lines on different accounts")
         if not memo.strip():
             raise ValueError("Enter a description for the entry")
@@ -1014,9 +1034,9 @@ class Books:
             [(entry_id, debit_acct, amt, 0), (entry_id, credit_acct, 0, amt)],
         )
 
-    def add_journal_entry(self, entry_date: str, memo: str, lines: Sequence[tuple[int, int, int]],
+    def add_journal_entry(self, entry_date: str, memo: str, lines: Sequence[tuple],
                           *, kind: str = "manual") -> int:
-        """Add a manual entry. ``lines`` = [(account_id, debit_cents, credit_cents), ...]"""
+        """Add a manual entry. ``lines`` = [(account_id, debit_cents, credit_cents[, customer / vendor]), ...]"""
         debits = sum(l[1] for l in lines)
         credits = sum(l[2] for l in lines)
         if debits != credits:
@@ -1027,8 +1047,8 @@ class Books:
             cur = self.conn.execute("INSERT INTO journal_entries(date, memo, kind) VALUES (?,?,?)",
                                     (entry_date, memo, kind))
             self.conn.executemany(
-                "INSERT INTO journal_lines(entry_id, account_id, debit_cents, credit_cents) VALUES (?,?,?,?)",
-                [(cur.lastrowid, a, d, c) for a, d, c in lines],
+                "INSERT INTO journal_lines(entry_id, account_id, debit_cents, credit_cents, party) VALUES (?,?,?,?,?)",
+                [(cur.lastrowid, ln[0], ln[1], ln[2], (ln[3] if len(ln) > 3 else "") or "") for ln in lines],
             )
         return cur.lastrowid
 
@@ -1042,10 +1062,10 @@ class Books:
         entries = []
         for e in self.conn.execute(sql, args).fetchall():
             lines = self.conn.execute(
-                "SELECT account_id, debit_cents, credit_cents FROM journal_lines WHERE entry_id=?", (e["id"],)
-            ).fetchall()
+                "SELECT account_id, debit_cents, credit_cents, party FROM journal_lines WHERE entry_id=? ORDER BY id",
+                (e["id"],)).fetchall()
             entries.append({"id": e["id"], "date": e["date"], "memo": e["memo"], "kind": e["kind"],
-                            "lines": [tuple(l) for l in lines]})
+                            "lines": [tuple(l)[:3] for l in lines], "parties": [l[3] for l in lines]})
         return entries
 
     def delete_journal_entry(self, entry_id: int) -> None:

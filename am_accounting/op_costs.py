@@ -304,8 +304,9 @@ def provider_matches(pf, holding) -> list[tuple[CostLine, list[int]]]:
 
 
 def name_with_providers(pf, holding) -> int:
-    """Name each unnamed payment after its category's provider (see provider_matches). Returns how many."""
-    from . import parties
+    """Name each unnamed payment after its category's provider (see provider_matches), the provider going onto the
+    Customers & Vendors list. Returns how many payments were named."""
+    from . import contacts, parties
     from .books import Books
 
     found = provider_matches(pf, holding)
@@ -315,6 +316,7 @@ def name_with_providers(pf, holding) -> int:
     try:
         for ln, ids in found:
             parties.set_name(books, ids, ln.provider.strip())
+            contacts.ensure_contact(books, ln.provider.strip(), "vendor")
         return sum(len(ids) for _ln, ids in found)
     finally:
         books.close()

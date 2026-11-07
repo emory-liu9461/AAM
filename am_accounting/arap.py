@@ -156,9 +156,12 @@ def ledger_items(books: Books, kind: str, as_of: date | None = None, search: str
             p = cfg.root / rel
             if p.exists():
                 files.setdefault(k, []).append((p, "attached"))
+    has_party = "party" in {r[1] for r in books.conn.execute("PRAGMA table_info(journal_lines)")}
     q = ("SELECT l.account_id, l.debit_cents, l.credit_cents, e.id AS entry_id, e.date, e.memo AS je_memo, e.kind, "
-         "e.transaction_id FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id "
+         f"e.transaction_id, {'l.party' if has_party else chr(39) * 2} AS line_party FROM journal_lines l "
+         "JOIN journal_entries e ON e.id = l.entry_id "
          f"WHERE l.account_id IN ({','.join('?' * len(ids))}) AND e.date <= ? ORDER BY e.date, e.id")
+    entry_party = books.entry_parties()
     out: list[Item] = []
     for row in books.conn.execute(q, [*ids, as_of.isoformat()]):
         if row["entry_id"] in doc_entries:
@@ -182,7 +185,9 @@ def ledger_items(books: Books, kind: str, as_of: date | None = None, search: str
             source = "opening" if row["kind"] == "opening" else "journal"
             key = f"je:{row['entry_id']}:{row['account_id']}"
             desc = row["je_memo"]
-            party = labels.get(key) or ("Opening balance" if source == "opening" else (row["je_memo"] or "Journal entry"))
+            party = (labels.get(key) or (row["line_party"] or "").strip()          # named on the entry's line
+                     or entry_party.get(row["entry_id"], ("", ""))[0 if kind == "invoice" else 1]   # … its side
+                     or ("Opening balance" if source == "opening" else (row["je_memo"] or "Journal entry")))
         if amount == 0:
             continue
         if search and search.lower() not in f"{party} {desc}".lower():

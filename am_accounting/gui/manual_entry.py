@@ -152,7 +152,7 @@ class JournalEntryDialog(QDialog):
         super().__init__(parent)
         self.books, self.entry = books, entry
         self.setWindowTitle("Change Journal Entry" if entry else "New Journal Entry")
-        self.resize(820, 460)
+        self.resize(1000, 480)
         lay = QVBoxLayout(self)
         form = QFormLayout()
         self.date = _date_edit(entry["date"] if entry else None)
@@ -161,12 +161,15 @@ class JournalEntryDialog(QDialog):
         self.memo.setPlaceholderText("e.g. Depreciation for 2026, accrued wages, reclassify owner draw")
         form.addRow("Description:", self.memo)
         lay.addLayout(form)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Debit / Credit", "Account", "Amount"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Debit / Credit", "Account", "Amount", "Customer / Vendor"])
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 130)
         self.table.setColumnWidth(2, 170)
+        self.table.setColumnWidth(3, 230)
+        self._names = sorted({c.name for c in contacts.all_contacts(books, active_only=True)}
+                             | set(parties.all_names(books)), key=str.lower)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         lay.addWidget(self.table, 1)
         row = QHBoxLayout()
@@ -189,7 +192,8 @@ class JournalEntryDialog(QDialog):
         hint = QLabel("For each line choose Debit or Credit, the account and the amount — e.g. buying a property: "
                       "Debit the property, Credit the mortgage and Credit equity for the owners' money. Debits "
                       "increase assets and expenses; credits increase liabilities, equity and income. Debits must "
-                      "equal credits.")
+                      "equal credits. On revenue and expense lines, name the customer or vendor (e.g. Rental income "
+                      "· Unit 200; Hydro · Toronto Hydro) so it counts in Customers & Vendors.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -198,15 +202,16 @@ class JournalEntryDialog(QDialog):
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
         if entry:
-            for acct, dr, cr in entry["lines"]:
-                self.add_line(acct, dr or cr, side="debit" if dr else "credit")
+            parties_ = entry.get("parties") or [""] * len(entry["lines"])
+            for (acct, dr, cr), who in zip(entry["lines"], parties_):
+                self.add_line(acct, dr or cr, side="debit" if dr else "credit", party=who)
         else:
             self.add_line(side="debit")
             self.add_line(side="credit")
         self._update()
 
     def add_line(self, account_id: int | None = None, cents: int = 0, *, side: str = "debit",
-                 fill: bool = False) -> None:
+                 fill: bool = False, party: str = "") -> None:
         """A line: Debit or Credit, the account, the amount (``fill``: what's needed to balance the entry)."""
         if fill and not cents:
             dr, cr = self.sums()
@@ -228,6 +233,13 @@ class JournalEntryDialog(QDialog):
         box.setValue(cents / 100)
         box.valueChanged.connect(self._update)
         self.table.setCellWidget(r, 2, box)
+        who = QComboBox()                       # the customer / vendor on this line
+        who.setEditable(True)
+        who.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        who.addItems([""] + self._names)
+        who.setCurrentText(party)
+        who.lineEdit().setPlaceholderText("e.g. Unit 200, Toronto Hydro")
+        self.table.setCellWidget(r, 3, who)
         self.table.setCurrentCell(r, 1)
         if hasattr(self, "totals"):
             self._update()
@@ -240,12 +252,17 @@ class JournalEntryDialog(QDialog):
 
     def lines(self) -> list[tuple[int | None, int, int]]:
         """[(account, debit cents, credit cents)]"""
+        return [x[:3] for x in self.lines_with_parties()]
+
+    def lines_with_parties(self) -> list[tuple[int | None, int, int, str]]:
+        """[(account, debit cents, credit cents, customer / vendor)]"""
         out = []
         for r in range(self.table.rowCount()):
             acct = self.table.cellWidget(r, 1).currentData()
             cents = round(self.table.cellWidget(r, 2).value() * 100)
             debit = self.table.cellWidget(r, 0).currentData() == "debit"
-            out.append((acct if isinstance(acct, int) else None, cents if debit else 0, 0 if debit else cents))
+            who = " ".join(self.table.cellWidget(r, 3).currentText().split())
+            out.append((acct if isinstance(acct, int) else None, cents if debit else 0, 0 if debit else cents, who))
         return out
 
     def sums(self) -> tuple[int, int]:
@@ -272,13 +289,17 @@ class JournalEntryDialog(QDialog):
                                f" · <span style='color:#b3261e'>out by {fmt_money(abs(diff))}</span>" if diff else ""))
 
     def save(self) -> None:
-        lines = [x for x in self.lines() if x[1] or x[2]]
-        if any(a is None for a, _d, _c in lines):
+        lines = [x for x in self.lines_with_parties() if x[1] or x[2]]
+        if any(a is None for a, _d, _c, _p in lines):
             error(self, "Couldn't save", "Pick an account on every line with an amount")
             return
         try:
             self.books.replace_journal_entry(self.entry["id"] if self.entry else None,
                                              self.date.date().toString("yyyy-MM-dd"), self.memo.text(), lines)
+            for a, _d, _c, who in lines:      # new names onto the Customers & Vendors list
+                typ = self.books.account(a).type
+                if who and typ in ("income", "expense"):
+                    contacts.ensure_contact(self.books, who, "customer" if typ == "income" else "vendor")
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
@@ -328,7 +349,8 @@ class JournalEntriesDialog(QDialog):
         self.entries = list(reversed(self.books.manual_entries()))
         self.table.setRowCount(len(self.entries))
         for r, e in enumerate(self.entries):
-            accts = ", ".join(f"{self.books.account(a).name} {'Dr' if d else 'Cr'}" for a, d, _c in e["lines"])
+            accts = ", ".join(f"{self.books.account(a).name} {'Dr' if d else 'Cr'}" + (f" ({w})" if w else "")
+                              for (a, d, _c), w in zip(e["lines"], e.get("parties") or [""] * len(e["lines"])))
             amt = sum(d for _a, d, _c in e["lines"])
             for c, v in enumerate([e["date"], e["memo"], accts, fmt_money(amt)]):
                 it = QTableWidgetItem(v)

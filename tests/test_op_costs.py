@@ -144,8 +144,45 @@ def test_naming_payments_after_the_provider(tmp_path):
     found = oc.provider_matches(pf, h)
     assert [(x.category, len(ids)) for x, ids in found] == [("Snow removal", 1)]
     assert oc.name_with_providers(pf, h) == 1
+    from am_accounting import contacts
+    b = Books.open(path)
+    assert any(c.name == "North Plow Ltd" and c.is_vendor for c in contacts.all_contacts(b))   # on the list
+    b.close()
     chk = oc.vendor_check(pf, h)
     assert chk.unassigned == 0
     assert dict(next(x for x in chk.lines if x.category == "Snow removal").vendors)["North Plow Ltd"] == 2_200_00
     assert oc.name_with_providers(pf, h) == 0                      # nothing twice
     pf.close()
+
+
+def test_assignment_check(tmp_path):
+    from am_accounting import contacts, party_totals
+
+    path = _books(tmp_path)
+    b = Books.open(path)
+    start, end = (date.today() - timedelta(days=364)).isoformat(), date.today().isoformat()
+    chk = party_totals.assignment_check(b, start, end)
+    # every payment is named, but none of the names are on the Customers & Vendors list yet
+    assert chk.expenses_unassigned == 0 and set(chk.unlisted_vendors) == {
+        "Bright Power", "North Plow Ltd", "Shield Mutual", "LiftCo", "Handy Fix"}
+    for n in chk.unlisted_vendors:
+        contacts.ensure_contact(b, n, "vendor")
+    assert party_totals.assignment_check(b, start, end).ok
+    # an unnamed deposit, an unnamed expense, and rent owing with no tenant named
+    bank = b.account_by_code("1000").id
+    inc = next(a.id for a in b.accounts() if a.type == "income")
+    snow = next(a.id for a in b.accounts() if a.name == "Snow Removal")
+    ar = next(a.id for a in b.accounts() if a.type == "asset" and "receivable" in a.name.lower())
+    b.import_transactions(bank, [ParsedTransaction(date.today() - timedelta(days=4), "DEPOSIT", 900_00),
+                                 ParsedTransaction(date.today() - timedelta(days=5), "CASH PLOW", -250_00)])
+    for t in b.transactions():
+        if t.description in ("DEPOSIT", "CASH PLOW"):
+            b.set_category(t.id, inc if t.description == "DEPOSIT" else snow, source="manual")
+    b.replace_journal_entry(None, (date.today() - timedelta(days=3)).isoformat(), "Rent charged",
+                            [(ar, 1_500_00, 0), (inc, 0, 1_500_00)])
+    chk = party_totals.assignment_check(b, start, end)
+    assert chk.revenue_unassigned == 900_00 + 1_500_00 and chk.expenses_unassigned == 250_00
+    assert chk.ar_unallocated == 1_500_00 and len(chk.ar_items) == 1 and not chk.ok
+    assert any("no customer" in x for x in chk.lines()) and any("isn't allocated to a customer" in x
+                                                               for x in chk.lines())
+    b.close()

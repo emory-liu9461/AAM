@@ -2706,8 +2706,8 @@ class AssetManagementView(QWidget):
         row.addWidget(self.cv_period)
         row.addStretch(1)
         open_b = QPushButton("Assign Names in the Books…")
-        open_b.setToolTip("Opens the company's books: set the customer / vendor on transactions (double-click a "
-                          "transaction) or on invoices and bills, and it shows here")
+        open_b.setToolTip("Opens the company's Transactions with no customer / vendor: select them and Set "
+                          "Customer / Vendor… (or name them on invoices and bills), and they show here")
         open_b.clicked.connect(self._cv_open_books)
         row.addWidget(open_b)
         lay.addLayout(row)
@@ -2715,6 +2715,10 @@ class AssetManagementView(QWidget):
         self.cv_info.setTextFormat(Qt.TextFormat.RichText)
         self.cv_info.setWordWrap(True)
         lay.addWidget(self.cv_info)
+        self.cv_check = QLabel()                 # anything not tied to a customer or vendor
+        self.cv_check.setTextFormat(Qt.TextFormat.RichText)
+        self.cv_check.setWordWrap(True)
+        lay.addWidget(self.cv_check)
         split = QSplitter(Qt.Orientation.Horizontal)
         for attr, title in (("cv_customers", "Customers → revenue"), ("cv_vendors", "Vendors → expenses")):
             box = QWidget()
@@ -2759,6 +2763,7 @@ class AssetManagementView(QWidget):
         if p is None or not p.holding.company_path or not Path(p.holding.company_path).exists():
             self.parties = None
             self.cv_info.setText("<i>Pick a company linked to its books.</i>" if p else "<i>No holdings yet.</i>")
+            self.cv_check.setText("")
             return
         start, end = self._cv_range()
         b = self.parties = pt.company_breakdown(p.holding.company_path, end, start=start)
@@ -2780,6 +2785,17 @@ class AssetManagementView(QWidget):
             bits.append(f"largest customer <b>{top.name}</b> {top.amount / b.revenue * 100:.0f}% · "
                         f"top 5 {top5 / b.revenue * 100:.0f}% of revenue")
         self.cv_info.setText(" · ".join(bits))
+        from .theme import c as tc
+
+        chk = self.cv_assign = pt.company_assignment_check(p.holding.company_path, end, start=b.start)
+        if chk.error:
+            self.cv_check.setText("")
+        elif chk.ok:
+            self.cv_check.setText(f"<b style='color:{tc('green')}'>✓ Every revenue and expense has a customer or "
+                                  f"vendor, and everything owing is allocated.</b>")
+        else:
+            self.cv_check.setText(f"<b style='color:{tc('red')}'>⚠ Not assigned:</b> " + " · ".join(chk.lines())
+                                  + " — Assign Names in the Books…")
         self.cv_customers_head.setText(f"<b>Customers → revenue</b> ({fmt_money(b.revenue)})")
         self.cv_vendors_head.setText(f"<b>Vendors → expenses</b> ({fmt_money(b.expenses)})")
         for t, rows, total in ((self.cv_customers, b.customers, b.revenue), (self.cv_vendors, b.vendors, b.expenses)):
@@ -2817,7 +2833,7 @@ class AssetManagementView(QWidget):
         hid = self.cv_pick.currentData()
         p = next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
         if p and p.holding.company_path:
-            self.open_company.emit(p.holding.company_path)
+            self.open_unnamed.emit(p.holding.company_path)
 
     def _follow_viewing(self) -> None:
         """Viewing one operating company: Company Overview, Customers & Vendors and Financing show it."""

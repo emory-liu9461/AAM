@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -196,6 +196,16 @@ class ContactsTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self.table.doubleClicked.connect(self.edit)
         lay.addWidget(self.table, 1)
+        crow = QHBoxLayout()                   # the check: anything not tied to a customer or vendor
+        self.check = QLabel()
+        self.check.setTextFormat(Qt.TextFormat.RichText)
+        self.check.setWordWrap(True)
+        crow.addWidget(self.check, 1)
+        unb = QPushButton("Show Unassigned Transactions")
+        unb.setToolTip("Transactions with no customer / vendor — select them and Set Customer / Vendor…")
+        unb.clicked.connect(self._show_unassigned)
+        crow.addWidget(unb)
+        lay.addLayout(crow)
         bottom = QHBoxLayout()
         self.summary = QLabel()
         self.summary.setObjectName("hint")
@@ -258,6 +268,33 @@ class ContactsTab(QWidget):
         owed = sum(s.receivable_cents for s in rows)
         owe = sum(s.payable_cents for s in rows)
         self.summary.setText(f"{len(rows)} contact(s) · owed to you {fmt_money(owed)} · you owe {fmt_money(owe)}")
+        self._fill_check()
+
+    def _fill_check(self) -> None:
+        """Revenue / expenses with no customer / vendor, AR / AP not allocated, names not on the list."""
+        from datetime import date, timedelta
+
+        from .. import party_totals as pt
+        from .theme import c as tc
+
+        end = date.today()
+        start = (end - timedelta(days=365) + timedelta(days=1)).isoformat()
+        try:
+            chk = self.assign_check = pt.assignment_check(self.books, start, end.isoformat())
+        except Exception as e:  # noqa: BLE001
+            self.check.setText(f"<span style='color:{tc('muted')}'>Couldn't check: {e}</span>")
+            return
+        if chk.ok:
+            self.check.setText(f"<b style='color:{tc('green')}'>✓ Every revenue and expense in the last 12 months has a "
+                               f"customer or vendor, and everything owing is allocated.</b>")
+        else:
+            self.check.setText(f"<b style='color:{tc('red')}'>⚠ Not assigned (last 12 months):</b> "
+                               + " · ".join(chk.lines()))
+
+    def _show_unassigned(self) -> None:
+        from .transactions import NO_NAME
+
+        self.show_transactions.emit(NO_NAME)
 
     def _selected(self) -> ct.Contact | None:
         sel = self.table.selectionModel().selectedRows()
