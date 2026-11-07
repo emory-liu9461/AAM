@@ -70,6 +70,7 @@ class CostLine:
     matched_account: str = ""
     actual_cents: int | None = None        # last twelve months
     vendors: list[tuple[str, int]] = field(default_factory=list)   # [(vendor, cents)] paid for it, largest first
+    unassigned_cents: int = 0              # of the last twelve months: no vendor named
 
     @property
     def top_vendor(self) -> str:
@@ -179,6 +180,7 @@ def with_books(rows: list[CostLine], company_path: str, as_of: date | None = Non
             paid = sorted(per_account.get(acct, []), key=lambda x: -x[1])
             ln.vendors = paid
             ln.actual_cents = sum(c for _v, c in paid)
+            ln.unassigned_cents = sum(c for v, c in paid if v == party_totals.UNASSIGNED)
 
 
 def _expense_accounts(company_path: str) -> list[str]:
@@ -206,3 +208,113 @@ def fill_providers(pf, holding_id: int, rows: list[CostLine]) -> int:
             save(pf, holding_id, ln)
             n += 1
     return n
+
+
+@dataclass
+class VendorCheck:
+    """Every operating expense in the books against a vendor and a cost category."""
+    lines: list[CostLine]                                  # the cost list, with the books
+    other_accounts: list[CostLine]                         # operating expense accounts not on the list
+    error: str = ""
+
+    @property
+    def all_rows(self) -> list[CostLine]:
+        return self.lines + self.other_accounts
+
+    @property
+    def unassigned(self) -> int:
+        """Operating expenses (last twelve months) with no vendor named."""
+        return sum(ln.unassigned_cents for ln in self.all_rows)
+
+    @property
+    def accounts_unassigned(self) -> list[CostLine]:
+        return [ln for ln in self.all_rows if ln.unassigned_cents]
+
+    @property
+    def total(self) -> int:
+        return sum(ln.actual_cents or 0 for ln in self.all_rows)
+
+    @property
+    def no_provider(self) -> list[CostLine]:
+        """Categories with spending in the books but no provider entered."""
+        return [ln for ln in self.lines if ln.actual_cents and not ln.provider]
+
+
+def vendor_check(pf, holding, as_of: date | None = None) -> VendorCheck:
+    """The cost list with the books, plus every operating expense account that has spending but isn't on the list
+    — each with what was paid to whom and what has no vendor."""
+    from . import party_totals
+    from .operations import NON_OPERATING
+
+    rows = lines(pf, holding.id)
+    path = holding.company_path
+    if not path or not Path(path).exists():
+        return VendorCheck(rows, [], "Not linked to its books")
+    with_books(rows, path, as_of)
+    bd = party_totals.company_breakdown(path, as_of)
+    if bd.error:
+        return VendorCheck(rows, [], bd.error)
+    per_account: dict[str, list[tuple[str, int]]] = {}
+    for v in bd.vendors:
+        for acct, cents in v.by_account.items():
+            per_account.setdefault(acct, []).append((v.name, cents))
+    on_list = {ln.matched_account for ln in rows if ln.matched_account}
+    others = []
+    for acct in _expense_accounts(path):
+        if acct in on_list or any(w in acct.lower() for w in NON_OPERATING) or acct not in per_account:
+            continue
+        paid = sorted(per_account[acct], key=lambda x: -x[1])
+        total = sum(c for _v, c in paid)
+        if not total:
+            continue
+        others.append(CostLine(acct, matched_account=acct, actual_cents=total, vendors=paid,
+                               unassigned_cents=sum(c for v, c in paid if v == party_totals.UNASSIGNED)))
+    return VendorCheck(rows, others)
+
+
+def provider_matches(pf, holding) -> list[tuple[CostLine, list[int]]]:
+    """[(cost line, ids of its unnamed payments)]: for each category with a provider and an account in the books,
+    the bank transactions categorized to that account with no customer / vendor named yet."""
+    from . import parties
+    from .books import Books
+
+    path = holding.company_path
+    if not path or not Path(path).exists():
+        return []
+    rows = [ln for ln in lines(pf, holding.id) if ln.provider.strip()]
+    if not rows:
+        return []
+    with_books(rows, path)
+    books = Books.open(path, create=False)
+    try:
+        acct = {a.name: a.id for a in books.accounts()}
+        named = parties.names(books)
+        out = []
+        for ln in rows:
+            aid = acct.get(ln.matched_account)
+            if aid is None:
+                continue
+            ids = [t.id for t in books.transactions() if t.category_id == aid and t.amount_cents < 0
+                   and t.id not in named and not books.splits(t.id)]
+            if ids:
+                out.append((ln, ids))
+        return out
+    finally:
+        books.close()
+
+
+def name_with_providers(pf, holding) -> int:
+    """Name each unnamed payment after its category's provider (see provider_matches). Returns how many."""
+    from . import parties
+    from .books import Books
+
+    found = provider_matches(pf, holding)
+    if not found:
+        return 0
+    books = Books.open(holding.company_path, create=False)
+    try:
+        for ln, ids in found:
+            parties.set_name(books, ids, ln.provider.strip())
+        return sum(len(ids) for _ln, ids in found)
+    finally:
+        books.close()

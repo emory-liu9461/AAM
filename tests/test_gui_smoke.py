@@ -1751,7 +1751,8 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     cd.save()
     ops._fill_costs()
     assert ops.costs.item(1, 1).text() == "Bright Power" and ops.costs.item(1, 2).text() == "ACCT-77"
-    assert ops.costs.item(ops.costs.rowCount() - 1, 6).text() == "$30,000.00"
+    assert ops.costs.item(ops.costs.rowCount() - 1, 7).text() == "$30,000.00"
+    assert ops.vendor_check.error == "" and ops.vendor_status.text()        # the vendor check
     dash = v.dash_page
     v.tabs.setCurrentWidget(dash)                # opening the tab shows the latest figures
     assert dash.title.text() == "Maple Court Ltd Dashboard"
@@ -1791,7 +1792,7 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     assert any(a.name == "CapEx – Roofing" for a in w.books.accounts())   # in the open books too
     assert cap.cards["budget"].value.text() == "$50,000.00" and cap.table.item(1, 7).text() == "CapEx – Roofing"
     bank_id = w.books.account_by_code("1000").id
-    w.books.import_transactions(bank_id, [ParsedTransaction(date.today().replace(day=2), "ROOFER", -12_500_00)])
+    w.books.import_transactions(bank_id, [ParsedTransaction(date.today().replace(day=1), "ROOFER", -12_500_00)])
     roofer = next(t for t in w.books.transactions() if t.description == "ROOFER")
     w.books.set_category(roofer.id, next(a.id for a in w.books.accounts() if a.name == "CapEx – Roofing"))
     cap.fill()

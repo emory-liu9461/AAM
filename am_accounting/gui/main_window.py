@@ -793,6 +793,7 @@ class MainWindow(QMainWindow):
                     create_company=self._create_company_for_holding)
                 self.asset_view.open_company.connect(self.open_company_books)
                 self.asset_view.open_loans.connect(self.open_company_loans)
+                self.asset_view.open_unnamed.connect(self.open_company_unnamed)
                 self.stack.addWidget(self.asset_view)
             self._dock_was_visible = self.review_dock.isVisible()
             self.review_dock.hide()
@@ -875,6 +876,15 @@ class MainWindow(QMainWindow):
         self.set_mode("accounting")
         self.switch_books(path)
         self._fill_switcher()
+
+    def open_company_unnamed(self, path: str) -> None:
+        """From Operating Costs: that company's Transactions with no customer / vendor, to assign them."""
+        from .transactions import show_unnamed
+
+        self.open_company_books(path)
+        if self._is_current(path):
+            self.tabs.setCurrentWidget(self.tx_tab)
+            show_unnamed(self.tx_tab)
 
     def open_company_loans(self, path: str) -> None:
         """From Financing & Cap Table: that company's books, Transactions, and its Loans window."""

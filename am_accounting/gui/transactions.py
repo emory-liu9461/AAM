@@ -17,6 +17,18 @@ SOURCE_LABELS = {"manual": "You", "rule": "Rule", "learned": "Learned", "keyword
                  None: ""}
 
 
+NO_NAME = "\x00no-name"     # the name filter: transactions with no customer / vendor
+
+
+def show_unnamed(tab) -> None:
+    """Transactions with no customer / vendor (all of them, not just those to review)."""
+    i = tab.status_filter.findData("all") if tab.status_filter.findData("all") >= 0 else 0
+    tab.status_filter.setCurrentIndex(i)
+    tab.refresh()
+    tab.name_filter.setCurrentIndex(max(0, tab.name_filter.findData(NO_NAME)))
+    tab.refresh()
+
+
 class TransactionModel(QAbstractTableModel):
     changed = Signal()
 
@@ -307,13 +319,16 @@ class TransactionsTab(QWidget):
         self.name_filter.blockSignals(True)
         self.name_filter.clear()
         self.name_filter.addItem("Everyone", None)
+        self.name_filter.addItem("(no customer / vendor)", NO_NAME)
         for n in sorted({v for v in names.values()}, key=str.lower):
             self.name_filter.addItem(n, n)
         i = self.name_filter.findData(want)
         self.name_filter.setCurrentIndex(i if i >= 0 else 0)
         self.name_filter.blockSignals(False)
         want = self.name_filter.currentData()
-        if want:
+        if want == NO_NAME:
+            rows = [t for t in rows if not names.get(t.id)]
+        elif want:
             rows = [t for t in rows if names.get(t.id, "").lower() == want.lower()]
         self.model.load(rows, names)
         all_tx = self.books.transactions()

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -23,12 +23,12 @@ def _books(tmp_path):
     elev = b.add_account("6440", "Elevator Maintenance", "expense", "operating").id
     rep = next(a.id for a in b.accounts() if a.name == "Repairs & Maintenance")
     today = date.today()
-    b.import_transactions(bank, [ParsedTransaction(today.replace(day=1), "BRIGHT POWER UTIL", -2_400_00),
-                                 ParsedTransaction(today.replace(day=2), "BRIGHT POWER UTIL", -2_100_00),
-                                 ParsedTransaction(today.replace(day=3), "NORTH PLOW", -1_500_00),
-                                 ParsedTransaction(today.replace(day=4), "SHIELD MUTUAL", -18_000_00),
-                                 ParsedTransaction(today.replace(day=5), "LIFTCO", -900_00),
-                                 ParsedTransaction(today.replace(day=6), "HANDY FIX", -300_00)])
+    b.import_transactions(bank, [ParsedTransaction(today - timedelta(days=1), "BRIGHT POWER UTIL", -2_400_00),
+                                 ParsedTransaction(today - timedelta(days=2), "BRIGHT POWER UTIL", -2_100_00),
+                                 ParsedTransaction(today - timedelta(days=3), "NORTH PLOW", -1_500_00),
+                                 ParsedTransaction(today - timedelta(days=4), "SHIELD MUTUAL", -18_000_00),
+                                 ParsedTransaction(today - timedelta(days=5), "LIFTCO", -900_00),
+                                 ParsedTransaction(today - timedelta(days=6), "HANDY FIX", -300_00)])
     for t in b.transactions():
         acct = {"BRIGHT": hydro, "NORTH": snow, "SHIELD": ins, "LIFTCO": elev, "HANDY": rep}[t.description.split()[0]]
         b.set_category(t.id, acct, source="manual")
@@ -71,3 +71,81 @@ def test_operating_costs_with_providers_from_the_books(tmp_path):
         oc.save(pf, h.id, oc.CostLine(" "))
     pf.close()
 
+
+
+def test_every_operating_expense_has_a_vendor(tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    path = _books(tmp_path)
+    b = Books.open(path)
+    bank = b.account_by_code("1000").id
+    snow = next(a.id for a in b.accounts() if a.name == "Snow Removal")
+    office = next(a.id for a in b.accounts() if a.name == "Office Supplies")
+    intr = next(a.id for a in b.accounts() if a.name == "Interest Expense")
+    today = date.today()
+    b.import_transactions(bank, [ParsedTransaction(today - timedelta(days=7), "PLOW CASH", -500_00),
+                                 ParsedTransaction(today - timedelta(days=8), "STAPLES 0101", -80_00),
+                                 ParsedTransaction(today - timedelta(days=9), "LOAN INTEREST", -900_00)])
+    for t in b.transactions():
+        if t.description.startswith(("PLOW", "STAPLES", "LOAN")):
+            b.set_category(t.id, {"PLOW": snow, "STAPLES": office, "LOAN": intr}[t.description.split()[0]],
+                           source="manual")
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=path)
+    pf.save_holding(h)
+    oc.start_once(pf, h.id)
+    chk = oc.vendor_check(pf, h)
+    by = {ln.category: ln for ln in chk.all_rows}
+    assert by["Snow removal"].unassigned_cents == 500_00 and by["Snow removal"].actual_cents == 2_000_00
+    assert [ln.category for ln in chk.other_accounts] == ["Office Supplies"]      # not on the list
+    assert "Interest Expense" not in by                                           # non-operating: left out
+    assert chk.unassigned == 580_00 and {ln.category for ln in chk.accounts_unassigned} == {"Snow removal",
+                                                                                          "Office Supplies"}
+    assert chk.total == 4_500_00 + 2_000_00 + 18_000_00 + 900_00 + 300_00 + 80_00
+    # name them in the books: nothing left without a vendor
+    b = Books.open(path)
+    for t in b.transactions():
+        if t.description.startswith("PLOW"):
+            parties.set_name(b, [t.id], "North Plow Ltd")
+        if t.description.startswith("STAPLES"):
+            parties.set_name(b, [t.id], "Staples")
+    # the Transactions tab can show just the ones with no customer / vendor
+    QApplication.instance() or QApplication([])
+    from am_accounting.gui.transactions import NO_NAME, TransactionsTab, show_unnamed
+
+    tab = TransactionsTab(b)
+    show_unnamed(tab)
+    assert tab.name_filter.currentData() == NO_NAME
+    assert [t.description for t in tab.model.rows] == ["LOAN INTEREST"]           # only the unnamed one
+    b.close()
+    chk = oc.vendor_check(pf, h)
+    assert chk.unassigned == 0 and not chk.accounts_unassigned
+    pf.close()
+
+
+def test_naming_payments_after_the_provider(tmp_path):
+    path = _books(tmp_path)
+    b = Books.open(path)
+    bank = b.account_by_code("1000").id
+    snow = next(a.id for a in b.accounts() if a.name == "Snow Removal")
+    b.import_transactions(bank, [ParsedTransaction(date.today() - timedelta(days=10), "E-TRANSFER 4471", -700_00)])
+    t = next(t for t in b.transactions() if t.description.startswith("E-TRANSFER"))
+    b.set_category(t.id, snow, source="manual")
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=path)
+    pf.save_holding(h)
+    oc.start_once(pf, h.id)
+    assert oc.vendor_check(pf, h).unassigned == 700_00
+    ln = next(x for x in oc.lines(pf, h.id) if x.category == "Snow removal")
+    ln.provider = "North Plow Ltd"
+    oc.save(pf, h.id, ln)
+    found = oc.provider_matches(pf, h)
+    assert [(x.category, len(ids)) for x, ids in found] == [("Snow removal", 1)]
+    assert oc.name_with_providers(pf, h) == 1
+    chk = oc.vendor_check(pf, h)
+    assert chk.unassigned == 0
+    assert dict(next(x for x in chk.lines if x.category == "Snow removal").vendors)["North Plow Ltd"] == 2_200_00
+    assert oc.name_with_providers(pf, h) == 0                      # nothing twice
+    pf.close()

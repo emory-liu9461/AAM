@@ -1668,6 +1668,7 @@ HOLD_COLS = ["Holding", "Type", "Own %", "Invested", "Returned", "Value (100%)",
 class AssetManagementView(QWidget):
     open_company = Signal(str)   # switch to Accounting with this company file
     open_loans = Signal(str)     # … and open its Loans window (record loan payments)
+    open_unnamed = Signal(str)   # … Transactions with no customer / vendor (to assign vendors)
 
     def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None):
         super().__init__()

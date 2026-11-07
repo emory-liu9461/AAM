@@ -270,12 +270,20 @@ class OperationsPage(_CompanyPage):
                 ("Delete", self.delete_cost, "Take the selected category off the list"),
                 ("Add the Usual Categories", self.usual_costs, "Power, water, gas, insurance, snow removal, waste …"),
                 ("Fill Providers from the Books", self.providers_from_books,
-                 "Blank providers: the vendor paid the most for that category in the last 12 months")):
+                 "Blank providers: the vendor paid the most for that category in the last 12 months"),
+                ("Name Payments with the Provider", self.name_with_providers,
+                 "Unnamed payments in each category's account: named after the provider entered here"),
+                ("Assign Vendors in the Books…", self.assign_vendors,
+                 "Opens the company's Transactions showing the ones with no customer / vendor")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
             cb.addWidget(b)
         cwl.addLayout(cb)
+        self.vendor_status = QLabel()               # the vendor check at a glance
+        self.vendor_status.setTextFormat(Qt.TextFormat.RichText)
+        self.vendor_status.setWordWrap(True)
+        cwl.addWidget(self.vendor_status)
         self.costs = _table(COST_COLS, 1)
         self.costs.doubleClicked.connect(lambda *_: self.edit_cost())
         cwl.addWidget(self.costs, 1)
@@ -378,56 +386,112 @@ class OperationsPage(_CompanyPage):
                                if rows else "No rent roll yet — Import Rent Roll… or Add Unit….")
 
     def _fill_costs(self) -> None:
+        """The cost list with the books; then every other operating expense account with spending; and a check that
+        every operating expense has a vendor named."""
         from .. import op_costs as oc
+        from .theme import c as tc
 
         t = self.costs
         t.setRowCount(0)
         self._cost_rows = []
+        self.vendor_status.setText("")
         p = self.perf()
         if p is None:
             return
         h = p.holding
         oc.start_once(self.pf, h.id)
-        rows = oc.lines(self.pf, h.id)
-        oc.with_books(rows, h.company_path, self.view._as_of_date())
-        has_books = bool(h.company_path)
-        for ln in rows:
+        chk = self.vendor_check = oc.vendor_check(self.pf, h, self.view._as_of_date())
+        has_books = not chk.error
+
+        def add(ln, *, other=False):
             r = t.rowCount()
             t.insertRow(r)
             provider = ln.provider or (f"{ln.top_vendor} (from the books)" if ln.top_vendor else "")
-            vals = [ln.category, provider, ln.account_no, ln.contact, ln.contract_end or "",
-                    fmt_money(ln.actual_cents) if ln.actual_cents else ("—" if has_books else ""),
+            vals = [ln.category + (" (not on the list)" if other else ""), provider, ln.account_no, ln.contact,
+                    ln.contract_end or "", fmt_money(ln.actual_cents) if ln.actual_cents else ("—" if has_books else ""),
+                    fmt_money(ln.unassigned_cents) if ln.unassigned_cents else ("✓" if ln.actual_cents else ""),
                     fmt_money(ln.budget_cents) if ln.budget_cents else "",
                     ln.matched_account or ("not found" if has_books else ""), ln.notes]
             soon = bool(ln.contract_end and (date.fromisoformat(ln.contract_end) - date.today()).days <= 60)
             for c, v in enumerate(vals):
-                colour = MUTED if (c == 1 and not ln.provider) or c == 7 else None
-                if c == 4 and soon:
+                colour = MUTED if (c == 1 and not ln.provider) or c == 8 or (other and c == 0) else None
+                if (c == 4 and soon) or (c == 6 and ln.unassigned_cents):
                     colour = NEGATIVE
-                it = _cell(v, right=c in (5, 6), colour=colour)
+                if c == 6 and not ln.unassigned_cents and ln.actual_cents:
+                    colour = POSITIVE
+                it = _cell(v, right=c in (5, 6, 7), colour=colour)
                 if c == 1 and not ln.provider:
                     ex = oc.EXAMPLES.get(ln.category)
                     it.setToolTip(f"e.g. {ex}" if ex else "")
-                if c == 1 and ln.vendors:
+                if c in (1, 6) and ln.vendors:
                     it.setToolTip("Paid in the last 12 months: " + ", ".join(
-                        f"{v} {fmt_money(cents)}" for v, cents in ln.vendors[:5]))
+                        f"{v} {fmt_money(cents)}" for v, cents in ln.vendors[:6]))
                 t.setItem(r, c, it)
-            self._cost_rows.append(ln)
+            self._cost_rows.append(None if other else ln)
+
+        for ln in chk.lines:
+            add(ln)
+        for ln in chk.other_accounts:
+            add(ln, other=True)
+        rows = chk.all_rows
         if rows:
-            actual = sum(ln.actual_cents or 0 for ln in rows)
-            budget = sum(ln.budget_cents for ln in rows)
             r = t.rowCount()
             t.insertRow(r)
-            for c, v in enumerate(["Total", "", "", "", "", fmt_money(actual) if has_books else "",
-                                   fmt_money(budget) if budget else "", "", ""]):
-                t.setItem(r, c, _cell(v, right=c in (5, 6), bold=True))
+            for c, v in enumerate(["Total", "", "", "", "", fmt_money(chk.total) if has_books else "",
+                                   fmt_money(chk.unassigned) if chk.unassigned else "",
+                                   fmt_money(sum(ln.budget_cents for ln in chk.lines)) or "", "", ""]):
+                t.setItem(r, c, _cell(v, right=c in (5, 6, 7), bold=True))
             self._cost_rows.append(None)
         t.resizeColumnsToContents()
         t.horizontalHeader().setStretchLastSection(True)
-        named = sum(1 for ln in rows if ln.provider)
-        self.costs_info.setText(f"{len(rows)} cost categories · {named} with a provider · last 12 months from the "
-                                "books" + ("" if has_books else " (not linked to its books)")
+        named = sum(1 for ln in chk.lines if ln.provider)
+        self.costs_info.setText(f"{len(chk.lines)} cost categories · {named} with a provider · last 12 months from "
+                                "the books" + ("" if has_books else " (not linked to its books)")
                                 + ". Contracts ending within 60 days are in red.")
+        red, green = tc("red"), tc("green")
+        if chk.error:
+            self.vendor_status.setText(f"<span style='color:{tc('muted')}'>Vendor check: {chk.error.lower()}.</span>")
+        elif not chk.unassigned and not chk.other_accounts:
+            self.vendor_status.setText(f"<b style='color:{green}'>✓ Every operating expense has a vendor and is on the "
+                                       f"cost list.</b>")
+        else:
+            bits = []
+            if chk.unassigned:
+                n = len(chk.accounts_unassigned)
+                share = chk.unassigned / chk.total * 100 if chk.total else 0
+                bits.append(f"<b style='color:{red}'>⚠ {fmt_money(chk.unassigned)} of operating expenses "
+                            f"({share:.0f}%) in {n} account(s) have no vendor</b> — Assign Vendors in the Books… "
+                            f"(then set the customer / vendor on those transactions)")
+            if chk.other_accounts:
+                bits.append(f"{len(chk.other_accounts)} operating expense account(s) aren't on the cost list: "
+                            + ", ".join(ln.category for ln in chk.other_accounts[:6])
+                            + (" …" if len(chk.other_accounts) > 6 else "")
+                            + " — Add Cost… with that account to track them")
+            self.vendor_status.setText("<br>".join(bits))
+
+    def name_with_providers(self) -> None:
+        from .. import op_costs as oc
+
+        p = self.perf()
+        if not p:
+            return
+        found = oc.provider_matches(self.pf, p.holding)
+        if not found:
+            info(self, "Nothing to name", "No unnamed payments in the accounts of categories with a provider. Enter "
+                                          "the providers first (Edit…), or Assign Vendors in the Books….")
+            return
+        lines_ = "\n".join(f"• {ln.category}: {len(ids)} payment(s) → {ln.provider}" for ln, ids in found)
+        if not confirm(self, "Name payments", f"Name these unnamed payments in the books after the provider?\n\n"
+                                              f"{lines_}\n\nYou can change any of them in Transactions."):
+            return
+        n = oc.name_with_providers(self.pf, p.holding)
+        self._fill_costs()
+        info(self, "Named", f"{n} payment(s) named after their provider.")
+
+    def assign_vendors(self) -> None:
+        p = self.perf()
+        if p and p.holding.company_path and hasattr(self.view, "open_unnamed"):
+            self.view.open_unnamed.emit(p.holding.company_path)
 
     def _cost(self):
         r = self.costs.currentRow()
@@ -543,8 +607,8 @@ class OperationsPage(_CompanyPage):
 # ---------------------------------------------------------------------------
 
 
-COST_COLS = ["Category", "Provider", "Account #", "Contact", "Contract ends", "Last 12 months", "Budget / yr",
-             "Account in the books", "Notes"]
+COST_COLS = ["Category", "Provider", "Account #", "Contact", "Contract ends", "Last 12 months", "No vendor",
+             "Budget / yr", "Account in the books", "Notes"]
 
 
 class CostDialog(QDialog):
