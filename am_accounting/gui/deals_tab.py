@@ -48,9 +48,10 @@ def _short_date(iso: str | None) -> str:
 class DealDialog(QDialog):
     """A deal: details, its due-diligence checklist and notes."""
 
-    def __init__(self, pf, deal: dl.Deal | None = None, parent=None):
+    def __init__(self, pf, deal: dl.Deal | None = None, parent=None, companies=None):
         super().__init__(parent)
         from .asset_mgmt import _money_box
+        from .deal_costs_tab import DealCostsTab
 
         self.pf = pf
         self.deal = d = deal or dl.Deal("", received=date.today().isoformat())
@@ -167,6 +168,10 @@ class DealDialog(QDialog):
         for it in (dl.checklist(pf, d.id) if d.id else []):
             self._add_item(it)
         self.dd.expandAll()
+
+        # deposits & costs paid before closing, and which company pays them
+        self.costs = DealCostsTab(pf, d, companies, deal_name=lambda: self.name.text().strip() or d.name)
+        tabs.addTab(self.costs, "Deposits && Costs")
 
         # notes
         self.notes = QPlainTextEdit(d.notes)
@@ -489,6 +494,7 @@ class DealDialog(QDialog):
                 dl.start_checklist(self.pf, d.id)
             else:
                 dl.save_checklist(self.pf, d.id, items)
+            self.costs.save(d.id)
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
@@ -660,7 +666,8 @@ class CloseDealDialog(QDialog):
 
         self.pf, self.deal, self.create_company = pf, deal, create_company
         self.holding_id: int | None = None
-        s = cl.default_setup(deal)
+        s = cl.default_setup(deal, pf)
+        self.prepaid = s.prepaid          # paid before closing by other companies (Deposits & Costs)
         self.setWindowTitle(f"Close Deal – {deal.name}")
         self.resize(980, 620)
         lay = QVBoxLayout(self)
@@ -934,7 +941,7 @@ class CloseDealDialog(QDialog):
                                             t.cellWidget(r, 4).currentText()))
         return cl.ClosingSetup(self.company.text(), self.prop.text(), _date_of(self.closing) or "", costs, loans,
                                equity, self.land.value(), self.entity.currentText(), self.fiscal.currentData(),
-                               self.own.value())
+                               self.own.value(), getattr(self, "prepaid", []))
 
     def _update(self, *_) -> None:
         from .theme import c as tc
@@ -946,7 +953,9 @@ class CloseDealDialog(QDialog):
         tail = (f"<span style='color:{tc('red')}'>short by <b>{fmt_money(-left)}</b></span>" if left < 0 else
                 f"cash left for the bank <b>{fmt_money(left)}</b>")
         self.totals.setText(f"Uses <b>{fmt_money(s.uses)}</b> · Debt <b>{fmt_money(s.debt)}</b> · Equity "
-                            f"<b>{fmt_money(s.equity_total)}</b> · {tail}"
+                            f"<b>{fmt_money(s.equity_total)}</b>"
+                            + (f" · Paid before closing <b>{fmt_money(s.prepaid_total)}</b>" if s.prepaid_total else "")
+                            + f" · {tail}"
                             + (f" · LTV {s.debt / s.price * 100:.0f}%" if s.price else ""))
         if self.tabs.currentIndex() == 4:
             self.review.setText(self._review(s))
@@ -974,6 +983,7 @@ class CloseDealDialog(QDialog):
             else:
                 classes[e.share_class] = classes.get(e.share_class, 0) + e.amount_cents
         rows += [(f"Share Capital – {esc(c)}", 0, v) for c, v in classes.items()]
+        rows += [(f"Due to {esc(p.payer_name)} (paid before closing)", 0, p.total) for p in s.prepaid if p.total]
         body = "".join(f"<tr><td style='padding:2px 24px 2px 0'>{a}</td><td align='right' style='padding:2px 12px'>"
                        f"{fmt_money(d) if d else ''}</td><td align='right' style='padding:2px 12px'>"
                        f"{fmt_money(c) if c else ''}</td></tr>" for a, d, c in rows)
@@ -1014,11 +1024,12 @@ class DealPipelinePage(QWidget):
     """New deals, under due diligence and under contract side by side (closed and dead deals below on request).
     Double-click a deal to open it; the buttons move the selected deal along."""
 
-    def __init__(self, pf, parent=None, on_added=None, create_company=None):
+    def __init__(self, pf, parent=None, on_added=None, create_company=None, companies=None):
         super().__init__(parent)
         from .asset_mgmt import Card, _table
 
         self.pf = pf
+        self.companies = companies or (lambda: [])   # () -> [(name, path, role)]: who can pay deposits and costs
         self.on_added = on_added          # called with a new holding's id when a deal is added to the portfolio
         self.create_company = create_company   # (name, entity_type=, fiscal_year_start_month=) -> company file
         lay = QVBoxLayout(self)
@@ -1235,7 +1246,7 @@ class DealPipelinePage(QWidget):
 
     # ---- actions ----
     def new_deal(self) -> None:
-        dlg = DealDialog(self.pf, parent=self)
+        dlg = DealDialog(self.pf, parent=self, companies=self.companies)
         if dlg.exec():
             self.refresh()
             self.select(dlg.deal.id)
@@ -1244,7 +1255,7 @@ class DealPipelinePage(QWidget):
         d = self._need()
         if not d:
             return
-        dlg = DealDialog(self.pf, dl.deal(self.pf, d.id), self)
+        dlg = DealDialog(self.pf, dl.deal(self.pf, d.id), self, companies=self.companies)
         dlg.tabs.setCurrentIndex(tab)
         if dlg.exec():
             self.refresh()
@@ -1277,6 +1288,18 @@ class DealPipelinePage(QWidget):
         d = self._need()
         if d and confirm(self, "Dead deal", f"Mark “{d.name}” dead? (It's kept under Closed & dead.)"):
             dl.move(self.pf, d.id, "Dead")
+            from .. import deal_costs as dc
+
+            paid = dc.prepaid(self.pf, d.id)
+            costs_ = sum(p.costs for p in paid)
+            deposits = sum(p.deposit for p in paid)
+            if costs_ and confirm(self, "Write off the deal's costs",
+                                  f"Write off the {fmt_money(costs_)} of costs paid on “{d.name}” as Abandoned Deal "
+                                  "Costs in the paying companies' books?"
+                                  + (f"\n\nThe deposit ({fmt_money(deposits)}) is left as it is — if it's refunded, "
+                                     "categorize the refund to the deal's account; if it's lost, write it off from the "
+                                     "deal's Deposits & Costs." if deposits else "")):
+                dc.write_off(self.pf, d.id, d.name)
             self.refresh()
 
     def close_deal(self) -> None:

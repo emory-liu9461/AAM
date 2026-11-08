@@ -69,6 +69,7 @@ class ClosingSetup:
     entity_type: str = "Corporation"
     fiscal_year_start_month: int = 1
     ownership_pct: float = 100.0            # the portfolio's share of the company
+    prepaid: list = field(default_factory=list)   # [deal_costs.Prepaid] — paid before closing by other companies
 
     @property
     def uses(self) -> int:
@@ -83,8 +84,13 @@ class ClosingSetup:
         return sum(e.amount_cents for e in self.equity)
 
     @property
+    def prepaid_total(self) -> int:
+        return sum(p.total for p in self.prepaid)
+
+    @property
     def sources(self) -> int:
-        return self.debt + self.equity_total
+        """Debt + equity + what other companies paid before closing (the deposit, pre-closing costs)."""
+        return self.debt + self.equity_total + self.prepaid_total
 
     @property
     def cash_left(self) -> int:
@@ -126,18 +132,25 @@ def _m(cents: int) -> str:
     return fmt_money(cents)
 
 
-def default_setup(deal: dl.Deal) -> ClosingSetup:
+def default_setup(deal: dl.Deal, pf=None) -> ClosingSetup:
     """A starting point from the deal: its price and closing date, an estimate of Ontario land transfer tax, the
-    deal's equity and the rest as a mortgage."""
+    costs paid before closing (Deposits & Costs, recorded in the paying companies' books), the deal's equity and the
+    rest as a mortgage."""
     price = deal.price_cents
     costs = [(label, 0) for label in COST_LINES]
     costs[0] = ("Purchase price", price)
     costs[1] = ("Land transfer tax", ontario_ltt(price) if price else 0)
     s = ClosingSetup("", deal.name, deal.closing_date or date.today().isoformat(), costs)
+    if pf is not None and deal.id is not None:
+        from . import deal_costs as dc
+
+        s.prepaid = dc.prepaid(pf, deal.id)
+        for p in s.prepaid:            # pre-closing costs are part of the property's cost
+            s.costs += [(c.item, c.amount_cents) for c in p.lines if c.kind == "cost"]
     if deal.equity_cents and price > deal.equity_cents:
         s.loans = [pfm.Loan("", "Mortgage", price - deal.equity_cents, start_date=s.closing_date, term_months=60,
                             amort_months=300)]
-    eq = max(0, s.uses - s.debt)
+    eq = max(0, s.uses - s.debt - s.prepaid_total)
     if eq:
         s.equity = [EquityLine("", eq)]
     return s
@@ -223,6 +236,10 @@ def close_deal(pf, deal_id: int, s: ClosingSetup, create_company: Callable[..., 
         for cls, cents in classes.items():
             acct = _account(books, "3010", f"Share Capital – {cls}", "equity", "contribution")
             lines.append((acct, 0, cents))
+        for p in s.prepaid:              # paid before closing by another company: owed back to it
+            if p.total:
+                acct = _account(books, "2400", f"Due to {p.payer_name}"[:80], "liability", "current")
+                lines.append((acct, 0, p.total))
         books.add_journal_entry(s.closing_date, f"Closing – purchase of {s.property_name.strip()}", lines,
                                 kind="opening")
     finally:
@@ -233,8 +250,12 @@ def close_deal(pf, deal_id: int, s: ClosingSetup, create_company: Callable[..., 
     ours = round(s.equity_total * s.ownership_pct / 100)
     pfm.save_sources_uses(pf, h.id, {
         "Debt financing": s.debt, "Equity – us": ours, "Equity – other owners": s.equity_total - ours,
-        "Other sources": 0, "Purchase price": s.price, "CapEx / improvements": 0,
+        "Other sources": s.prepaid_total, "Purchase price": s.price, "CapEx / improvements": 0,
         "Closing & financing costs": s.uses - s.price, "Cash reserve / other": s.cash_left})
+    if s.prepaid:                        # the payers' books: the deal account → due from the new company
+        from . import deal_costs as dc
+
+        dc.settle_on_closing(pf, d.id, d.name, s.company_name.strip(), s.closing_date)
     d.stage, d.holding_id, d.closing_date = "Closed", h.id, s.closing_date
     dl.save(pf, d)
     return h.id

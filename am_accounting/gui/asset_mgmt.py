@@ -2447,7 +2447,7 @@ class AssetManagementView(QWidget):
         from .deals_tab import DealPipelinePage
 
         self.deals_page = DealPipelinePage(self.pf, on_added=lambda _hid: self.refresh(),
-                                           create_company=self.create_company)
+                                           create_company=self.create_company, companies=self._companies)
         self.tabs.addTab(self.deals_page, "Deal Pipeline")
         self.tabs.setTabVisible(self.tabs.indexOf(self.deals_page), False)   # opened with its button at the top
         self.tabs.currentChanged.connect(self._top_buttons)
