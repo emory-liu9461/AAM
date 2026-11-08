@@ -2043,6 +2043,12 @@ class AssetManagementView(QWidget):
     def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None, *, refresh: bool = True):
         super().__init__()
         self.pf = pfm.Portfolio(portfolio_path)
+        try:            # today's copy of the portfolio file (see backups.py)
+            from .. import backups
+
+            backups.daily(self.pf.conn, self.pf.path, "Portfolio")
+        except Exception:  # noqa: BLE001
+            pass
         self.companies_fn = companies_fn  # () -> [(name, path, role)]
         self.create_company = create_company
         self.summary: pfm.Summary | None = None
@@ -2430,6 +2436,12 @@ class AssetManagementView(QWidget):
                             ("Consolidated Financials", "Consolidated Financials"),
                             ("Managed Companies", "Managed Companies")):
             self.portfolio_tabs.addTab(pages[name], label)
+        from .intercompany_tab import IntercompanyPage
+
+        self.ic_page = IntercompanyPage(self._companies, self._as_of_date, open_books=self.open_company.emit)
+        self.portfolio_tabs.addTab(self.ic_page, "Intercompany")
+        self.portfolio_tabs.currentChanged.connect(
+            lambda *_: self.ic_page.fill() if self.portfolio_tabs.currentWidget() is self.ic_page else None)
         self.portfolio_area = self.portfolio_tabs
         self.tabs.addTab(self.portfolio_area, "Portfolio")
         self.tabs.setTabVisible(0, False)  # opened with the Portfolio Summary button at the top, not a tab
@@ -3498,7 +3510,8 @@ class AssetManagementView(QWidget):
         hrow.addWidget(QLabel("<b>Cap table</b> (owners: name, company and amount)"))
         hrow.addStretch(1)
         for text, slot in [("Add Owner…", self._fin_add_holder), ("Edit…", self._fin_edit_holder),
-                           ("Delete", self._fin_delete_holder), ("Import Equity…", self._fin_import_equity)]:
+                           ("Delete", self._fin_delete_holder), ("Import Equity…", self._fin_import_equity),
+                           ("Investor Reports…", self._fin_investor_reports)]:
             b = QPushButton(text)
             b.clicked.connect(slot)
             hrow.addWidget(b)
@@ -3837,6 +3850,13 @@ class AssetManagementView(QWidget):
         self.refresh()
         return len(rows)
 
+    def _fin_investor_reports(self) -> None:
+        """Quarterly statements for the owners on the cap tables (this company picked to start)."""
+        from .investor_reports_dialog import InvestorReportsDialog
+
+        p = self._fin_perf()
+        InvestorReportsDialog(self.pf, self, p.holding.id if p else None).exec()
+
     def _fin_delete_holder(self) -> None:
         x = self._selected_holder()
         if x and x.id is not None and confirm(self, "Delete owner", f"Remove {x.label} from the cap table?"):
@@ -3871,6 +3891,9 @@ class AssetManagementView(QWidget):
         cols = [(f"{p.holding.name} ({p.holding.ownership_pct:g}%)", p.financials) for p in rows]
         if s.consolidated:
             cols.append(("Portfolio – our share", s.consolidated))
+            net = self._without_intercompany(rows, s.consolidated)
+            if net is not None:
+                cols.append(("Portfolio – without intercompany", net))
         t.clear()
         t.setColumnCount(len(cols) + 1)
         t.setHorizontalHeaderLabels([""] + [c[0] for c in cols])
@@ -3896,6 +3919,32 @@ class AssetManagementView(QWidget):
                 t.setItem(r_, c_ + 1, cell)
         fit_name_columns(t)
         t.verticalHeader().setVisible(False)
+
+    def _without_intercompany(self, rows, total):
+        """The portfolio total with balances owed between the group's companies taken out (see intercompany.py);
+        None when there are none."""
+        import dataclasses
+        from pathlib import Path as _P
+
+        from .. import intercompany as ic
+
+        try:
+            elim = ic.eliminations(ic.check(self._companies(), self._as_of_date()))
+        except Exception:  # noqa: BLE001
+            return None
+        out = dataclasses.replace(total)
+        hit = False
+        for p in rows:
+            e = elim.get(str(_P(p.holding.company_path).resolve())) if p.holding.company_path else None
+            if e is None:
+                continue
+            share = p.holding.ownership_pct / 100
+            out.total_assets -= round(e.assets * share)
+            out.total_liabilities -= round(e.liabilities * share)
+            out.debt -= round(e.debt * share)
+            hit = hit or bool(e.assets or e.liabilities)
+        out.equity = out.total_assets - out.total_liabilities
+        return out if hit else None
 
     def _fill_managers(self) -> None:
         want = self.mgr.currentData()

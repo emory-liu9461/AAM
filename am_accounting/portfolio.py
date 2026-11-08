@@ -158,6 +158,20 @@ class Portfolio:
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE holdings ADD COLUMN {col} {decl}")
         self.conn.commit()
+        self._ready_more()
+
+    def _ready_more(self) -> None:
+        """The tables other modules keep in the portfolio, so the change history can follow them from the start."""
+        from . import history
+
+        try:
+            from . import budget, capex, deal_costs, deals, operations, turnover
+
+            for mod in (capex, deal_costs, budget, turnover, operations, deals):
+                mod.ready(self)
+            history.install(self.conn, "portfolio")
+        except sqlite3.DatabaseError:
+            pass
 
     # -- settings -------------------------------------------------------------
 

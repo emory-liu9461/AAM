@@ -264,6 +264,12 @@ class Books:
         books = cls(conn, path)
         if books._meta("schema_version") is None:
             books._initialise(template)
+        from . import history
+
+        try:          # the change history (see history.py)
+            history.install(conn, "books")
+        except sqlite3.DatabaseError:
+            pass       # a read-only file: no history written
         return books
 
     create = open

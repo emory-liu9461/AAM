@@ -113,6 +113,9 @@ class UnitDialog(QDialog):
         super().__init__(parent)
         self.pf, self.holding = pf, holding
         self.u = unit or op.Unit("")
+        import dataclasses
+
+        self.before = dataclasses.replace(unit) if unit else None   # to record a move-out / move-in
         u = self.u
         self.setWindowTitle(f"Unit – {holding.name}")
         self.resize(480, 0)
@@ -148,6 +151,14 @@ class UnitDialog(QDialog):
                          ("Market rent / month:", self.market), ("Move-in date:", self.move_in),
                          ("Lease end:", self.lease_end), ("Notes:", self.notes)):
             form.addRow(label, w)
+        self.docs = None
+        if u.id is not None:     # leases, notices, inspection photos …
+            from .. import attachments as at
+            from .attachments_box import AttachmentsBox
+
+            self.docs = AttachmentsBox(pf.conn, at.portfolio_folder(pf), "unit", f"{holding.id}:{u.id}",
+                                       sub=f"{holding.name} - {u.unit}", compact=True)
+            form.addRow("Documents:", self.docs)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
@@ -174,6 +185,12 @@ class UnitDialog(QDialog):
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
+        from .. import turnover as tv
+
+        try:
+            tv.record_change(self.pf, self.holding.id, self.before, u)
+        except ValueError:
+            pass
         self.accept()
 
 
@@ -304,6 +321,13 @@ class OperationsPage(_CompanyPage):
         self.mix = _table(["Unit type", "Status", "Units", "Occupied", "Average rent", "Average market rent",
                            "Monthly rent", "Gap to market"], None)
         self.sub.addTab(self.mix, "Unit Mix")
+        from .ops_extra import BudgetTab, TurnoverTab
+
+        self.turn_tab = TurnoverTab(self)
+        self.sub.addTab(self.turn_tab, "Unit Turnover")
+        self.budget_tab = BudgetTab(self)
+        self.sub.addTab(self.budget_tab, "Budget vs Actual")
+        self.sub.currentChanged.connect(lambda *_: self._fill_extra())
         self._units: list[op.Unit] = []
 
     def _settings_widgets(self, st: op.Settings) -> None:
@@ -349,6 +373,13 @@ class OperationsPage(_CompanyPage):
         self._fill_roll(rows, s)
         self._fill_mix(rows)
         self._fill_costs()
+        self._fill_extra()
+
+    def _fill_extra(self) -> None:
+        """Budget vs Actual and Unit Turnover read the books: filled when they're the sub-tab on screen."""
+        w = self.sub.currentWidget()
+        if w in (getattr(self, "budget_tab", None), getattr(self, "turn_tab", None)) and self.perf() is not None:
+            w.fill()
 
     def _fill_cards(self, s: op.RentRollSummary, stmt: op.Statement) -> None:
         c = self.cards

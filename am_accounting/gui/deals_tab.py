@@ -173,6 +173,19 @@ class DealDialog(QDialog):
         self.costs = DealCostsTab(pf, d, companies, deal_name=lambda: self.name.text().strip() or d.name)
         tabs.addTab(self.costs, "Deposits && Costs")
 
+        # documents: LOI, APS, appraisal, BCA, ESA, closing documents …
+        if d.id is not None:
+            from .. import attachments as at
+            from .attachments_box import AttachmentsBox
+
+            self.docs = AttachmentsBox(pf.conn, at.portfolio_folder(pf), "deal", d.id, sub=d.name)
+            tabs.addTab(self.docs, "Documents")
+        else:
+            self.docs = QLabel("Save the deal, then open it again to attach its documents (LOI, APS, reports …).")
+            self.docs.setWordWrap(True)
+            self.docs.setAlignment(Qt.AlignmentFlag.AlignTop)
+            tabs.addTab(self.docs, "Documents")
+
         # notes
         self.notes = QPlainTextEdit(d.notes)
         self.notes.setPlaceholderText("Anything about the deal: seller's story, pricing guidance, issues found…")

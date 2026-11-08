@@ -195,6 +195,8 @@ def test_upgrade_old_company_file(tmp_path):
     b.import_transactions(b.account_by_code("1000").id, [tx("2026-01-03", "ZZZ", -700)])
     b.close()
     conn = sqlite3.connect(path)
+    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
+        conn.execute(f"DROP TRIGGER {name}")      # an old file has no change history
     conn.executescript("""
         CREATE TABLE accounts_old AS SELECT id, code, name, type, subtype, is_bank, active FROM accounts;
         PRAGMA foreign_keys=OFF; DROP TABLE accounts; ALTER TABLE accounts_old RENAME TO accounts;""")

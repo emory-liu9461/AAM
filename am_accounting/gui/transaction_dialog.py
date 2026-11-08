@@ -105,6 +105,12 @@ class TransactionDialog(QDialog):
         self.memo = QLineEdit(tx.memo)
         self.memo.setPlaceholderText("Note (optional)")
         form.addRow("Note:", self.memo)
+        from .. import attachments as at
+        from .attachments_box import AttachmentsBox
+
+        self.docs = AttachmentsBox(books.conn, at.books_folder(books), "transaction", tx.id, sub=tx.date[:4],
+                                   compact=True)
+        form.addRow("Documents:", self.docs)
         from .. import loan_link
 
         if loan_link.portfolio_path():

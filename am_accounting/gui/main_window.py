@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QStandardPaths
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(0, self._maybe_prompt_workspace)
+        QTimer.singleShot(1500, self.daily_backup)
 
     # -- menus --------------------------------------------------------------
 
@@ -219,6 +222,12 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Company &Settings…", self.company_settings)
         self._action(file_menu, "Company &Folder && Auto-Save…", self.workspace_settings, "Ctrl+Shift+F")
         self._action(file_menu, "Save &Trial Balance to Excel", self.save_trial_balance, "Ctrl+Shift+T")
+        self._action(file_menu, "&Year-End Package for the Accountant…", self.year_end_package)
+        file_menu.addSeparator()
+        self._action(file_menu, "Change &History…", self.change_history)
+        self._action(file_menu, "Portfolio Change Histor&y…", lambda: self.change_history(portfolio=True))
+        self._action(file_menu, "&Backups && Restore…", self.backups_restore)
+        self._action(file_menu, "Portfolio Backups && Restore…", self.portfolio_backups)
         file_menu.addSeparator()
         self._action(file_menu, "&Quit", self.close, QKeySequence.StandardKey.Quit)
 
@@ -239,6 +248,8 @@ class MainWindow(QMainWindow):
         self._action(books_menu, "Invoice &Dump…", self.invoice_dump, "Ctrl+Shift+D")
         self._action(books_menu, "Process All &Bills in the Invoice Dump", self.process_all_bills, "Ctrl+B")
         self._action(books_menu, "Automatic &PDF → Excel…", self.pdf_watch_settings)
+        books_menu.addSeparator()
+        self._action(books_menu, "&GST/HST Return…", self.hst_return, "Ctrl+Shift+H")
 
         view_menu = self.menuBar().addMenu("&View")
         self._action(view_menu, "Switch &Accounting / Asset Management", self.toggle_mode, "Ctrl+Shift+M")
@@ -380,6 +391,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Switched to {new.company_name}", 5000)
         self._maybe_prompt_workspace()
         self.autosave.check()
+        self.daily_backup()
 
     def new_company(self) -> None:
         dlg = CompanyProfileDialog(self.registry, parent=self)
@@ -568,6 +580,80 @@ class MainWindow(QMainWindow):
         path = self.reports_tab.save_trial_balance()
         if path:
             self.statusBar().showMessage(f"Trial balance saved: {path}", 10000)
+
+    def daily_backup(self) -> None:
+        """Today's copy of the company file, the first time it's opened today (see backups.py)."""
+        from .. import backups
+
+        try:
+            b = self.books
+            p = backups.daily(b.conn, b.path, b.company_name, backups.backup_root(b.path, b))
+            if p:
+                self.statusBar().showMessage(f"Backed up to {p}", 5000)
+        except (OSError, sqlite3.Error):
+            pass
+
+    def change_history(self, portfolio: bool = False) -> None:
+        from .history_dialog import HistoryDialog
+
+        if portfolio:
+            from .. import portfolio as pfm
+
+            pf = self.asset_view.pf if self.asset_view is not None else pfm.Portfolio(self.portfolio_path())
+            HistoryDialog(pf.conn, "Portfolio", self).exec()
+        else:
+            HistoryDialog(self.books.conn, self.books.company_name, self).exec()
+
+    def backups_restore(self) -> None:
+        from .history_dialog import BackupsDialog
+
+        b = self.books
+        dlg = BackupsDialog(b.path, b.company_name, self, root=self._backup_root(), on_restore=self._restore_books)
+        dlg.exec()
+
+    def _backup_root(self):
+        from .. import backups
+
+        return backups.backup_root(self.books.path, self.books)
+
+    def _restore_books(self, backup_path: str) -> str:
+        """Put the backup in place of the company file (through the open file). Returns the before-restore copy."""
+        from .. import backups
+
+        b = self.books
+        before = backups.restore_into(b.conn, b.path, backup_path, b.company_name, self._backup_root())
+        b._invalidate()
+        for tab in (self.review_panel, self.dashboard_tab, self.arap_tab, self.contacts_tab, self.docs_tab,
+                    self.tx_tab, self.accounts_tab, self.rules_tab, self.reports_tab):
+            tab.set_books(b)
+        self.update_title()
+        return str(before)
+
+    def portfolio_backups(self) -> None:
+        from .. import backups
+        from .. import portfolio as pfm
+        from .history_dialog import BackupsDialog
+
+        pf = self.asset_view.pf if self.asset_view is not None else pfm.Portfolio(self.portfolio_path())
+
+        def restore(path: str) -> str:
+            before = backups.restore_into(pf.conn, pf.path, path, "Portfolio")
+            if self.asset_view is not None:
+                self.asset_view.refresh()
+            return str(before)
+
+        BackupsDialog(pf.path, "Portfolio", self, on_restore=restore).exec()
+
+    def year_end_package(self) -> None:
+        from .year_end_dialog import YearEndDialog
+
+        YearEndDialog(self.books, self).exec()
+
+    def hst_return(self) -> None:
+        from .hst_dialog import HstDialog
+
+        HstDialog(self.books, self).exec()
+        self.on_data_changed()
 
     def cheques_drafts(self) -> None:
         from .cheques_dialog import ChequesDialog

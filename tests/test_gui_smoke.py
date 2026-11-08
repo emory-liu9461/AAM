@@ -1164,7 +1164,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     v.show_summary()
     assert v.summary_btn.isChecked() and not v.deals_btn.isChecked()
     assert [v.portfolio_tabs.tabText(i) for i in range(v.portfolio_tabs.count())] == [
-        "Summary", "Holdings", "Consolidated Financials", "Managed Companies"]   # behind the button
+        "Summary", "Holdings", "Consolidated Financials", "Managed Companies", "Intercompany"]   # behind the button
     assert not v.tabs.isTabVisible(0)                     # a button at the top, not a tab
     v.tabs.setCurrentIndex(1)
     assert not v.summary_btn.isChecked()
@@ -1820,7 +1820,8 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     from am_accounting import op_costs as oc
 
     assert [ops.sub.tabText(i) for i in range(ops.sub.count())] == [
-        "Monthly Operating Statement", "Rent Roll", "Operating Costs", "Customers && Vendors", "Unit Mix"]
+        "Monthly Operating Statement", "Rent Roll", "Operating Costs", "Customers && Vendors", "Unit Mix",
+        "Unit Turnover", "Budget vs Actual"]
     assert ops.costs.rowCount() == len(oc.CATEGORIES) + 1 and ops.costs.item(0, 0).text() == "Property tax"
     ops.costs.selectRow(1)
     cd = ot.CostDialog(v.pf, ops.perf().holding, ops._cost(), ops)
