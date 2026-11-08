@@ -1851,6 +1851,8 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     assert any(r[0] == "Turnover milestone – 5 units" for r in dash.data["timeline"])
     assert "Show unit painted" in dash.page.toPlainText()
     cash = v.cash_page
+    assert cash.cards["cash"].value.text() == "—"              # not built until it's opened
+    v.tabs.setCurrentWidget(cash)
     assert cash.pick.currentText() == "Maple Court Ltd" and cash.cards["cash"].value.text() == "$3,000.00"
     page = cash.page.toPlainText()
     assert "Pro-Forma" in page and "Actual" in page and "Net property cash flow" in page

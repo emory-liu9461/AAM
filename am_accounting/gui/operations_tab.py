@@ -66,7 +66,7 @@ class _CompanyPage(QWidget):
         self.view = view
         self.pick = QComboBox()
         self.pick.setMinimumWidth(260)
-        self.pick.currentIndexChanged.connect(lambda *_: self.fill())
+        self.pick.currentIndexChanged.connect(lambda *_: self.fill_if_shown())
 
     @property
     def pf(self):
@@ -86,7 +86,18 @@ class _CompanyPage(QWidget):
         i = self.pick.findData(want)
         self.pick.setCurrentIndex(i if i >= 0 else 0)
         self.pick.blockSignals(False)
-        self.fill()
+        self.fill_if_shown()
+
+    def shown(self) -> bool:
+        """The tab on screen in Asset Management (other pages fill when they're opened)."""
+        tabs = getattr(self.view, "tabs", None)
+        return tabs is None or tabs.currentWidget() is self
+
+    def fill_if_shown(self) -> None:
+        """Fill now if this page is on screen; otherwise when it's opened — so refreshing the portfolio doesn't
+        rebuild pages nobody is looking at."""
+        if self.shown():
+            self.fill()
 
     def fill(self) -> None:  # pragma: no cover - overridden
         pass

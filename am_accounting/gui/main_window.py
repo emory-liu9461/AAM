@@ -790,7 +790,7 @@ class MainWindow(QMainWindow):
 
                 self.asset_view = AssetManagementView(
                     self.portfolio_path(), self._company_choices,
-                    create_company=self._create_company_for_holding)
+                    create_company=self._create_company_for_holding, refresh=False)
                 self.asset_view.open_company.connect(self.open_company_books)
                 self.asset_view.open_loans.connect(self.open_company_loans)
                 self.asset_view.open_unnamed.connect(self.open_company_unnamed)
@@ -798,7 +798,8 @@ class MainWindow(QMainWindow):
                 self.stack.addWidget(self.asset_view)
             self._dock_was_visible = self.review_dock.isVisible()
             self.review_dock.hide()
-            self.asset_view.refresh()
+            if self.books.path == ":memory:":   # otherwise focusing on the company (below) refreshes it
+                self.asset_view.refresh()
             self.stack.setCurrentWidget(self.asset_view)
         else:
             self.stack.setCurrentWidget(self.accounting_page)

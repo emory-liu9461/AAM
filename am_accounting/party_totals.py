@@ -122,11 +122,44 @@ def breakdown(books: Books, start: str, end: str) -> Breakdown:
     return out
 
 
+_CACHE: dict = {}       # (file, its modified time and size, …) → result: reused until the file changes
+
+
+def _file_key(company_path) -> tuple | None:
+    try:
+        st = Path(company_path).stat()
+        return (str(Path(company_path).resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _cached(key, compute):
+    if key is None or key[0] is None:
+        return compute()
+    if key in _CACHE:
+        return _CACHE[key]
+    out = compute()
+    if not getattr(out, "error", ""):
+        if len(_CACHE) > 64:
+            _CACHE.clear()
+        _CACHE[key] = out
+        after = _file_key(key[0][0])     # reading can set up tables the first time: keep it under that too
+        if after is not None:
+            _CACHE[(after, *key[1:])] = out
+    return out
+
+
 def company_breakdown(company_path: str | Path, end: date | None = None, months: int = 12,
                       start: str | None = None) -> Breakdown:
-    """The last ``months`` months to ``end`` (or ``start``..``end``) for a company file (opened, read, closed)."""
+    """The last ``months`` months to ``end`` (or ``start``..``end``) for a company file (opened, read, closed;
+    the result is reused until the file changes)."""
     end = end or date.today()
     start = start or (end - timedelta(days=round(months * 365.25 / 12)) + timedelta(days=1)).isoformat()
+    return _cached((_file_key(company_path), "breakdown", start, end.isoformat()),
+                   lambda: _company_breakdown(company_path, start, end))
+
+
+def _company_breakdown(company_path, start: str, end: date) -> Breakdown:
     try:
         books = Books.open(company_path, create=False)
     except Exception as e:  # noqa: BLE001
@@ -217,6 +250,11 @@ def company_assignment_check(company_path: str | Path, end: date | None = None, 
                              months: int = 12) -> AssignmentCheck:
     end = end or date.today()
     start = start or (end - timedelta(days=round(months * 365.25 / 12)) + timedelta(days=1)).isoformat()
+    return _cached((_file_key(company_path), "assignment", start, end.isoformat()),
+                   lambda: _company_assignment_check(company_path, start, end))
+
+
+def _company_assignment_check(company_path, start: str, end: date) -> AssignmentCheck:
     try:
         books = Books.open(company_path, create=False)
     except Exception as e:  # noqa: BLE001

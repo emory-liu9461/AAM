@@ -2040,7 +2040,7 @@ class AssetManagementView(QWidget):
     open_unnamed = Signal(str)   # … Transactions with no customer / vendor (to assign vendors)
     open_review = Signal(str)    # … Transactions to categorize / review
 
-    def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None):
+    def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None, *, refresh: bool = True):
         super().__init__()
         self.pf = pfm.Portfolio(portfolio_path)
         self.companies_fn = companies_fn  # () -> [(name, path, role)]
@@ -2368,7 +2368,8 @@ class AssetManagementView(QWidget):
         self._arrange_tabs()
         self.setStyleSheet("QFrame#card { background: palette(base); border: 1px solid palette(midlight); "
                            "border-radius: 8px; } QLabel#cardtitle { color: palette(placeholder-text); }")
-        self.refresh()
+        if refresh:          # (the main window refreshes it once it's shown)
+            self.refresh()
 
     # -- data -----------------------------------------------------------------
 

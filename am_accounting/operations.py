@@ -579,17 +579,32 @@ def t12(stmt: Statement, label: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _running_balances(conn, where: str, args: list, dates: list[date]) -> list[int]:
+    """Debit-minus-credit balance at each date, from one query (daily totals, added up as they go) instead of one
+    query per date."""
+    if not dates:
+        return []
+    last = max(dates).isoformat()
+    daily = conn.execute("SELECT e.date, SUM(l.debit_cents - l.credit_cents) FROM journal_lines l "
+                         "JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.id = l.account_id "
+                         f"WHERE {where} AND e.date <= ? GROUP BY e.date ORDER BY e.date", [*args, last]).fetchall()
+    order = sorted(range(len(dates)), key=lambda i: dates[i])
+    out = [0] * len(dates)
+    total, k = 0, 0
+    for i in order:
+        d = dates[i].isoformat()
+        while k < len(daily) and daily[k][0] <= d:
+            total += daily[k][1] or 0
+            k += 1
+        out[i] = total
+    return out
+
+
 def _bank_balances(company_path: str, month_ends: list[date]) -> list[int | None]:
     """Cash in the company's bank accounts at each month end (from its books)."""
     conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
     try:
-        out = []
-        for d in month_ends:
-            r = conn.execute("SELECT COALESCE(SUM(l.debit_cents - l.credit_cents), 0) FROM journal_lines l "
-                             "JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.id = l.account_id "
-                             "WHERE a.is_bank = 1 AND e.date <= ?", (d.isoformat(),)).fetchone()
-            out.append(r[0])
-        return out
+        return _running_balances(conn, "a.is_bank = 1", [], month_ends)
     finally:
         conn.close()
 
@@ -844,9 +859,7 @@ def _balances_by_month(company_path: str, account_ids: list[int], month_ends: li
     conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
     try:
         q = ",".join("?" * len(account_ids))
-        return [conn.execute(f"SELECT COALESCE(SUM(l.debit_cents - l.credit_cents), 0) FROM journal_lines l "
-                             f"JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_id IN ({q}) AND e.date <= ?",
-                             [*account_ids, d.isoformat()]).fetchone()[0] for d in month_ends]
+        return _running_balances(conn, f"l.account_id IN ({q})", list(account_ids), month_ends)
     finally:
         conn.close()
 

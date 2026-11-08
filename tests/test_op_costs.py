@@ -186,3 +186,17 @@ def test_assignment_check(tmp_path):
     assert any("no customer" in x for x in chk.lines()) and any("isn't allocated to a customer" in x
                                                                for x in chk.lines())
     b.close()
+
+
+def test_breakdown_is_reused_until_the_books_change(tmp_path):
+    from am_accounting import party_totals
+
+    path = _books(tmp_path)
+    a = party_totals.company_breakdown(path)
+    assert party_totals.company_breakdown(path) is a                 # the same file: reused
+    b = Books.open(path)
+    bank = b.account_by_code("1000").id
+    b.import_transactions(bank, [ParsedTransaction(date.today() - timedelta(days=2), "NEW COST", -10_00)])
+    b.close()
+    c = party_totals.company_breakdown(path)
+    assert c is not a and c.expenses == a.expenses + 10_00           # changed file: worked out again
