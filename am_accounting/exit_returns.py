@@ -104,15 +104,17 @@ def save(pf, h, a: ExitAssumptions) -> None:
     op.save_dash_info(pf, h.id, info)
 
 
-def scheduled_debt(pf, h, on: date) -> int:
-    """What the loans on Financing & Cap Table are scheduled to owe on a date."""
+def scheduled_debt(pf, h, on: date, loans: list | None = None, *, owed_from: date | None = None) -> int:
+    """What the loans on Financing & Cap Table are scheduled to owe on a date — or, with ``owed_from``, what they
+    owed then (for loans taken out by ``on`` and not repaid at maturity before ``owed_from``)."""
     total = 0
-    for ln in pfm.loans(pf, h, with_books=False):
+    at = owed_from or on
+    for ln in (loans if loans is not None else pfm.loans(pf, h, with_books=False)):
         if ln.start_date and ln.start_date > on.isoformat():
             continue
-        if ln.maturity_date and ln.maturity_date < on.isoformat():
+        if ln.maturity_date and ln.maturity_date < at.isoformat():
             continue            # repaid at maturity (the balloon is in the projections' principal)
-        sb = ln.scheduled_balance(on) if ln.start_date else None
+        sb = ln.scheduled_balance(at) if ln.start_date else None
         total += sb if sb is not None else ln.balance
     return total
 
@@ -155,10 +157,45 @@ def _is(name: str, words) -> bool:
     return any(w in name.lower() for w in words)
 
 
+@dataclass
+class Context:
+    """What doesn't change with the exit assumptions: the owners' money in, the loans, the balances wound up."""
+    money_in: list[tuple[date, int, str]]
+    loans: list
+    cash: int = 0
+    receivables: int = 0
+    payables: int = 0
+    other_debt: int = 0
+
+
+def context(pf, h, as_of: date | None = None) -> Context:
+    as_of = as_of or date.today()
+    flows: list[tuple[date, int, str]] = []
+    holders = [x for x in pfm.cap_table(pf, SimpleNamespace(holding=h, invested=0, value_100=None))
+               if not x.worked_out and x.funded] if h.id else []
+    if holders:
+        for x in holders:
+            d = date.fromisoformat(x.funded_date or h.acquired or as_of.isoformat())
+            flows.append((d, -x.funded, f"{x.name or x.company} paid in"))
+    elif h.id:
+        p = pfm.performance(pf, h, as_of, with_financials=False)
+        share = (h.ownership_pct or 100) / 100
+        for f in p.flows:
+            if f.signed:
+                flows.append((date.fromisoformat(f.date), round((1 if f.signed > 0 else -1) * f.amount_cents / share),
+                               f.label))
+    ctx = Context(flows, pfm.loans(pf, h, with_books=False) if h.id else [])
+    r = Returns(as_of)
+    _wind_up(pf, h, r, as_of)
+    ctx.cash, ctx.receivables, ctx.payables, ctx.other_debt = r.cash, r.receivables, r.payables, r.other_debt
+    return ctx
+
+
 def projected_returns(pf, h, years: list[int], lines: list[pfm.ProjectionLine], nonop: dict[int, int],
-                      a: ExitAssumptions, as_of: date | None = None) -> Returns:
+                      a: ExitAssumptions, as_of: date | None = None, ctx: Context | None = None) -> Returns:
     """The owners' cash flows to the exit and the IRR / MOIC (see the module notes)."""
     as_of = as_of or date.today()
+    ctx = ctx or context(pf, h, as_of)
     if not a.exit_date:
         last = max(years) if years else as_of.year + 5
         a.exit_date = f"{last}-12-31"
@@ -169,20 +206,7 @@ def projected_returns(pf, h, years: list[int], lines: list[pfm.ProjectionLine], 
         return sum(ln.amounts.get(y, 0) for ln in lines if ln.kind == kind and (pick is None or pick(ln.item)))
 
     # money the owners put in so far
-    holders = [x for x in pfm.cap_table(pf, SimpleNamespace(holding=h, invested=0, value_100=None))
-               if not x.worked_out and x.funded] if h.id else []
-    if holders:
-        for x in holders:
-            d = date.fromisoformat(x.funded_date or h.acquired or as_of.isoformat())
-            r.flows.append((d, -x.funded, f"{x.name or x.company} paid in"))
-    else:
-        p = pfm.performance(pf, h, as_of, with_financials=False)
-        share = (h.ownership_pct or 100) / 100
-        for f in p.flows:
-            if f.signed < 0:
-                r.flows.append((date.fromisoformat(f.date), round(-f.amount_cents / share), f.label))
-            elif f.signed > 0:
-                r.flows.append((date.fromisoformat(f.date), round(f.amount_cents / share), f.label))
+    r.flows = list(ctx.money_in)
     if not r.flows:
         r.error = "No money put in yet — add the owners to the cap table (Financing & Cap Table)"
     # each projected year up to the exit: cash to owners
@@ -218,8 +242,10 @@ def projected_returns(pf, h, years: list[int], lines: list[pfm.ProjectionLine], 
     elif r.exit_noi > 0 and a.exit_cap_pct:
         r.exit_value = round(r.exit_noi / (a.exit_cap_pct / 100))
     r.selling_costs = round(r.exit_value * a.selling_pct / 100)
-    r.debt_repaid = a.debt_at_exit if a.debt_at_exit is not None else scheduled_debt(pf, h, ex)
-    _wind_up(pf, h, r, as_of)
+    # the exit year's principal isn't paid separately (see above): the sale repays what was owed going into the year
+    r.debt_repaid = a.debt_at_exit if a.debt_at_exit is not None else \
+        scheduled_debt(pf, h, ex, ctx.loans, owed_from=date(ex.year, 1, 1))
+    r.cash, r.receivables, r.payables, r.other_debt = ctx.cash, ctx.receivables, ctx.payables, ctx.other_debt
     r.net_proceeds = (r.exit_value - r.selling_costs - r.debt_repaid - r.other_debt + r.receivables - r.payables
                       + r.cash)
     if r.exit_value:
@@ -247,3 +273,46 @@ def _wind_up(pf, h, r: Returns, as_of: date) -> None:
     r.cash, r.receivables, r.payables = max(f.cash, 0), f.receivables, f.payables
     rec = fin_recon.reconcile(pf, h, as_of)
     r.other_debt = sum(x.books or 0 for x in rec.debt if x.financing is None)
+
+
+CAP_STEPS = [-1.0, -0.5, 0.0, 0.5, 1.0]
+MULT_STEPS = [-2.0, -1.0, 0.0, 1.0, 2.0]
+
+
+@dataclass
+class Sensitivity:
+    rows: list[float]                 # exit cap rates (%) or multiples
+    years: list[int]                  # exit years
+    cells: list[list[Returns]]        # [row][year]
+    method: str
+    base_row: int = 2
+    base_col: int | None = None
+
+
+def sensitivity(pf, h, years: list[int], lines: list[pfm.ProjectionLine], nonop: dict[int, int],
+                a: ExitAssumptions, as_of: date | None = None, ctx: Context | None = None) -> Sensitivity:
+    """IRR / MOIC by exit cap rate (or multiple) × exit year: each projected year as the exit (same day of the year
+    as the exit date), the cap rate ±0.5% / ±1% (or the multiple ±1× / ±2×) around the assumption. An exit value
+    entered by hand is set aside here so the cap rate / multiple can vary."""
+    from dataclasses import replace
+
+    as_of = as_of or date.today()
+    ctx = ctx or context(pf, h, as_of)
+    base_date = date.fromisoformat(a.exit_date) if a.exit_date else date(max(years or [as_of.year + 5]), 12, 31)
+    by_mult = a.method == "multiple"
+    rows = [max(0.25, a.multiple + d) for d in MULT_STEPS] if by_mult else \
+        [max(0.25, a.exit_cap_pct + d) for d in CAP_STEPS]
+    ys = [y for y in sorted(years) if y > as_of.year or (y == as_of.year and base_date.replace(year=y) > as_of)][:6]
+    cells = []
+    for v in rows:
+        line = []
+        for y in ys:
+            try:
+                d = base_date.replace(year=y)
+            except ValueError:          # Feb 29
+                d = date(y, 2, 28)
+            aa = replace(a, exit_date=d.isoformat(), exit_value=0, **({"multiple": v} if by_mult else
+                                                                      {"exit_cap_pct": v}))
+            line.append(projected_returns(pf, h, years, lines, nonop, aa, as_of, ctx))
+        cells.append(line)
+    return Sensitivity(rows, ys, cells, a.method, 2, ys.index(base_date.year) if base_date.year in ys else None)

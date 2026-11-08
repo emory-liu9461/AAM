@@ -84,3 +84,38 @@ def test_the_company_is_wound_up_at_the_exit(tmp_path):
     assert r.net_proceeds == 4_000_000_00 - 80_000_00 - 2_000_000_00 - 40_000_00 + 15_000_00 - 9_000_00 + 120_000_00
     assert r.flows[-1] == (date(2030, 12, 31), r.net_proceeds, "sale, debts and payables paid, cash paid out")
     pf.close()
+
+
+def test_sensitivity_by_exit_cap_rate_and_year(tmp_path):
+    pf, h, years, lines = _setup(tmp_path)
+    a = er.ExitAssumptions("2030-12-31", exit_cap_pct=5.0, selling_pct=2.0)
+    sv = er.sensitivity(pf, h, years, lines, {}, a, date(2026, 11, 7))
+    assert sv.rows == [4.0, 4.5, 5.0, 5.5, 6.0] and sv.years == years and sv.base_col == years.index(2030)
+    base = sv.cells[2][sv.base_col]
+    plain = er.projected_returns(pf, h, years, lines, {}, a, date(2026, 11, 7))
+    assert base.irr == pytest.approx(plain.irr) and base.moic == pytest.approx(plain.moic)
+    col = [row[sv.base_col].irr for row in sv.cells]
+    assert col == sorted(col, reverse=True)                 # a higher exit cap rate → a lower IRR
+    assert sv.cells[2][0].exit_date == date(2027, 12, 31)   # each year: the same day as the exit date
+    m = er.sensitivity(pf, h, years, lines, {}, er.ExitAssumptions("2030-12-31", method="multiple", multiple=12),
+                       date(2026, 11, 7))
+    assert m.rows == [10, 11, 12, 13, 14] and m.cells[4][3].moic > m.cells[0][3].moic
+    pf.close()
+
+
+def test_a_loan_maturing_in_the_exit_year_is_repaid_once(tmp_path):
+    pf, h, years, _lines = _setup(tmp_path)
+    pfm.save_loan(pf, h.id, pfm.Loan("Seller", "Vendor take-back", 300_000_00, rate_pct=6.0, start_date="2026-01-01",
+                                     term_months=54, repayment="Interest only"))      # matures 2030-07-01
+    lines = [pfm.ProjectionLine("revenue", "Rent", {y: 400_000_00 for y in years}),
+             pfm.ProjectionLine("opex", "Opex", {y: 200_000_00 for y in years})] + pfm.loan_lines(pf, h, years)
+    owed = []
+    for ex in ("2029-12-31", "2030-12-31", "2031-12-31"):
+        r = er.projected_returns(pf, h, years, lines, {}, er.ExitAssumptions(ex, 5.0, selling_pct=0),
+                                 date(2026, 11, 7))
+        balloon_before = sum(v for d, v, w in r.flows if "cash to owners" in w and d.year < date.fromisoformat(ex).year)
+        owed.append((r.debt_repaid, balloon_before))
+    assert owed[0][0] == 2_300_000_00                        # both loans owed going into 2029
+    assert owed[1][0] == 2_300_000_00                        # the seller's balloon (July 2030) is repaid from the sale
+    assert owed[2][0] == 2_000_000_00                        # exit 2031: the balloon was paid in 2030's cash flow
+    pf.close()

@@ -1383,7 +1383,53 @@ class ProjectionEditor(QWidget):
         from .. import exit_returns as er
 
         years, lines, nonop = self.collect()
-        return er.projected_returns(self.pf, self.holding, years, lines, nonop, self.exit_assumptions())
+        if getattr(self, "_ctx", None) is None:          # the owners' money in, the loans, the books — read once
+            self._ctx = er.context(self.pf, self.holding)
+        return er.projected_returns(self.pf, self.holding, years, lines, nonop, self.exit_assumptions(),
+                                    ctx=self._ctx)
+
+    def sensitivity(self):
+        from .. import exit_returns as er
+
+        years, lines, nonop = self.collect()
+        if getattr(self, "_ctx", None) is None:
+            self._ctx = er.context(self.pf, self.holding)
+        return er.sensitivity(self.pf, self.holding, years, lines, nonop, self.exit_assumptions(), ctx=self._ctx)
+
+    def _sensitivity_html(self, text: str, muted: str, red: str, accent: str) -> str:
+        """IRR · MOIC by exit cap rate (or multiple) down, exit year across; the assumption highlighted."""
+        from .theme import is_dark
+
+        sv = self.sensitivity()
+        if not sv.years:
+            return ""
+        shade = "#20303c" if is_dark() else "#eef3fb"
+        by_mult = sv.method == "multiple"
+        corner = "Multiple ↓ · Exit →" if by_mult else "Exit cap ↓ · Exit →"
+        out = [f"<p style='color:{accent}; font-size:8.5pt; font-weight:700; margin:16px 0 4px 0'>SENSITIVITY "
+               f"<span style='color:{muted}; font-weight:400'>IRR · MOIC by exit "
+               f"{'multiple' if by_mult else 'cap rate'} and exit year</span></p>",
+               f"<table cellspacing='0' cellpadding='4' style='color:{text}'><tr>"
+               f"<td style='color:{muted}; font-size:8pt'>{corner}</td>"]
+        out += [f"<td align='right' style='color:{muted}; font-size:8pt; padding-left:14px'>{y}</td>" for y in sv.years]
+        out.append("</tr>")
+        for i, (v, line) in enumerate(zip(sv.rows, sv.cells)):
+            label = f"{v:g}×" if by_mult else f"{v:.2f}%"
+            out.append(f"<tr><td style='color:{muted}'>{label}</td>")
+            for j, r in enumerate(line):
+                base = i == sv.base_row and j == sv.base_col
+                irr = f"{r.irr * 100:.1f}%" if r.irr is not None else "—"
+                moic = f"{r.moic:.2f}x" if r.moic is not None else "—"
+                colour = red if (r.irr is not None and r.irr < 0) else text
+                bg = f"background:{shade}; font-weight:700;" if base else ""
+                out.append(f"<td align='right' style='{bg} color:{colour}; padding-left:14px; white-space:nowrap'>"
+                           f"{irr} · {moic}</td>")
+            out.append("</tr>")
+        out.append("</table>")
+        note = "An exit value entered by hand is set aside here." if self.x_value.value() else ""
+        if note:
+            out.append(f"<p style='color:{muted}; font-size:8pt'>{note}</p>")
+        return "".join(out)
 
     def _fill_returns(self) -> None:
         """The owners' cash flows to the exit, and the IRR / MOIC."""
@@ -1444,6 +1490,7 @@ class ProjectionEditor(QWidget):
         out += [f"<tr><td style='padding-right:20px; color:{muted}'>{d:%b %d, %Y}</td><td style='padding-right:28px'>"
                 f"{esc(w)}</td><td align='right'>{m(v)}</td></tr>" for d, v, w in r.flows]
         out.append("</table>")
+        out.append(self._sensitivity_html(text, muted, red, accent))
         self.returns_page.setHtml("".join(out))
         self.returns_line.setText(f"Exit {r.exit_date:%b %Y}: projected <b style='color:{colour}'>IRR {irr}</b> · "
                                   f"<b>MOIC {moic}</b> · profit {m(r.profit)} — Exit && Returns for the details"
@@ -1482,6 +1529,7 @@ class ProjectionEditor(QWidget):
             if not any(ln.kind == kind for ln in lines):
                 lines += [pfm.ProjectionLine(kind, item) for item in items]
         self.years = sorted(years)
+        self._ctx = None
         self._load_exit()
         self._show(years, lines, {p.year: p.nonop for p in totals})
         self._set_dirty(False)

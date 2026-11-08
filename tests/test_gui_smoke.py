@@ -1431,6 +1431,7 @@ def test_projections_window(app, tmp_path):
     e.x_method.setCurrentIndex(e.x_method.findData("multiple"))
     e.x_mult.setValue(10)
     assert e.returns().exit_value == 2_300_000_00 and "at 10×" in e.returns_page.toPlainText()
+    assert "SENSITIVITY" in e.returns_page.toPlainText() and "Multiple ↓ · Exit →" in e.returns_page.toPlainText()
     e.x_method.setCurrentIndex(e.x_method.findData("cap"))
     d.save()
     from am_accounting import exit_returns as er
