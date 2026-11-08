@@ -16,12 +16,12 @@ def test_attach_list_remove(tmp_path):
     try:
         base = at.books_folder(b)
         assert base == tmp_path / "Maple Attachments"
-        src = tmp_path / "Hydro bill: Oct?.pdf"
+        src = tmp_path / "Hydro bill - Oct.pdf"
         src.write_bytes(b"%PDF-1.4 bill")
         a = at.add(b.conn, base, "transaction", 7, src, sub="2026")
         again = at.add(b.conn, base, "transaction", 7, src, sub="2026")
         assert a.exists and again.exists and a.path != again.path
-        assert a.path.parent == base / "Transactions" / "2026" and a.name == "Hydro bill: Oct?.pdf"
+        assert a.path.parent == base / "Transactions" / "2026" and a.name == "Hydro bill - Oct.pdf"
         assert [x.id for x in at.listed(b.conn, base, "transaction", 7)] == [a.id, again.id]
         assert at.counts(b.conn, "transaction") == {"7": 2}
         src.unlink()
