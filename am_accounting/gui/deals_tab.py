@@ -1096,10 +1096,13 @@ class DealPipelinePage(QWidget):
         self.tables: dict[str, QTableWidget] = {}
         self.heads: dict[str, QLabel] = {}
         self.rows: dict[str, list[dl.Deal]] = {}
+        from PySide6.QtWidgets import QFrame
+
         for stage in dl.PIPELINE:
-            w = QWidget()
+            w = QFrame()                     # each stage in its own box
+            w.setObjectName("stagebox")
             wl = QVBoxLayout(w)
-            wl.setContentsMargins(0, 0, 6, 0)
+            wl.setContentsMargins(10, 8, 10, 10)
             head = QLabel()
             head.setTextFormat(Qt.TextFormat.RichText)
             wl.addWidget(head)
@@ -1111,6 +1114,9 @@ class DealPipelinePage(QWidget):
             wl.addWidget(t, 1)
             self.tables[stage], self.heads[stage] = t, head
             split.addWidget(w)
+        split.setHandleWidth(10)
+        self.setStyleSheet("QFrame#stagebox { border: 1px solid palette(mid); border-radius: 8px; "
+                           "background: palette(base); }")
         lay.addWidget(split, 3)
         self.closed_box = QWidget()
         cl = QVBoxLayout(self.closed_box)
