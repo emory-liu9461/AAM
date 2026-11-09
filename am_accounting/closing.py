@@ -166,6 +166,24 @@ def _account(books, code: str, name: str, type_: str, subtype: str = "", parent_
     return books.add_account(code, name, type_, subtype, parent_id=parent_id).id
 
 
+def _carry_rent_roll(pf, holding_id: int, u: dl.Underwriting) -> None:
+    """The deal's rent roll becomes the property's (Rent Roll & Operations), its expenses the operating costs with
+    their budgets — when the property has none yet."""
+    from . import op_costs as oc
+    from . import operations as op
+
+    if u.rent_roll and not op.units(pf, holding_id):
+        for k, x in enumerate(u.rent_roll):
+            vacant = (x.get("status") or "Occupied") in ("Vacant", "Renovation")
+            op.save_unit(pf, holding_id, op.Unit(str(x.get("unit", "")), "" if vacant else (x.get("tenant") or "Tenant"),
+                                                 x.get("type", ""), status="Vacant" if vacant else "Old Lease",
+                                                 rent_cents=0 if vacant else int(x.get("rent") or 0),
+                                                 market_cents=int(x.get("market") or 0), sort=k))
+    if u.expenses and not oc.lines(pf, holding_id):
+        for k, x in enumerate(u.expenses):
+            oc.save(pf, holding_id, oc.CostLine(x["item"], budget_cents=int(x.get("amount") or 0), sort=k))
+
+
 def close_deal(pf, deal_id: int, s: ClosingSetup, create_company: Callable[..., str]) -> int:
     """Close the deal (see the module notes). ``create_company(name, entity_type=, fiscal_year_start_month=)``
     makes the company file and returns its path. Returns the new holding's id."""
@@ -182,6 +200,7 @@ def close_deal(pf, deal_id: int, s: ClosingSetup, create_company: Callable[..., 
     h = pfm.Holding(s.property_name.strip(), "Real estate", s.ownership_pct, s.closing_date,
                     sector=d.asset_type, location=d.address, company_path=str(path), notes=d.notes)
     pf.save_holding(h)
+    _carry_rent_roll(pf, h.id, dl.underwriting(d))
     books = Books.open(path, create=False)
     try:
         prof = books.profile() if hasattr(books, "profile") else None

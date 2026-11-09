@@ -122,6 +122,12 @@ class DealDialog(QDialog):
             right.addRow(label, w)
         tabs.addTab(det, "Details")
 
+        # the seller's rent roll unit by unit, and the operating expenses one by one
+        from .deal_roll_tab import RollExpensesTab
+
+        self.roll_tab = RollExpensesTab(dl.underwriting(d), on_change=self._roll_changed)
+        tabs.addTab(self.roll_tab, "Rent Roll && Expenses")
+
         # the deal checklist: sections → groups → items, each with a status, a due date and notes
         ddw = QWidget()
         dlay = QVBoxLayout(ddw)
@@ -301,7 +307,15 @@ class DealDialog(QDialog):
         c = lambda b: round(b.value() * 100)  # noqa: E731
         return dl.Underwriting(c(self.u_rent), c(self.u_market), c(self.u_other), self.u_vac.value(), c(self.u_opex),
                                self.u_opex_pct.value(), c(self.u_res), self.u_close.value(), self.u_ltv.value(),
-                               self.u_rate.value(), self.u_amort.value(), self.u_io.isChecked(), self.u_term.value())
+                               self.u_rate.value(), self.u_amort.value(), self.u_io.isChecked(), self.u_term.value(),
+                               rent_roll=self.roll_tab.rent_roll(), expenses=self.roll_tab.expenses())
+
+    def _roll_changed(self) -> None:
+        """The rent roll sets the number of units; both feed the summary."""
+        n = len(self.roll_tab.rent_roll())
+        if n and self.units.value() != n:
+            self.units.setValue(n)
+        self._render()
 
     def draft(self) -> dl.Deal:
         """The deal as the window has it now (not saved)."""
@@ -316,7 +330,24 @@ class DealDialog(QDialog):
         if hasattr(self, "summary"):
             self.summary.setHtml(summary_html(self.draft(), self.underwriting_now(), self.summary))
             self.u_amort.setEnabled(not self.u_io.isChecked())
-            self.u_opex_pct.setEnabled(not self.u_opex.value())
+            uw = dl.Underwriting(rent_roll=self.roll_tab.rent_roll(), expenses=self.roll_tab.expenses())
+            roll, exp = bool(uw.rent_roll), bool(uw.expenses)
+            shown = []                 # the boxes the tab replaces show its figures (not used themselves)
+            if roll:
+                occ = uw.roll_units - uw.roll_vacant
+                shown += [(self.u_rent, uw.roll_occupied_rent / occ / 100 if occ else 0),
+                          (self.u_market, uw.roll_market / uw.roll_units / 100)]
+            if exp:
+                shown.append((self.u_opex, uw.expenses_total / 100))
+            for w, v in shown:
+                w.blockSignals(True)
+                w.setValue(v)
+                w.blockSignals(False)
+            for w in (self.u_rent, self.u_market):
+                w.setEnabled(not roll)
+                w.setToolTip("From the rent roll (Rent Roll & Expenses tab)" if roll else w.toolTip())
+            self.u_opex.setEnabled(not exp)
+            self.u_opex_pct.setEnabled(not exp and not self.u_opex.value())
 
     def _export_pdf(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -621,8 +652,14 @@ def summary_html(d: dl.Deal, u: dl.Underwriting, widget=None, *, printing: bool 
            ("Debt yield", p(now.debt_yield), p(pot.debt_yield)),
            ("Expense ratio", p(now.expense_ratio), p(pot.expense_ratio)),
            ("Break-even occupancy", p(now.breakeven), p(pot.breakeven))]
+    if u.expenses and now.opex:                # the expenses one by one, under their total
+        at = next(i for i, r in enumerate(ops) if r[0] == "Operating expenses") + 1
+        for k, x in enumerate(u.expenses):
+            amt = int(x.get("amount") or 0)
+            ops.insert(at + k, (f"   · {x.get('item', '')}", m(-amt) if amt else "—", m(-amt) if amt else "—"))
     if units:
-        ops.insert(6, ("NOI / unit", m(round(now.noi / units)), m(round(pot.noi / units))))
+        at = next(i for i, r in enumerate(ops) if r[0] == "Net operating income") + 1
+        ops.insert(at, ("NOI / unit", m(round(now.noi / units)), m(round(pot.noi / units))))
     note = ("" if not now.from_deal_noi else
             f"<p style='color:{muted}; font-size:8pt'>NOI as entered on the deal — enter the rents and expenses on the "
             "left for the full picture.</p>")
@@ -1285,18 +1322,20 @@ class DealPipelinePage(QWidget):
             self.refresh()
             self.select(dlg.deal.id)
 
-    def open_deal(self, tab: int = 0) -> None:
+    def open_deal(self, tab: int | str = 0) -> None:
         d = self._need()
         if not d:
             return
         dlg = DealDialog(self.pf, dl.deal(self.pf, d.id), self, companies=self.companies)
+        if isinstance(tab, str):
+            tab = next((i for i in range(dlg.tabs.count()) if dlg.tabs.tabText(i) == tab), 0)
         dlg.tabs.setCurrentIndex(tab)
         if dlg.exec():
             self.refresh()
             self.select(d.id)
 
     def open_checklist(self) -> None:
-        self.open_deal(tab=2)
+        self.open_deal(tab="Deal Checklist")
 
     def advance(self) -> None:
         d = self._need()

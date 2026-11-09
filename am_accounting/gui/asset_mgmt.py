@@ -2073,6 +2073,13 @@ class AssetManagementView(QWidget):
         self.deals_btn.setToolTip("Deals being looked at: new deals, under due diligence, under contract")
         self.deals_btn.clicked.connect(self.show_deals)
         bar.addWidget(self.deals_btn)
+        self.company_btn = QPushButton("Company Pages")
+        self.company_btn.setCheckable(True)
+        self.company_btn.setObjectName("primary")
+        self.company_btn.setToolTip("One company's pages: Dashboard, Rent Roll & Operations, Cash Flow, CapEx, "
+                                    "Financing & Cap Table, Waterfall, Projections")
+        self.company_btn.clicked.connect(self.show_company_pages)
+        bar.addWidget(self.company_btn)
         bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
@@ -2470,6 +2477,7 @@ class AssetManagementView(QWidget):
         self.tabs.setCurrentIndex(0)
         self.tabs.blockSignals(False)
         self.summary_btn.setChecked(True)
+        self._top_buttons()
 
     def show_portfolio(self, page=None) -> None:
         """The portfolio area (Summary, Holdings, Consolidated Financials, Managed Companies)."""
@@ -2487,10 +2495,24 @@ class AssetManagementView(QWidget):
         self.tabs.setCurrentWidget(self.deals_page)
         self._top_buttons()
 
+    def show_company_pages(self) -> None:
+        """Back to the company pages (the one open last, or the Dashboard)."""
+        page = getattr(self, "_last_company_page", None) or self.dash_page
+        self.tabs.setCurrentWidget(page)
+        self._top_buttons()
+
     def _top_buttons(self, *_) -> None:
         page = self.tabs.currentWidget()
-        self.summary_btn.setChecked(self.tabs.currentIndex() == 0)
-        self.deals_btn.setChecked(page is getattr(self, "deals_page", None))
+        portfolio = self.tabs.currentIndex() == 0
+        deals = page is getattr(self, "deals_page", None)
+        self.summary_btn.setChecked(portfolio)
+        self.deals_btn.setChecked(deals)
+        if hasattr(self, "company_btn"):
+            self.company_btn.setChecked(not (portfolio or deals))
+        # the company tabs only with a company's pages (not over the portfolio or the deal pipeline)
+        self.tabs.tabBar().setVisible(not (portfolio or deals))
+        if not (portfolio or deals):
+            self._last_company_page = page
 
     def _filter(self) -> dict:
         v = self.viewing.currentData()

@@ -121,7 +121,7 @@ def test_deposits_and_costs_tab(app, tmp_path, monkeypatch):
     comps = lambda: [("Maple Holdings Inc.", hold, "holding")]                # noqa: E731
     dlg = dt.DealDialog(pf, dl.deal(pf, d.id), companies=comps)
     tab = dlg.costs
-    assert dlg.tabs.tabText(3) == "Deposits && Costs"
+    assert dlg.tabs.tabText(dlg.tabs.indexOf(dlg.costs)) == "Deposits && Costs"
     tab._usual()
     assert tab.table.rowCount() == len(dc.STARTERS)
     assert tab.table.cellWidget(0, 5).currentData() == hold                    # the only company, picked

@@ -1161,8 +1161,13 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     v.show_deals()                                         # Deal Pipeline: a button beside Portfolio Summary
     assert v.tabs.currentWidget() is v.deals_page and v.deals_btn.isChecked() and not v.summary_btn.isChecked()
     assert not v.tabs.isTabVisible(v.tabs.indexOf(v.deals_page))
+    assert v.tabs.tabBar().isHidden()                      # no company tabs over the deal pipeline …
     v.show_summary()
     assert v.summary_btn.isChecked() and not v.deals_btn.isChecked()
+    assert v.tabs.tabBar().isHidden()                      # … or the portfolio
+    v.show_company_pages()
+    assert not v.tabs.tabBar().isHidden() and v.company_btn.isChecked() and v.tabs.currentWidget() is v.dash_page
+    v.show_summary()
     assert [v.portfolio_tabs.tabText(i) for i in range(v.portfolio_tabs.count())] == [
         "Summary", "Holdings", "Consolidated Financials", "Managed Companies", "Intercompany"]   # behind the button
     assert not v.tabs.isTabVisible(0)                     # a button at the top, not a tab

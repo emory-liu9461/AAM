@@ -11,7 +11,7 @@ Kept in the portfolio file, next to the holdings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 STAGES = ["New", "Due Diligence", "Under Contract", "Closed", "Dead"]
@@ -441,6 +441,36 @@ class Underwriting:
     amort_years: float = 25.0
     interest_only: bool = False
     term_years: float = 5.0
+    # the seller's rent roll, unit by unit: {"unit", "type", "tenant", "status", "rent", "market"} (a month, cents);
+    # when entered, it replaces the average rents above and sets the number of units
+    rent_roll: list = field(default_factory=list)
+    # operating expenses one by one: {"item", "amount"} (a year, cents); when entered, their total is the opex
+    expenses: list = field(default_factory=list)
+
+    @property
+    def roll_units(self) -> int:
+        return len(self.rent_roll)
+
+    @property
+    def roll_inplace(self) -> int:
+        """Rent a month from the rent roll: each unit's rent, a vacant unit at its market rent."""
+        return sum(_unit_rent(x) for x in self.rent_roll)
+
+    @property
+    def roll_occupied_rent(self) -> int:
+        return sum(int(x.get("rent") or 0) for x in self.rent_roll if _occupied(x))
+
+    @property
+    def roll_market(self) -> int:
+        return sum(int(x.get("market") or 0) or int(x.get("rent") or 0) for x in self.rent_roll)
+
+    @property
+    def roll_vacant(self) -> int:
+        return sum(1 for x in self.rent_roll if not _occupied(x))
+
+    @property
+    def expenses_total(self) -> int:
+        return sum(int(x.get("amount") or 0) for x in self.expenses)
 
     def to_json(self) -> str:
         import json
@@ -460,6 +490,32 @@ class Underwriting:
         if not data and deal is not None and deal.price_cents and deal.equity_cents:   # from the deal's equity
             u.ltv_pct = round(max(0.0, (deal.price_cents - deal.equity_cents) / deal.price_cents * 100), 1)
         return u
+
+
+UNIT_STATUSES = ["Occupied", "Vacant", "Notice given", "Renovation"]
+EXPENSE_STARTERS = ["Property tax", "Insurance", "Hydro", "Gas", "Water", "Repairs & maintenance",
+                    "Property management", "Superintendent / wages", "Snow removal & landscaping", "Waste removal",
+                    "Elevator", "Pest control", "Legal & accounting", "Advertising", "Other"]
+
+
+def _occupied(x: dict) -> bool:
+    return (x.get("status") or "Occupied") not in ("Vacant", "Renovation")
+
+
+def _unit_rent(x: dict) -> int:
+    rent = int(x.get("rent") or 0)
+    return rent if _occupied(x) and rent else int(x.get("market") or 0) or rent
+
+
+def roll_from_units(units) -> list[dict]:
+    """A rent roll read from a spreadsheet (operations.Unit) as the deal keeps it."""
+    out = []
+    for u in units:
+        vacant = not u.occupied
+        out.append({"unit": u.unit, "type": u.unit_type, "tenant": "" if vacant else u.tenant,
+                    "status": "Vacant" if vacant else "Occupied",
+                    "rent": u.rent_cents + u.parking_cents + u.locker_cents, "market": u.market_cents})
+    return out
 
 
 def underwriting(d: Deal) -> Underwriting:
@@ -519,18 +575,23 @@ def analyze(d: Deal, u: Underwriting, *, market: bool = False, rent_change: floa
 
     a = Analysis()
     a.price = d.price_cents if price is None else price
-    rent = (u.rent_market or u.rent_inplace) if market else u.rent_inplace
-    if rent and d.units:
-        a.gpr = round(rent * d.units * 12 * (1 + rent_change))
+    units = u.roll_units or d.units
+    if u.rent_roll:                          # unit by unit
+        monthly = u.roll_market if market else u.roll_inplace
+    else:
+        rent = (u.rent_market or u.rent_inplace) if market else u.rent_inplace
+        monthly = rent * d.units if rent and d.units else 0
+    if monthly:
+        a.gpr = round(monthly * 12 * (1 + rent_change))
         a.vacancy = round(a.gpr * u.vacancy_pct / 100)
         a.other = round(u.other_income * 12 * (1 + rent_change))
         a.egi = a.gpr - a.vacancy + a.other
-        a.opex = u.opex_annual or round(a.egi * u.opex_pct / 100)
+        a.opex = u.expenses_total or u.opex_annual or round(a.egi * u.opex_pct / 100)
         a.noi = a.egi - a.opex
     elif d.noi_cents:                       # only the NOI is known
         a.from_deal_noi = True
         a.noi = round(d.noi_cents * (1 + rent_change))
-    a.reserve = u.reserve_per_unit * d.units
+    a.reserve = u.reserve_per_unit * units
     a.closing = round(a.price * u.closing_pct / 100)
     a.all_in = a.price + a.closing
     a.loan = round(a.price * (u.ltv_pct if ltv is None else ltv) / 100)
