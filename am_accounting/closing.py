@@ -258,5 +258,11 @@ def close_deal(pf, deal_id: int, s: ClosingSetup, create_company: Callable[..., 
         dc.settle_on_closing(pf, d.id, d.name, s.company_name.strip(), s.closing_date)
     d.stage, d.holding_id, d.closing_date = "Closed", h.id, s.closing_date
     dl.save(pf, d)
+    try:                                 # the deal folder's Asset Management side (see deal_folders.py)
+        from . import deal_folders
+
+        deal_folders.on_closing(pf, d)
+    except OSError:
+        pass
     return h.id
 

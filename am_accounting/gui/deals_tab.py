@@ -186,6 +186,12 @@ class DealDialog(QDialog):
             self.docs.setAlignment(Qt.AlignmentFlag.AlignTop)
             tabs.addTab(self.docs, "Documents")
 
+        # the deal's folder, set up as the standard
+        from .deal_folder_tab import DealFolderTab
+
+        self.folder_tab = DealFolderTab(pf, d)
+        tabs.addTab(self.folder_tab, "Deal Folder")
+
         # notes
         self.notes = QPlainTextEdit(d.notes)
         self.notes.setPlaceholderText("Anything about the deal: seller's story, pricing guidance, issues found…")
@@ -508,6 +514,15 @@ class DealDialog(QDialog):
             else:
                 dl.save_checklist(self.pf, d.id, items)
             self.costs.save(d.id)
+            if new:                    # a new deal: its Underwriting folders, when there's a Deals folder
+                from .. import deal_folders as dfo
+
+                f = dfo.folder_of(self.pf, d)
+                if f is not None:
+                    try:
+                        dfo.create(f, dfo.context(self.pf, d))
+                    except OSError:
+                        pass
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
