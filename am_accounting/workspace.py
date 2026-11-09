@@ -51,6 +51,23 @@ DOCS_DIR = "Invoices & Bills"
 REPORTS_DIR = "Financial Statements"
 BACKUP_DIR = "Backups"
 
+# Where each kind of file goes, by folder layout. "deal": the company folder is a deal folder's
+# Asset Management/Accounting (see deal_folders.py), laid out as the firm's standard.
+LAYOUTS = {"standard": "The app's layout", "deal": "Deal folder standard (Asset Management → Accounting)"}
+SUBDIRS = {
+    "standard": {"bank": BANK_DIR, "docs": DOCS_DIR, "reports": REPORTS_DIR, "tb": "Trial Balance",
+                 "backups": BACKUP_DIR, "cheques": "Cheques & Drafts", "etransfer": "E-Transfer History",
+                 "dump": "Invoice Dump", "attachments": "Attachments", "year_end": "Year-End", "live_books": ""},
+    "deal": {"bank": "Banking/Monthly Statements", "docs": ".", "reports": "Financial Statements",
+             "tb": "Financial Statements/Trial Balance", "backups": "QuickBooks File/Archive",
+             "cheques": "Banking/Cheques & Drafts", "etransfer": "Banking/E-Transfer History",
+             "dump": "Invoices/Invoice Dump", "attachments": "Attachments", "year_end": "Taxes",
+             "live_books": "QuickBooks File"},
+}
+# deal layout: each statement in its own folder, the latest saved outside and older ones in its Archive/
+DEAL_REPORT_DIRS = {"income_statement": "Income Statement", "balance_sheet": "Balance Sheet",
+                    "cash_flow": "Cash Flow"}
+
 FREQUENCIES = {
     "off": "Don't save automatically",
     "daily": "Daily (previous day)",
@@ -79,6 +96,7 @@ class WorkspaceConfig:
     keep_backups: int = 24
     archive_months: int = 12       # move anything older than this into each folder's Archive/ (0 = never)
     trial_balance: bool = True     # save a trial balance workbook (Excel) into Trial Balance/ each period
+    layout: str = "standard"       # standard | deal (see SUBDIRS)
 
     @property
     def enabled(self) -> bool:
@@ -87,6 +105,16 @@ class WorkspaceConfig:
     @property
     def path(self) -> Path:
         return Path(self.root).expanduser()
+
+    def dir(self, key: str) -> Path:
+        """Where one kind of file goes (bank, docs, reports, tb, backups, cheques, etransfer, dump, attachments,
+        year_end, live_books)."""
+        rel = SUBDIRS.get(self.layout, SUBDIRS["standard"])[key]
+        return self.path / rel if rel not in ("", ".") else self.path
+
+    @property
+    def deal(self) -> bool:
+        return self.layout == "deal"
 
 
 def get_config(books: Books) -> WorkspaceConfig:
@@ -103,8 +131,10 @@ def get_config(books: Books) -> WorkspaceConfig:
         months = int(m("ws_archive_months") or 12)
     except ValueError:
         months = 12
+    layout = m("ws_layout") or "standard"
     return WorkspaceConfig(m("ws_root") or "", freq if freq in FREQUENCIES else "monthly", reports, formats,
-                           m("ws_ytd") != "0", m("ws_backups") != "0", keep, months, m("ws_tb") != "0")
+                           m("ws_ytd") != "0", m("ws_backups") != "0", keep, months, m("ws_tb") != "0",
+                           layout if layout in LAYOUTS else "standard")
 
 
 def set_config(books: Books, cfg: WorkspaceConfig, *, connect_inbox: bool = True,
@@ -122,31 +152,32 @@ def set_config(books: Books, cfg: WorkspaceConfig, *, connect_inbox: bool = True
         books._set_meta("ws_keep_backups", str(cfg.keep_backups))
         books._set_meta("ws_archive_months", str(max(0, cfg.archive_months)))
         books._set_meta("ws_tb", "1" if cfg.trial_balance else "0")
+        books._set_meta("ws_layout", cfg.layout if cfg.layout in LAYOUTS else "standard")
     if not cfg.enabled:
         return None
     root = cfg.path
-    from .invoice_dump import DUMP_DIR, ensure_folders as ensure_dump
+    from .cheques import ensure_folders as ensure_cheques
+    from .invoice_dump import ensure_folders as ensure_dump
 
-    from .trial_balance import TB_DIR
-
-    from .cheques import DIR_NAME as CHEQUE_DIR, ensure_folders as ensure_cheques
-    from .etransfer import DIR_NAME as ETRANSFER_DIR
-
-    for sub in (BANK_DIR, DOCS_DIR, REPORTS_DIR, TB_DIR, BACKUP_DIR, ETRANSFER_DIR):
-        (root / sub).mkdir(parents=True, exist_ok=True)
-    ensure_cheques(root / CHEQUE_DIR)
-    ensure_dump(root / DUMP_DIR)
+    for key in ("bank", "docs", "reports", "tb", "backups", "etransfer"):
+        cfg.dir(key).mkdir(parents=True, exist_ok=True)
+    ensure_cheques(cfg.dir("cheques"))
+    ensure_dump(cfg.dir("dump"))
     if connect_inbox:
         from . import inbox
 
         icfg = inbox.get_config(books)
-        icfg.enabled, icfg.folder = True, str(root / BANK_DIR)
+        icfg.enabled, icfg.folder = True, str(cfg.dir("bank"))
         inbox.set_config(books, icfg)
     if connect_documents:
         from . import doc_folder
 
         dcfg = doc_folder.get_config(books)
-        dcfg.folder = str(root / DOCS_DIR)
+        dcfg.folder = str(cfg.dir("docs"))
+        if cfg.deal:                       # bills filed by vendor, named "## Street, Vendor, Month, Invoice"
+            dcfg.layout, dcfg.name_style = "deal", "street_vendor_month"
+        elif dcfg.layout == "deal":
+            dcfg.layout, dcfg.name_style = "status", "date_number_party_amount"
         doc_folder.set_config(books, dcfg)
     archive_old(books)
     return root
@@ -291,32 +322,38 @@ def save_period(books: Books, period: Period, *, pdf_writer: PdfWriter | None = 
 
     cfg = cfg or get_config(books)
     result = SaveResult(period)
-    folder = cfg.path / REPORTS_DIR / str(period.end.year) / period.folder
+    folder = cfg.dir("reports") / str(period.end.year) / period.folder
     end_label = f"{period.end.day} {period.end:%b %Y}"
-    jobs = []
+    jobs = []                  # (file name, report, which statement)
     for r in cfg.reports:
         if r == "income_statement":
             jobs.append((f"Income Statement - {period.label}",
-                         reports.income_statement(books, period.start.isoformat(), period.end.isoformat())))
+                         reports.income_statement(books, period.start.isoformat(), period.end.isoformat()), r))
         elif r == "cash_flow":
             jobs.append((f"Cash Flow - {period.label}",
-                         reports.cash_flow(books, period.start.isoformat(), period.end.isoformat())))
+                         reports.cash_flow(books, period.start.isoformat(), period.end.isoformat()), r))
         elif r == "balance_sheet":
             jobs.append((f"Balance Sheet - {end_label}",
                          reports.balance_sheet(books, period.end.isoformat(),
-                                               fiscal_year_start_month=books.fiscal_year_start_month)))
+                                               fiscal_year_start_month=books.fiscal_year_start_month), r))
     if cfg.year_to_date and cfg.frequency not in ("yearly",):
         fy = books.fiscal_year_start_month
         ytd_start = date(period.end.year if period.end.month >= fy else period.end.year - 1, fy, 1)
         if ytd_start < period.start:
             if "income_statement" in cfg.reports:
                 jobs.append((f"Income Statement - Year to Date {end_label}",
-                             reports.income_statement(books, ytd_start.isoformat(), period.end.isoformat())))
+                             reports.income_statement(books, ytd_start.isoformat(), period.end.isoformat()),
+                             "income_statement"))
             if "cash_flow" in cfg.reports:
                 jobs.append((f"Cash Flow - Year to Date {end_label}",
-                             reports.cash_flow(books, ytd_start.isoformat(), period.end.isoformat())))
-    for name, report in jobs:
+                             reports.cash_flow(books, ytd_start.isoformat(), period.end.isoformat()), "cash_flow"))
+    if cfg.deal:               # the latest outside, the ones before into Archive/
+        for r in {k for _n, _rep, k in jobs}:
+            archive_live(cfg.dir("reports") / DEAL_REPORT_DIRS[r])
+    for name, report, kind in jobs:
         stem = safe_filename(name)
+        if cfg.deal:
+            folder = cfg.dir("reports") / DEAL_REPORT_DIRS[kind]
         try:
             if "pdf" in cfg.formats and pdf_writer is not None:
                 path = folder / f"{stem}.pdf"
@@ -334,7 +371,11 @@ def save_period(books: Books, period: Period, *, pdf_writer: PdfWriter | None = 
     if cfg.trial_balance:
         from . import trial_balance as tb
 
-        path = tb.folder_path(cfg.path, period.end) / tb.file_name(period.end)
+        if cfg.deal:
+            archive_live(cfg.dir("tb"))
+            path = cfg.dir("tb") / tb.file_name(period.end)
+        else:
+            path = tb.folder_path(cfg.path, period.end) / tb.file_name(period.end)
         try:
             result.files.append(tb.write_xlsx(books, path, period.end, period.start))
         except PermissionError:
@@ -349,7 +390,7 @@ def backup_books(books: Books, cfg: WorkspaceConfig | None = None, *, stamp: str
     cfg = cfg or get_config(books)
     if not cfg.enabled or books.path == ":memory:":
         return None
-    folder = cfg.path / BACKUP_DIR
+    folder = cfg.dir("backups")
     folder.mkdir(parents=True, exist_ok=True)
     stamp = stamp or datetime.now().strftime("%Y-%m-%d %H%M")
     dest = folder / f"{safe_filename(books.company_name)} {stamp}.amdb"
@@ -361,7 +402,46 @@ def backup_books(books: Books, cfg: WorkspaceConfig | None = None, *, stamp: str
     backups = sorted(folder.glob(f"{safe_filename(books.company_name)} *.amdb"))
     for old in backups[:-cfg.keep_backups] if cfg.keep_backups > 0 else []:
         old.unlink(missing_ok=True)
+    refresh_live_copy(books, cfg)
     return dest
+
+
+def refresh_live_copy(books: Books, cfg: WorkspaceConfig | None = None) -> Path | None:
+    """Deal layout: the latest copy of the company file in QuickBooks File/ (its backups are in its Archive/)."""
+    cfg = cfg or get_config(books)
+    if not cfg.enabled or not cfg.deal or books.path == ":memory:":
+        return None
+    folder = cfg.dir("live_books")
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{safe_filename(books.company_name)}.amdb"
+    tmp = dest.with_suffix(".amdb.saving")
+    target = sqlite3.connect(tmp)
+    try:
+        books.conn.backup(target)
+    finally:
+        target.close()
+    tmp.replace(dest)
+    return dest
+
+
+def archive_live(folder: Path) -> list[tuple[str, str]]:
+    """Move the files in ``folder`` into ``folder``/Archive/<year>/ (to make room for the new live files)."""
+    from .pdf_to_excel import unique_path
+
+    moves = []
+    if not folder.is_dir():
+        return moves
+    for f in folder.iterdir():
+        if not f.is_file() or f.name.startswith((".", "~$")):
+            continue
+        target = unique_path(folder / ARCHIVE / str(_file_date(f).year) / f.name)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            f.rename(target)
+            moves.append((str(f), str(target)))
+        except OSError:
+            continue
+    return moves
 
 
 def run_schedule(books: Books, *, pdf_writer: PdfWriter | None = None, today: date | None = None
@@ -498,17 +578,15 @@ def archive_old(books: Books, today: date | None = None) -> list[tuple[str, str]
     from .pdf_to_excel import COMBINED_NAME
 
     cutoff = doc_folder.months_ago(today or date.today(), cfg.archive_months)
-    root = cfg.path
     keep = {COMBINED_NAME}
     moves = []
-    bank = root / BANK_DIR
+    bank = cfg.dir("bank")
     moves += _archive_tree(bank / FILED, bank / ARCHIVE, cutoff, skip=keep)
     moves += _archive_tree(bank / PROCESSED_DIR, bank / ARCHIVE / PROCESSED_DIR, cutoff)
-    moves += _archive_tree(root / REPORTS_DIR, root / REPORTS_DIR / ARCHIVE, cutoff)
-    from .trial_balance import TB_DIR
-
-    moves += _archive_tree(root / TB_DIR, root / TB_DIR / ARCHIVE, cutoff)
-    moves += _archive_tree(root / BACKUP_DIR, root / BACKUP_DIR / ARCHIVE, cutoff)
+    if not cfg.deal:          # (deal layout: statements, trial balances and backups already live / archived)
+        moves += _archive_tree(cfg.dir("reports"), cfg.dir("reports") / ARCHIVE, cutoff)
+        moves += _archive_tree(cfg.dir("tb"), cfg.dir("tb") / ARCHIVE, cutoff)
+        moves += _archive_tree(cfg.dir("backups"), cfg.dir("backups") / ARCHIVE, cutoff)
     dcfg = doc_folder.get_config(books)
     if dcfg.enabled:
         moves += doc_folder.refile(books, today=today)  # paid invoices/bills move to Invoices & Bills/Archive

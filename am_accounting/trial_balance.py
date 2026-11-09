@@ -212,6 +212,9 @@ def save_to_folder(books: Books, end: date, start: date | None = None) -> Path |
     cfg = ws.get_config(books)
     if not cfg.enabled:
         return None
+    if cfg.deal:                    # the latest outside, earlier ones in Archive/
+        ws.archive_live(cfg.dir("tb"))
+        return write_xlsx(books, cfg.dir("tb") / file_name(end), end, start)
     return write_xlsx(books, folder_path(cfg.path, end) / file_name(end), end, start)
 
 

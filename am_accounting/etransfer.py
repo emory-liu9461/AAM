@@ -665,7 +665,7 @@ def folder(books: Books) -> Path | None:
     from . import workspace as ws
 
     cfg = ws.get_config(books)
-    return cfg.path / DIR_NAME if cfg.enabled else None
+    return cfg.dir("etransfer") if cfg.enabled else None
 
 
 def process_folder(books: Books, *, min_age_seconds: float = 5.0) -> list[str]:

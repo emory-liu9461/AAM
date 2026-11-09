@@ -57,7 +57,7 @@ class YearEndDialog(QDialog):
         from .. import workspace as ws
 
         cfg = ws.get_config(books)
-        self.folder = QLineEdit(str(cfg.path / "Year-End") if cfg.enabled else str(Path.home() / "Documents"))
+        self.folder = QLineEdit(str(cfg.dir("year_end")) if cfg.enabled else str(Path.home() / "Documents"))
         frow.addWidget(self.folder, 1)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)

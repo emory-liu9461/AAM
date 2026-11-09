@@ -45,11 +45,16 @@ LAYOUTS = {
     "party": "By customer / vendor",
     "party_year": "By customer / vendor, then year",
     "year_month": "By year, then month",
+    "deal": "Deal folder standard: Invoices/Operating Invoices/<Vendor> Invoices (last 12 months / Archived)",
 }
+# deal layout (the folder is a deal folder's Asset Management/Accounting — see deal_folders.py)
+DEAL_KIND_DIRS = {"bill": "Invoices/Operating Invoices", "invoice": "Income/Other Revenues"}
+DEAL_RECENT, DEAL_OLD = "Invoices from the Last 12 Months", "Archived"
 NAME_STYLES = {
     "date_number_party_amount": "2026-10-07 INV-1903 Cedar & Pine Architects $6,100.00",
     "party_number_date": "Cedar & Pine Architects INV-1903 2026-10-07",
     "number_party": "INV-1903 Cedar & Pine Architects",
+    "street_vendor_month": "45 Elm St, Cedar & Pine Architects, October 2026, Invoice INV-1903",
     "original": "Keep the original file name",
 }
 
@@ -62,6 +67,7 @@ class FolderConfig:
     make_pdf: bool = True        # create a PDF for each invoice made in the app
     auto_match: bool = True      # match payments to invoices/bills automatically after imports
     archive_months: int = 12     # paid invoices/bills older than this move to Archive/ (0 = never)
+    street: str = ""             # the property's street address (for the deal standard's file names)
 
     @property
     def enabled(self) -> bool:
@@ -82,7 +88,7 @@ def get_config(books: Books) -> FolderConfig:
         months = 12
     return FolderConfig(m("docs_folder") or "", layout if layout in LAYOUTS else "status",
                         style if style in NAME_STYLES else "date_number_party_amount",
-                        m("docs_make_pdf") != "0", m("docs_auto_match") != "0", months)
+                        m("docs_make_pdf") != "0", m("docs_auto_match") != "0", months, m("property_street") or "")
 
 
 def set_config(books: Books, cfg: FolderConfig) -> list[tuple[str, str]]:
@@ -105,9 +111,21 @@ def set_config(books: Books, cfg: FolderConfig) -> list[tuple[str, str]]:
     return moves + refile(books)
 
 
+def kind_dir(cfg: FolderConfig, kind: str) -> Path:
+    return cfg.root / (DEAL_KIND_DIRS if cfg.layout == "deal" else KIND_DIRS)[kind]
+
+
+def drop_dir(cfg: FolderConfig) -> Path:
+    return cfg.root / "Invoices" / DROP_DIR if cfg.layout == "deal" else cfg.root / DROP_DIR
+
+
+def removed_dir(cfg: FolderConfig) -> Path:
+    return cfg.root / "Invoices" / REMOVED_DIR if cfg.layout == "deal" else cfg.root / REMOVED_DIR
+
+
 def ensure_folders(cfg: FolderConfig) -> None:
-    for sub in (*KIND_DIRS.values(), DROP_DIR):
-        (cfg.root / sub).mkdir(parents=True, exist_ok=True)
+    for d in (kind_dir(cfg, "invoice"), kind_dir(cfg, "bill"), drop_dir(cfg)):
+        d.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +133,13 @@ def ensure_folders(cfg: FolderConfig) -> None:
 # ---------------------------------------------------------------------------
 
 
-def file_stem(doc: rx.Document, style: str) -> str:
+def file_stem(doc: rx.Document, style: str, street: str = "") -> str:
     amount = fmt_money(doc.amount_cents)
+    if style == "street_vendor_month":           # "## Street Name, Vendor, Month, Invoice"
+        d = date.fromisoformat(doc.issue_date)
+        parts = [street, doc.party, f"{calendar.month_name[d.month]} {d.year}",
+                 f"Invoice {doc.number}" if doc.number else "Invoice"]
+        return safe_filename(", ".join(p for p in parts if p))
     parts = {
         "date_number_party_amount": [doc.issue_date, doc.number, doc.party, amount],
         "party_number_date": [doc.party, doc.number, doc.issue_date],
@@ -142,6 +165,12 @@ def is_archived(cfg: FolderConfig, doc: rx.Document, paid: bool, today: date | N
 def target_dir(cfg: FolderConfig, doc: rx.Document, paid: bool, today: date | None = None) -> Path:
     issued = date.fromisoformat(doc.issue_date)
     party = safe_filename(doc.party)
+    if cfg.layout == "deal":                     # by vendor: the last 12 months, older ones Archived
+        old = is_archived(cfg, doc, paid, today)
+        if doc.kind == "bill":
+            return kind_dir(cfg, "bill") / f"{party or 'No vendor'} Invoices" / (DEAL_OLD if old else DEAL_RECENT)
+        base = kind_dir(cfg, "invoice") / (party or "No customer")
+        return base / ARCHIVE_DIR if old else base
     if is_archived(cfg, doc, paid, today):
         base = cfg.root / ARCHIVE_DIR / KIND_DIRS[doc.kind]
         if cfg.layout == "status":
@@ -163,7 +192,7 @@ def target_path(cfg: FolderConfig, doc: rx.Document, original_name: str, *, paid
     if cfg.name_style == "original":
         name = original_name
     else:
-        name = file_stem(doc, cfg.name_style) + (f" ({index + 1})" if index else "") + ext
+        name = file_stem(doc, cfg.name_style, cfg.street) + (f" ({index + 1})" if index else "") + ext
     return target_dir(cfg, doc, paid, today) / name
 
 
@@ -252,7 +281,7 @@ def detach_file(books: Books, file_id: int, *, to_drop_folder: bool = True) -> P
     dest = None
     if p.exists():
         if to_drop_folder:
-            dest = unique_path(cfg.root / DROP_DIR / (f.original_name or p.name))
+            dest = unique_path(drop_dir(cfg) / (f.original_name or p.name))
             shutil.move(str(p), dest)
         else:
             p.unlink()
@@ -271,7 +300,7 @@ def release_files(books: Books, doc_id: int) -> None:
             if f.generated:
                 p.unlink()
             else:
-                dest = unique_path(cfg.root / REMOVED_DIR / p.name)
+                dest = unique_path(removed_dir(cfg) / p.name)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(p), dest)
         with books.conn:
@@ -324,9 +353,13 @@ def _move_root(books: Books, old_root: Path, new_root: Path) -> list[tuple[str, 
 
 def _prune_empty(cfg: FolderConfig) -> None:
     """Remove folders left empty by moves (never the top-level ones)."""
-    keep = {cfg.root / d for d in (*KIND_DIRS.values(), DROP_DIR)}
-    for kind_dir in (*KIND_DIRS.values(), ARCHIVE_DIR):
-        base = cfg.root / kind_dir
+    if cfg.layout == "deal":
+        bases = [kind_dir(cfg, "bill"), kind_dir(cfg, "invoice")]
+        keep = set(bases) | {drop_dir(cfg)}
+    else:
+        bases = [cfg.root / d for d in (*KIND_DIRS.values(), ARCHIVE_DIR)]
+        keep = {cfg.root / d for d in (*KIND_DIRS.values(), DROP_DIR)}
+    for base in bases:
         if not base.is_dir():
             continue
         for d in sorted((p for p in base.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
@@ -339,7 +372,7 @@ def unfiled(books: Books) -> list[Path]:
     cfg = get_config(books)
     if not cfg.enabled:
         return []
-    drop = cfg.root / DROP_DIR
+    drop = drop_dir(cfg)
     if not drop.is_dir():
         return []
     return sorted(p for p in drop.iterdir() if p.is_file() and not p.name.startswith((".", "~$")))

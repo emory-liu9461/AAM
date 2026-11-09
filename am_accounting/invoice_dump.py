@@ -85,7 +85,7 @@ def dump_root(books: Books) -> Path | None:
     from . import workspace as ws
 
     cfg = ws.get_config(books)
-    return cfg.path / DUMP_DIR if cfg.enabled else None
+    return cfg.dir("dump") if cfg.enabled else None
 
 
 def ensure_folders(root: Path) -> None:

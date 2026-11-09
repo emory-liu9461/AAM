@@ -72,7 +72,7 @@ def folder(books: Books) -> Path | None:
     from . import workspace as ws
 
     cfg = ws.get_config(books)
-    return cfg.path / DIR_NAME if cfg.enabled else None
+    return cfg.dir("cheques") if cfg.enabled else None
 
 
 def ensure_folders(root: Path) -> None:

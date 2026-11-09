@@ -449,7 +449,7 @@ class ARAPTab(QWidget):
 
         cfg = ws.get_config(self.books)
         if cfg.enabled:
-            start = cfg.path / ws.REPORTS_DIR / name
+            start = cfg.dir("reports") / name
         path, _ = QFileDialog.getSaveFileName(self, "Export AR & AP", str(start), "Excel (*.xlsx)")
         if not path:
             return

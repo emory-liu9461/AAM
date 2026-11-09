@@ -589,6 +589,9 @@ class MainWindow(QMainWindow):
             b = self.books
             p = backups.daily(b.conn, b.path, b.company_name, backups.backup_root(b.path, b))
             if p:
+                from .. import workspace as ws
+
+                ws.refresh_live_copy(b)      # a deal folder's QuickBooks File: today's copy of the books
                 self.statusBar().showMessage(f"Backed up to {p}", 5000)
         except (OSError, sqlite3.Error):
             pass

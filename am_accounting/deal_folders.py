@@ -21,7 +21,13 @@ The rules:
 * **Names**: where the standard sets a naming convention (e.g. "## Street Name, Vendor, Month, Invoice"), adding a file
   to that folder suggests the name, with the street and date filled in.
 * **On closing**, the underwriting's purchase-and-sale and corporate documents are copied into Asset Management (Legal
-  and Admin → APS and Corporation Document), as the standard says.
+  and Admin → APS and Corporation Document), as the standard says — and the new company's accounting is linked:
+  **Asset Management/Accounting becomes the company's folder** (workspace.py, "deal" layout). Bank statements dropped
+  in Banking/Monthly Statements are imported; financial statements and trial balances are saved in Financial
+  Statements (the latest outside, older ones in Archive); bills are filed by vendor in Invoices/Operating Invoices/
+  <Vendor> Invoices (the last 12 months, older ones Archived) and named "## Street Name, Vendor, Month, Invoice"; the
+  latest copy of the company file is kept in QuickBooks File, its backups in its Archive; the year-end package goes
+  in Taxes.
 
 Nothing is ever deleted: setting up again only adds what's missing.
 """
@@ -114,10 +120,13 @@ UNDERWRITING = F(
 ASSET_MANAGEMENT = F(
     "Asset Management",
     F("Accounting",
-      F("QuickBooks File", LIVE("Latest file"), A(), note="The latest accounting file"),
+      F("QuickBooks File", LIVE("Latest file"), A(),
+        note="With the books linked: the latest copy of the company file, its backups in Archive"),
       F("Banking", F("Banking Information", F("Void Cheque", required=True), F("Bank Setup Documents")),
-        F("Monthly Statements", required=True)),
-      F("Financial Statements", F("Income Statement", LIVE("Latest"), A()), F("Balance Sheet", LIVE("Latest"), A())),
+        F("Monthly Statements", required=True,
+          note="With the books linked: drop bank statements here (a folder per account) — they're imported")),
+      F("Financial Statements", F("Income Statement", LIVE("Latest"), A()), F("Balance Sheet", LIVE("Latest"), A()),
+        note="With the books linked: saved here automatically, the latest outside, older ones in Archive"),
       F("Taxes"),
       F("Financing Documents", _mortgage(), required=True),
       F("Income", F("Owner Statements", required=True), F("Other Revenues")),
@@ -133,7 +142,8 @@ ASSET_MANAGEMENT = F(
           F("Third-party Invoices",
             F("Unit", *_material_labour(), repeat="units"),
             F("Common Area", F("Roof", *_material_labour()), F("Hallways", *_material_labour()),
-              F("Stairwell", *_material_labour()))))),
+              F("Stairwell", *_material_labour())))),
+        note="With the books linked: bills filed by vendor in Operating Invoices, named as the standard says"),
       F("Closing Balances", F("Statement of Advance from Any Mortgage", required=True),
         F("Statement of Adjustments", required=True), F("Trust Ledger", required=True)),
       F("Distributions", FILE("## Street Name, Distributions.xlsx"), F("Distribution Receipts"))),
@@ -491,6 +501,60 @@ def set_folder_of(pf, deal, path: str | Path) -> None:
                         (f"deal_folder:{deal.id}", str(path)))
 
 
+def accounting_folder(folder: Path) -> Path:
+    return folder / "Asset Management" / "Accounting"
+
+
+def company_path(pf, deal) -> str:
+    h = next((x for x in pf.holdings() if x.id == deal.holding_id), None) if deal.holding_id else None
+    return h.company_path if h and h.company_path and Path(h.company_path).exists() else ""
+
+
+def linked(pf, deal) -> bool:
+    """The company's books save into this deal folder's Asset Management/Accounting."""
+    from .books import Books
+    from . import workspace as ws
+
+    path, folder = company_path(pf, deal), folder_of(pf, deal)
+    if not path or folder is None:
+        return False
+    b = Books.open(path, create=False)
+    try:
+        cfg = ws.get_config(b)
+        return cfg.deal and cfg.enabled and cfg.path.resolve() == accounting_folder(folder).resolve()
+    finally:
+        b.close()
+
+
+def link_books(pf, deal, path: str | None = None) -> Path:
+    """Make the deal folder's Asset Management/Accounting the company's folder (File → Company Folder), laid out as
+    the standard: bank statements, financial statements, bills, backups and the latest company file go into its
+    folders. The company's other settings (schedule, reports …) are kept; invoices and bills already filed are moved
+    over. Returns the Accounting folder."""
+    from .books import Books
+    from . import workspace as ws
+
+    path = path or company_path(pf, deal)
+    folder = folder_of(pf, deal)
+    if not path:
+        raise ValueError("The deal has no company books yet — close the deal first")
+    if folder is None:
+        raise ValueError("Pick the Deals folder first")
+    create(folder, context(pf, deal), asset_management=True)
+    root = accounting_folder(folder)
+    b = Books.open(path, create=False)
+    try:
+        with b.conn:
+            b._set_meta("property_street", street_of(deal))
+        cfg = ws.get_config(b)
+        cfg.root, cfg.layout = str(root), "deal"
+        ws.set_config(b, cfg)
+        ws.refresh_live_copy(b, cfg)
+    finally:
+        b.close()
+    return root
+
+
 def wants_asset_management(deal) -> bool:
     return deal.stage == "Closed" or bool(deal.holding_id)
 
@@ -503,7 +567,13 @@ def on_closing(pf, deal) -> tuple[int, int]:
         return 0, 0
     ctx = context(pf, deal)
     made = create(folder, ctx, asset_management=True)
-    return made, transfer_on_closing(folder)
+    copied = transfer_on_closing(folder)
+    if company_path(pf, deal):            # the new company's accounting saves into the deal folder
+        try:
+            link_books(pf, deal)
+        except (OSError, ValueError):
+            pass
+    return made, copied
 
 
 def stamp() -> str:

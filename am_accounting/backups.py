@@ -32,7 +32,7 @@ def backup_root(file_path: str | Path, books=None) -> Path:
 
             cfg = ws.get_config(books)
             if cfg.enabled:
-                return cfg.path / ws.BACKUP_DIR
+                return cfg.dir("backups")
         except Exception:  # noqa: BLE001
             pass
     return Path(file_path).parent / "Backups"

@@ -80,6 +80,32 @@ class WorkspaceDialog(QDialog):
         tree.setObjectName("hint")
         tree.setWordWrap(True)
         lay.addWidget(tree)
+        self.std_tree = tree
+        lrow = QHBoxLayout()
+        lrow.addWidget(QLabel("Folder layout:"))
+        self.layout_box = QComboBox()
+        for k, v in ws.LAYOUTS.items():
+            self.layout_box.addItem(v, k)
+        self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(cfg.layout)))
+        self.layout_box.setToolTip("Deal folder standard: the folder is a deal's Asset Management → Accounting "
+                                   "(set up from the deal's Deal Folder tab)")
+        lrow.addWidget(self.layout_box)
+        lrow.addStretch(1)
+        lay.addLayout(lrow)
+        self.deal_tree = QLabel(
+            "📁 <b>Banking/Monthly Statements</b> — drop bank statements here (a subfolder per bank account)<br>"
+            "📁 <b>Financial Statements</b> — Income Statement, Balance Sheet, Cash Flow and Trial Balance: the "
+            "latest outside, older ones in each one's Archive<br>"
+            "📁 <b>Invoices/Operating Invoices</b> — bills by vendor (“Enbridge Invoices”): the last 12 months, older "
+            "ones Archived, named “## Street Name, Vendor, Month, Invoice”<br>"
+            "📁 <b>QuickBooks File</b> — the latest copy of the books; backups in its Archive<br>"
+            "📁 <b>Taxes</b> — the year-end package · 📁 <b>Banking</b> — cheques &amp; drafts, e-Transfer history · "
+            "📁 <b>Invoices</b> — the invoice dump and saved invoices")
+        self.deal_tree.setObjectName("hint")
+        self.deal_tree.setWordWrap(True)
+        lay.addWidget(self.deal_tree)
+        self.layout_box.currentIndexChanged.connect(self._layout_changed)
+        self._layout_changed()
 
         box = QGroupBox("Save financial statements automatically")
         form = QFormLayout(box)
@@ -170,7 +196,15 @@ class WorkspaceDialog(QDialog):
                                   [k for k, cb in self.report_boxes.items() if cb.isChecked()],
                                   [k for k, cb in self.format_boxes.items() if cb.isChecked()],
                                   self.ytd.isChecked(), self.backups.isChecked(), self.keep.value(),
-                                  self.archive_months.value(), self.tb.isChecked())
+                                  self.archive_months.value(), self.tb.isChecked(),
+                                  self.layout_box.currentData() or "standard")
+
+    def _layout_changed(self, *_) -> None:
+        deal = self.layout_box.currentData() == "deal"
+        self.std_tree.setVisible(not deal)
+        self.deal_tree.setVisible(deal)
+        if hasattr(self, "example"):
+            self._example()
 
     def _example(self) -> None:
         freq = self.freq.currentData()
@@ -178,7 +212,11 @@ class WorkspaceDialog(QDialog):
             self.example.setText("Statements are only saved when you click “Save Statements Now”.")
             return
         p = ws.completed_periods(freq, date.today())[-1]
-        self.example.setText(f"Example: {ws.REPORTS_DIR}/{p.end.year}/{p.folder}/Income Statement - {p.label}.pdf "
+        where = (f"Financial Statements/Income Statement/Income Statement - {p.label}.pdf (the one before moves to "
+                 f"its Archive)" if getattr(self, "layout_box", None) is not None
+                 and self.layout_box.currentData() == "deal" else
+                 f"{ws.REPORTS_DIR}/{p.end.year}/{p.folder}/Income Statement - {p.label}.pdf")
+        self.example.setText(f"Example: {where} "
                              f"— saved once each period ends; anything missed while the app was closed is saved "
                              f"the next time it's open.")
 

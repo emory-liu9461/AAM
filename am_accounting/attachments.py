@@ -61,7 +61,7 @@ def books_folder(books) -> Path:
 
         cfg = ws.get_config(books)
         if cfg.enabled:
-            return cfg.path / "Attachments"
+            return cfg.dir("attachments")
     except Exception:  # noqa: BLE001
         pass
     p = Path(books.path)

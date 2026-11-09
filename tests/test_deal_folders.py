@@ -138,3 +138,72 @@ def test_deal_folder_tab(app, tmp_path, monkeypatch):
     assert (f / "Asset Management/Legal and Admin/APS").is_dir()
     assert tab.tree.topLevelItemCount() == 2
     pf.close()
+
+
+def test_closed_deal_links_the_accounting(tmp_path):
+    from am_accounting import closing as cl
+    from am_accounting import doc_folder
+    from am_accounting import inbox
+    from am_accounting import receivables as rx
+    from am_accounting import workspace as ws
+    from am_accounting.books import Books, CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+
+    reg = CompanyRegistry(tmp_path / "c.json", tmp_path / "Companies")
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    df.set_root(pf, str(tmp_path / "Deals"))
+    d = dl.Deal("45 Elm St", address="45 Elm St, Hamilton", stage="Under Contract", price_cents=1_000_000_00,
+                equity_cents=300_000_00, closing_date="2026-01-15")
+    dl.save(pf, d)
+    f = df.folder_of(pf, d)
+    df.create(f, df.context(pf, d))
+    s = cl.default_setup(dl.deal(pf, d.id), pf)
+    s.company_name = "1001234567 Ontario Inc."
+    s.loans[0].lender = "First National"
+    s.equity[0].owner = "Pat Lee"
+
+    def create_company(name, **kw):
+        return str(reg.create(CompanyProfile(name, name, kw.get("entity_type", ""), role="operating")))
+
+    cl.close_deal(pf, d.id, s, create_company)
+    d = dl.deal(pf, d.id)
+    acct = f / "Asset Management" / "Accounting"
+    assert df.linked(pf, d)
+    b = Books.open(df.company_path(pf, d), create=False)
+    try:
+        cfg = ws.get_config(b)
+        assert cfg.deal and cfg.path == acct
+        assert Path(inbox.get_config(b).folder) == acct / "Banking/Monthly Statements"
+        live = acct / "QuickBooks File" / "1001234567 Ontario Inc.amdb"
+        assert live.exists()                                                 # the latest copy of the books
+        # financial statements: the latest outside, the ones before in Archive
+        p1, p2 = ws._period_of("monthly", date(2026, 1, 10)), ws._period_of("monthly", date(2026, 2, 10))
+        cfg.formats = ["xlsx"]
+        r1 = ws.save_period(b, p1, cfg=cfg)
+        assert not r1.errors and (acct / "Financial Statements/Income Statement/Income Statement - January 2026.xlsx"
+                                  ).exists()
+        assert (acct / "Financial Statements/Balance Sheet").is_dir()
+        assert any((acct / "Financial Statements/Trial Balance").glob("*.xlsx"))
+        ws.save_period(b, p2, cfg=cfg)
+        inc = acct / "Financial Statements/Income Statement"
+        assert {x.name for x in inc.glob("*.xlsx")} == {"Income Statement - February 2026.xlsx",
+                                                        "Income Statement - Year to Date 28 Feb 2026.xlsx"}
+        assert (inc / "Archive/2026/Income Statement - January 2026.xlsx").exists()
+        # backups in QuickBooks File/Archive
+        assert ws.backup_books(b, cfg, stamp="2026-02").parent == acct / "QuickBooks File/Archive"
+        # a bill filed by vendor, named "## Street Name, Vendor, Month, Invoice"
+        exp = next(a.id for a in b.accounts() if a.type == "expense")
+        ap = rx.control_account(b, "bill").id
+        doc = rx.add_document(b, "bill", "Enbridge", "2026-02-03", "2026-03-03", 412_00, exp, number="GAS-77", control_id=ap)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF bill")
+        filed = doc_folder.attach_file(b, doc, src)
+        assert filed == (acct / "Invoices/Operating Invoices/Enbridge Invoices/Invoices from the Last 12 Months"
+                         / "45 Elm St, Enbridge, February 2026, Invoice GAS-77.pdf")
+        assert doc_folder.drop_dir(doc_folder.get_config(b)) == acct / "Invoices/Drop files here"
+        assert ws.SUBDIRS["deal"]["year_end"] == "Taxes"
+    finally:
+        b.close()
+    rows = {s_.item.rel: s_ for s_ in df.check(f, df.context(pf, d), asset_management=True)}
+    assert rows["Asset Management/Accounting/QuickBooks File"].files >= 1
+    pf.close()

@@ -68,6 +68,9 @@ class DealFolderTab(QWidget):
                                                             "naming convention says"),
                 ("archive", "Archive Old Versions…", self.archive,
                  "Keep only the newest version of each document; move the older ones to the folder's Archive"),
+                ("link", "Link the Company's Accounting", self.link,
+                 "Make Asset Management → Accounting the company's folder: statements, bills, financial statements "
+                 "and backups are saved into it (done automatically when the deal closes)"),
                 ("close", "Set Up Asset Management", self.asset_management,
                  "Make the Asset Management folders and copy the underwriting's APS and corporate documents over "
                  "(done automatically when the deal closes)")):
@@ -137,6 +140,18 @@ class DealFolderTab(QWidget):
         self.where.setText(f"This deal: <b>{f}</b>" + (" · " + state if ready else " · not set up yet — "
                                                         "click <b>Set Up Folders</b>"))
         self.btns["close"].setText("Update Asset Management" if am else "Set Up Asset Management")
+        books = df.company_path(self.pf, self.deal)
+        try:
+            is_linked = bool(books) and df.linked(self.pf, self.deal)
+        except Exception:  # noqa: BLE001
+            is_linked = False
+        self.btns["link"].setEnabled(ready and bool(books) and not is_linked)
+        self.btns["link"].setText("Accounting Linked ✓" if is_linked else "Link the Company's Accounting")
+        self.where.setText(self.where.text() + (
+            "<br>Accounting: the company's books save into <b>Asset Management → Accounting</b>" if is_linked else
+            "<br>Accounting: the company's books aren't linked to this folder yet" if books else
+            "<br>Accounting: linked when the deal closes (its company's books save into Asset Management → "
+            "Accounting)"))
         parents: list[QTreeWidgetItem] = []
         self.items = []
         for s in rows:
@@ -213,6 +228,18 @@ class DealFolderTab(QWidget):
         self.fill()
         info(self, "Asset Management", f"{made} folder(s) made; {copied} underwriting document(s) copied into "
                                        "Legal and Admin.")
+
+    def link(self) -> None:
+        try:
+            root = df.link_books(self.pf, self.deal)
+        except (OSError, ValueError) as e:
+            error(self, "Couldn't link the accounting", str(e))
+            return
+        self.fill()
+        info(self, "Accounting linked", f"The company's books now save into {root}: bank statements dropped in "
+                                        "Banking/Monthly Statements are imported, financial statements go in "
+                                        "Financial Statements, bills are filed by vendor in Invoices, and the latest "
+                                        "copy of the books is kept in QuickBooks File.")
 
     def open_selected(self) -> None:
         f = self.folder()
