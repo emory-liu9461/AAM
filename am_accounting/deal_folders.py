@@ -326,7 +326,42 @@ def deal_folder(root: str | Path, deal) -> Path:
     """<Deals folder>/New Deals/<deal> while it's in the pipeline; <Deals folder>/Existing Deals/<deal> once it has
     closed."""
     group = EXISTING_DEALS if (deal.stage == "Closed" or deal.holding_id) else NEW_DEALS
-    return Path(root) / group / _safe(deal.name)
+    return Path(root) / group / folder_name(deal)
+
+
+STREET_TYPES = {"ave", "avenue", "st", "street", "rd", "road", "dr", "drive", "blvd", "boulevard", "cres",
+                "crescent", "crt", "ct", "court", "pl", "place", "ln", "lane", "way", "pkwy", "parkway", "terr",
+                "terrace", "hwy", "highway", "sq", "square", "cir", "circle", "trl", "trail", "gate", "gdns",
+                "gardens", "grv", "grove", "hts", "heights", "pky", "row", "line", "sideroad", "concession", "cir"}
+COMPANY_WORDS = {"investment", "investments", "limited", "ltd", "inc", "incorporated", "corp", "corporation",
+                 "holdings", "holding", "properties", "property", "apartments", "lp", "gp", "partnership", "co",
+                 "company", "realty", "developments", "development", "group", "trust"}
+
+
+def folder_name(deal) -> str:
+    """The deal's folder: street number and street name — "286-296 Saguenay Avenue, Oshawa" (or a deal named
+    "286-286 Saguenay Investment Limited") → "286-296 Saguenay". Without a street number, the deal's name."""
+    import re as _re
+
+    for text in ((getattr(deal, "address", "") or "").split(",")[0], deal.name or ""):
+        words = text.split()
+        if not words or not _re.match(r"^\d", words[0]):
+            continue
+        keep = [words[0]]
+        for w in words[1:]:
+            bare = _re.sub(r"[^a-z]", "", w.lower())
+            if (bare in STREET_TYPES and len(keep) > 1) or bare in COMPANY_WORDS:   # ("St. Clair": a name)
+                break
+            keep.append(w.rstrip(".,"))
+        if len(keep) > 1:
+            return _safe(" ".join(keep))
+    return _safe(deal.name)
+
+
+def _names(deal) -> list[str]:
+    """The folder names the deal's folder may have: the address-based one, and the deal's name (folders made
+    before)."""
+    return list(dict.fromkeys([folder_name(deal), _safe(deal.name)]))
 
 
 PREVIOUS = "Previous Files"
@@ -603,9 +638,11 @@ def folder_of(pf, deal) -> Path | None:
         return None
     want = deal_folder(base, deal)
     if not lpth.exists(want):
-        for old in (Path(base) / _safe(deal.name), Path(base) / NEW_DEALS / _safe(deal.name)):
-            if old != want and lpth.exists(old):
-                return old                 # not moved yet (see move_to_existing)
+        group = want.parent.name
+        for name in _names(deal):        # made before: under the deal's name, or not moved yet
+            for old in (Path(base) / group / name, Path(base) / name, Path(base) / NEW_DEALS / name):
+                if old != want and lpth.exists(old):
+                    return old
     return want
 
 
@@ -619,7 +656,7 @@ def move_to_existing(pf, deal) -> Path | None:
     r = pf.conn.execute("SELECT value FROM settings WHERE key=?", (f"deal_folder:{deal.id}",)).fetchone()
     if r and r[0]:
         return current
-    want = Path(base) / EXISTING_DEALS / _safe(deal.name)
+    want = Path(base) / EXISTING_DEALS / current.name    # (keeps the name it has)
     if current == want or lpth.exists(want):
         return current
     lpth.mkdir(want.parent)

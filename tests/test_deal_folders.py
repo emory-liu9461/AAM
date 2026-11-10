@@ -95,16 +95,16 @@ def test_deal_settings_and_closing_hook(tmp_path):
     dl.save(pf, d)
     assert df.folder_of(pf, d) is None
     df.set_root(pf, str(tmp_path / "Deals"))
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm St"     # in the pipeline
+    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm"        # in the pipeline
     assert df.on_closing(pf, d) == (0, 0)                                    # no folder yet: nothing done
     df.create(df.folder_of(pf, d), df.context(pf, d))
     d.stage, d.closing_date = "Closed", "2026-01-15"
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm St"     # not moved yet
+    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm"        # not moved yet
     made, copied = df.on_closing(pf, d)
     assert made > 50 and copied == 0
-    moved = tmp_path / "Deals" / "Existing Deals" / "45 Elm St"                 # closed: moved to Existing Deals
+    moved = tmp_path / "Deals" / "Existing Deals" / "45 Elm"                    # closed: moved to Existing Deals
     assert df.folder_of(pf, d) == moved and (moved / "Underwriting").is_dir()
-    assert not (tmp_path / "Deals" / "New Deals" / "45 Elm St").exists()
+    assert not (tmp_path / "Deals" / "New Deals" / "45 Elm").exists()
     # a folder made before New Deals / Existing Deals is still found, and moved on closing
     old = dl.Deal("Old Mill")
     dl.save(pf, old)
@@ -185,7 +185,7 @@ def test_closed_deal_links_the_accounting(tmp_path):
     d = dl.deal(pf, d.id)
     assert f.parent.name == "New Deals" and not f.exists()
     f = df.folder_of(pf, d)
-    assert f == tmp_path / "Deals" / "Existing Deals" / "45 Elm St"           # moved there on closing
+    assert f == tmp_path / "Deals" / "Existing Deals" / "45 Elm"              # moved there on closing
     acct = f / "Asset Management" / "Accounting"
     assert df.linked(pf, d)
     b = Books.open(df.company_path(pf, d), create=False)
@@ -285,7 +285,7 @@ def test_deal_folder_on_the_company_pages(app, tmp_path):
     page.fill()
     assert page.tab is None                                     # Maple Court: no deal folder yet
     f = page.choose(choose=lambda: "here")
-    assert f == tmp_path / "Deals" / "Existing Deals" / "Maple Court"
+    assert f == tmp_path / "Deals" / "Existing Deals" / "12 Maple"            # from its address
     assert (f / "Underwriting").is_dir() and (f / "Asset Management/Accounting/Banking").is_dir()
     made = cfp.deal_for(pf, h)
     assert made.stage == "Closed" and made.address == "12 Maple Ct, Guelph" and page.tab is not None
@@ -415,3 +415,23 @@ def test_long_paths_and_own_folder_guess(tmp_path, monkeypatch):
     assert longs and all(len(str(p)) >= 260 for p in longs)
     assert lpth.is_dir(longs[0])
     assert any(r.item.node.required for r in df.check(base / "Existing Deals" / d.name, ctx, asset_management=True))
+
+
+def test_deal_folder_named_number_and_street(tmp_path):
+    name = lambda n, a="": df.folder_name(dl.Deal(n, address=a))  # noqa: E731
+    assert name("Saguenay", "286-296 Saguenay Avenue, Oshawa") == "286-296 Saguenay"
+    assert name("286-286 Saguenay Investment Limited") == "286-286 Saguenay"
+    assert name("Birch", "12 St. Clair Ave W, Toronto") == "12 St Clair"
+    assert name("45 Elm St", "45 Elm St, Hamilton") == "45 Elm"
+    assert name("Oak Plaza") == "Oak Plaza"                                  # no street number: its name
+    # a folder made before under the deal's name is still found
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    df.set_root(pf, str(tmp_path / "Deals"))
+    d = dl.Deal("Old Name Deal", address="7 Pine Rd, Barrie")
+    dl.save(pf, d)
+    (tmp_path / "Deals" / "New Deals" / "Old Name Deal").mkdir(parents=True)
+    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "Old Name Deal"
+    e = dl.Deal("Fresh", address="7 Pine Rd, Barrie")
+    dl.save(pf, e)
+    assert df.folder_of(pf, e) == tmp_path / "Deals" / "New Deals" / "7 Pine"
+    pf.close()
