@@ -271,7 +271,13 @@ class ContactsTab(QWidget):
             self.table.setColumnWidth(col, w)
         owed = sum(s.receivable_cents for s in rows)
         owe = sum(s.payable_cents for s in rows)
-        self.summary.setText(f"{len(rows)} contact(s) · owed to you {fmt_money(owed)} · you owe {fmt_money(owe)}")
+        vendors = role == "vendor"
+        # vendors: what you owe each of them; customers: what each owes you
+        self.table.setHorizontalHeaderItem(6, QTableWidgetItem("Owed to them"))
+        self.table.setColumnHidden(5, vendors)
+        self.table.setColumnHidden(6, not vendors)
+        self.summary.setText(f"{len(rows)} vendor(s) · owed to them {fmt_money(owe)}" if vendors else
+                             f"{len(rows)} customer(s) · owed to you {fmt_money(owed)}")
         self._fill_check()
 
     def _fill_check(self) -> None:

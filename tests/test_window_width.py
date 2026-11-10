@@ -26,5 +26,8 @@ def test_pages_fit_a_scaled_laptop_screen(app, tmp_path):
     assert w.tx_tab.findChildren(FlowLayout)                      # its toolbar wraps
     c = w.contacts_tab
     assert c.which.button(2) is None and c.new_btn.text() == "New Customer…"
+    assert not c.table.isColumnHidden(5) and c.table.isColumnHidden(6)        # customers: owed to you
     c.which.button(1).click()
     assert c.new_btn.text() == "New Vendor…"
+    assert c.table.isColumnHidden(5) and not c.table.isColumnHidden(6)        # vendors: owed to them
+    assert c.table.horizontalHeaderItem(6).text() == "Owed to them" and "owed to them" in c.summary.text()
