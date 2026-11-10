@@ -35,6 +35,10 @@ The rules:
   latest copy of the company file is kept in QuickBooks File, its backups in its Archive; the year-end package goes
   in Taxes.
 
+* **A folder that already had files in it** (one picked for a deal, or made by hand before): everything that was
+  there is moved into **Previous Files** at the top of the deal's folder, kept as it was, and the standard folders
+  are set up beside it.
+
 Nothing is ever deleted: setting up again only adds what's missing.
 """
 
@@ -322,6 +326,39 @@ def deal_folder(root: str | Path, deal) -> Path:
     closed."""
     group = EXISTING_DEALS if (deal.stage == "Closed" or deal.holding_id) else NEW_DEALS
     return Path(root) / group / _safe(deal.name)
+
+
+PREVIOUS = "Previous Files"
+STANDARD_TOP = {"underwriting", "asset management", PREVIOUS.lower()}
+
+
+def previous_items(folder: Path) -> list[Path]:
+    """What's already in a deal's folder that isn't the standard's: its files and folders from before."""
+    try:
+        return sorted((p for p in Path(folder).iterdir()
+                       if not p.name.startswith((".", "~$")) and p.name.lower() not in STANDARD_TOP),
+                      key=lambda p: p.name.lower())
+    except OSError:
+        return []
+
+
+def move_to_previous(folder: Path) -> int:
+    """A folder that already had files in it: everything that was there goes into Previous Files/ (kept as it was),
+    so the standard folders start clean beside it. Returns how many files and folders were moved."""
+    if any((Path(folder) / n).is_dir() for n in ("Underwriting", "Asset Management")):
+        return 0                     # already set up: files added since are left where they are
+    items = previous_items(folder)
+    if not items:
+        return 0
+    dest = Path(folder) / PREVIOUS
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in items:
+        target, k = dest / p.name, 2
+        while target.exists():
+            target = dest / f"{p.stem} ({k}){p.suffix}" if p.is_file() else dest / f"{p.name} ({k})"
+            k += 1
+        shutil.move(str(p), str(target))
+    return len(items)
 
 
 def create(folder: Path, ctx: Context, *, asset_management: bool = False) -> int:

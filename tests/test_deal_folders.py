@@ -360,3 +360,35 @@ def test_archives_only_where_files_have_versions_or_dates(tmp_path):
     assert next(s for s in df.check(f, ctx) if s.item.rel == key).missing
     _touch(loi / "LOI signed.pdf")
     assert not next(s for s in df.check(f, ctx) if s.item.rel == key).missing
+
+
+def test_a_folder_with_files_keeps_them_in_previous_files(app, tmp_path, monkeypatch):
+    from am_accounting.gui import deal_folder_tab as dft
+
+    monkeypatch.setattr(dft, "info", lambda *a: None)
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    d = dl.Deal("Spruce Gardens")
+    dl.save(pf, d)
+    old = tmp_path / "OneDrive" / "Spruce"                       # a folder that already has the deal's files
+    _touch(old / "Broker OM.pdf")
+    _touch(old / "Rent roll Sept.xlsx")
+    _touch(old / "Photos" / "lobby.jpg")
+    f = dft.ask_where(None, pf, d, choose=lambda: "other", pick_dir=lambda *a: str(old))
+    prev = old / "Previous Files"
+    assert f == old and sorted(p.name for p in prev.iterdir()) == ["Broker OM.pdf", "Photos", "Rent roll Sept.xlsx"]
+    assert (prev / "Photos" / "lobby.jpg").exists()                # kept as it was
+    assert sorted(p.name for p in old.iterdir()) == ["Previous Files", "Underwriting"]
+    # set up already: a file added later stays where it is
+    _touch(old / "Notes.txt")
+    assert df.move_to_previous(old) == 0 and (old / "Notes.txt").exists()
+    tab = dft.DealFolderTab(pf, d)
+    top = [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())]
+    assert top == ["Underwriting", "📁 Previous Files", "📄 Notes.txt"]
+    # the same when the Deals folder already had a folder for it
+    df.set_root(pf, str(tmp_path / "Deals"))
+    e = dl.Deal("Ash Court")
+    dl.save(pf, e)
+    _touch(tmp_path / "Deals" / "New Deals" / "Ash Court" / "LOI.pdf")
+    g = dft.ask_where(None, pf, e, choose=lambda: "here")
+    assert (g / "Previous Files" / "LOI.pdf").exists() and (g / "Underwriting").is_dir()
+    pf.close()

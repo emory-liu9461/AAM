@@ -58,10 +58,14 @@ def ask_where(parent, pf, deal, *, choose=None, pick_dir=None) -> Path | None:
     elif clicked is not here:
         return None
     try:
+        moved = df.move_to_previous(target) if target.exists() else 0
         df.create(target, df.context(pf, deal))
     except OSError as e:
         error(parent, "Couldn't make the folders", str(e))
         return None
+    if moved and choose is None:
+        info(parent, "Previous files", f"The folder already had {moved} file(s) / folder(s) in it — they're in "
+                                       f"“{df.PREVIOUS}” at the top of the deal's folder, as they were.")
     return target
 
 
@@ -350,18 +354,24 @@ class DealFolderTab(QWidget):
                                                         str(cur) if cur else self.root.text())
         if path:
             df.set_folder_of(self.pf, self.deal, path)
-            self.fill()
+            self.setup()
 
-    def setup(self) -> int:
+    def setup(self, quiet: bool = False) -> int:
+        """Make the standard folders (anything already in the folder that isn't the standard's goes into Previous
+        Files first)."""
         f = self.folder()
         if f is None:
             return 0
         try:
+            moved = df.move_to_previous(f) if f.exists() else 0
             n = df.create(f, df.context(self.pf, self.deal), asset_management=self._am())
         except OSError as e:
             error(self, "Couldn't make the folders", str(e))
             return 0
         self.fill()
+        if moved and not quiet:
+            info(self, "Previous files", f"{moved} file(s) / folder(s) that were already in the deal's folder are in "
+                                         f"“{df.PREVIOUS}”, as they were.")
         return n
 
     def asset_management(self) -> None:
