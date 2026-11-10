@@ -205,6 +205,9 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, self._maybe_prompt_workspace)
         QTimer.singleShot(1500, self.daily_backup)
+        QTimer.singleShot(2500, self.share_vendors)
+        self.contacts_tab.companies = lambda: [p for _n, p, _r in self._company_choices()]
+        self.contacts_tab.changed.connect(self.share_vendors)
 
     # -- menus --------------------------------------------------------------
 
@@ -392,6 +395,7 @@ class MainWindow(QMainWindow):
         self._maybe_prompt_workspace()
         self.autosave.check()
         self.daily_backup()
+        self.share_vendors()
 
     def new_company(self) -> None:
         dlg = CompanyProfileDialog(self.registry, parent=self)
@@ -580,6 +584,17 @@ class MainWindow(QMainWindow):
         path = self.reports_tab.save_trial_balance()
         if path:
             self.statusBar().showMessage(f"Trial balance saved: {path}", 10000)
+
+    def share_vendors(self) -> None:
+        """Every company gets the vendors the others have (see shared_vendors.py)."""
+        from .. import shared_vendors as sv
+
+        try:
+            added = sv.sync([p for _n, p, _r in self._company_choices()])
+        except Exception:  # noqa: BLE001 - never in the way of the work
+            return
+        if any(self._is_current(p) for p in added):
+            self.contacts_tab.refresh()
 
     def daily_backup(self) -> None:
         """Today's copy of the company file, the first time it's opened today (see backups.py)."""

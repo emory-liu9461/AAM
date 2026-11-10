@@ -163,6 +163,7 @@ class ContactsTab(QWidget):
     def __init__(self, books: Books):
         super().__init__()
         self.books = books
+        self.companies = None          # () -> [company file paths]: vendors are shared by all of them
         lay = QVBoxLayout(self)
         bar = QHBoxLayout()
         self.which = QButtonGroup(self)
@@ -311,13 +312,42 @@ class ContactsTab(QWidget):
             self.refresh()
             self.changed.emit()
 
-    def delete(self) -> None:
+    def delete(self, *, where: str | None = None) -> None:
+        """A vendor is on every company's list: remove it from all of them, or from this company only."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from .. import shared_vendors as sv
+
         c = self._selected()
-        if c and confirm(self, "Remove contact", f"Remove {c.name} from the list? Transactions, invoices and bills "
+        if not c:
+            return
+        others = [p for p in (self.companies() if self.companies else []) if str(p) != str(self.books.path)]
+        if c.is_vendor and others:
+            if where is None:
+                box = QMessageBox(self)
+                box.setWindowTitle("Remove vendor")
+                box.setText(f"Remove {c.name}? Vendors are shared by every company.")
+                box.setInformativeText("Transactions, invoices and bills keep the name.")
+                every = box.addButton("From All Companies", QMessageBox.ButtonRole.AcceptRole)
+                here = box.addButton("From This Company Only", QMessageBox.ButtonRole.ActionRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.exec()
+                where = "all" if box.clickedButton() is every else "here" if box.clickedButton() is here else ""
+            if where == "all":
+                sv.remove_everywhere(others, c.name)
+                ct.delete(self.books, c.id)
+            elif where == "here":
+                ct.delete(self.books, c.id)
+                sv.skip_here(self.books, c.name)
+            else:
+                return
+        elif not confirm(self, "Remove contact", f"Remove {c.name} from the list? Transactions, invoices and bills "
                                                  f"keep the name."):
+            return
+        else:
             ct.delete(self.books, c.id)
-            self.refresh()
-            self.changed.emit()
+        self.refresh()
+        self.changed.emit()
 
     def show_tx(self) -> None:
         c = self._selected()
