@@ -110,6 +110,7 @@ def test_deal_pipeline_page(app, tmp_path, monkeypatch):
 
     monkeypatch.setattr(dt.CloseDealDialog, "exec", fill_and_close)
     page = dt.DealPipelinePage(pf, on_added=added.append, create_company=create_company)
+    monkeypatch.setattr("am_accounting.gui.deal_folder_tab.ask_where", lambda *a, **k: None)
     dlg = dt.DealDialog(pf, parent=page)
     dlg.name.setText("45 Elm St")
     dlg.price.setValue(4_200_000)

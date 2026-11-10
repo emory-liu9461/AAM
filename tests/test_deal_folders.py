@@ -114,10 +114,14 @@ def test_deal_folder_tab(app, tmp_path, monkeypatch):
     monkeypatch.setattr(dft, "info", lambda *a: None)
     pf = pfm.Portfolio(tmp_path / "p.ampf")
     df.set_root(pf, str(tmp_path / "Deals"))
+    asked = []
+    real = dft.ask_where
+    monkeypatch.setattr(dft, "ask_where", lambda *a, **k: asked.append(1) or real(*a, choose=lambda: "here"))
     dlg = dt.DealDialog(pf, companies=lambda: [])
     dlg.name.setText("Oak Plaza")
     dlg.save()
     f = tmp_path / "Deals" / "Oak Plaza"
+    assert asked == [1]                                                         # asked where its folder goes
     assert (f / "Underwriting/Presentation/Archive").is_dir()                   # made when the deal was added
     dlg = dt.DealDialog(pf, dl.deal(pf, dlg.deal.id))
     tab = dlg.folder_tab
@@ -206,4 +210,27 @@ def test_closed_deal_links_the_accounting(tmp_path):
         b.close()
     rows = {s_.item.rel: s_ for s_ in df.check(f, df.context(pf, d), asset_management=True)}
     assert rows["Asset Management/Accounting/QuickBooks File"].files >= 1
+    pf.close()
+
+
+def test_asked_where_a_new_deal_goes(app, tmp_path):
+    from am_accounting.gui import deal_folder_tab as dft
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    d = dl.Deal("Birch Court")
+    dl.save(pf, d)
+    assert dft.ask_where(None, pf, d, choose=lambda: "later") is None and df.root(pf) == ""
+    # no Deals folder yet: picking it sets it for every deal from now on
+    f = dft.ask_where(None, pf, d, choose=lambda: "here", pick_dir=lambda *a: str(tmp_path / "Deals"))
+    assert f == tmp_path / "Deals" / "Birch Court" and df.root(pf) == str(tmp_path / "Deals")
+    assert (f / "Underwriting/Financing/Term Sheet").is_dir()
+    # a folder of its own (e.g. one that already exists)
+    e = dl.Deal("Cedar Lane")
+    dl.save(pf, e)
+    own = tmp_path / "OneDrive" / "Cedar"
+    g = dft.ask_where(None, pf, e, choose=lambda: "other", pick_dir=lambda *a: str(own))
+    assert g == own and df.folder_of(pf, e) == own and (own / "Underwriting/Pictures").is_dir()
+    tab = dft.DealFolderTab(pf, e)
+    tab.pick_own(str(tmp_path / "Elsewhere"))
+    assert df.folder_of(pf, e) == tmp_path / "Elsewhere"
     pf.close()

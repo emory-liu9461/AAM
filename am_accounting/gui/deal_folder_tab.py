@@ -14,6 +14,57 @@ from .. import deal_folders as df
 from .common import MUTED, NEGATIVE, POSITIVE, confirm, error, info
 
 
+def ask_where(parent, pf, deal, *, choose=None, pick_dir=None) -> Path | None:
+    """A new deal: where its folder goes — the Deals folder (picked the first time), another folder, or not now.
+    Sets it up there (Underwriting) and returns it; None when skipped."""
+    from PySide6.QtWidgets import QMessageBox
+
+    base = df.root(pf)
+    box = QMessageBox(parent)
+    box.setWindowTitle("Deal folder")
+    box.setIcon(QMessageBox.Icon.Question)
+    if base:
+        target = df.deal_folder(base, deal)
+        box.setText(f"Set up the folder for “{deal.name}”?")
+        box.setInformativeText(f"{target}\n\nIt gets the Underwriting folders now; Asset Management is added when the "
+                               "deal closes.")
+        here = box.addButton("Set Up Here", QMessageBox.ButtonRole.AcceptRole)
+    else:
+        target = None
+        box.setText(f"Where should “{deal.name}”'s folder go?")
+        box.setInformativeText("Pick the folder that holds a folder for each deal (e.g. a “Deals” folder on OneDrive). "
+                               "New deals go there from now on.")
+        here = box.addButton("Pick the Deals Folder…", QMessageBox.ButtonRole.AcceptRole)
+    other = box.addButton("Use a Different Folder…", QMessageBox.ButtonRole.ActionRole)
+    later = box.addButton("Not Now", QMessageBox.ButtonRole.RejectRole)
+    if choose is None:
+        box.exec()
+        clicked = box.clickedButton()
+    else:                                  # (tests: "here" | "other" | "later")
+        clicked = {"here": here, "other": other}.get(choose(), later)
+    pick_dir = pick_dir or (lambda title, start="": QFileDialog.getExistingDirectory(parent, title, start))
+    if clicked is here and target is None:
+        d = pick_dir("The folder that holds a folder for each deal")
+        if not d:
+            return None
+        df.set_root(pf, d)
+        target = df.deal_folder(d, deal)
+    elif clicked is other:
+        d = pick_dir(f"The folder for {deal.name}", base or "")
+        if not d:
+            return None
+        target = Path(d)
+        df.set_folder_of(pf, deal, target)
+    elif clicked is not here:
+        return None
+    try:
+        df.create(target, df.context(pf, deal))
+    except OSError as e:
+        error(parent, "Couldn't make the folders", str(e))
+        return None
+    return target
+
+
 class _Tree(QTreeWidget):
     def __init__(self, on_drop):
         super().__init__()
@@ -52,8 +103,13 @@ class DealFolderTab(QWidget):
         self.root.setPlaceholderText("Pick the folder that holds a folder for each deal (e.g. on OneDrive)")
         row.addWidget(self.root, 1)
         ch = QPushButton("Change…")
+        ch.setToolTip("The folder that holds a folder for each deal")
         ch.clicked.connect(self.pick_root)
         row.addWidget(ch)
+        own = QPushButton("Use a Different Folder…")
+        own.setToolTip("Point this deal at another folder (e.g. one that already exists)")
+        own.clicked.connect(self.pick_own)
+        row.addWidget(own)
         lay.addLayout(row)
         self.where = QLabel()
         self.where.setTextFormat(Qt.TextFormat.RichText)
@@ -201,6 +257,17 @@ class DealFolderTab(QWidget):
         if d:
             df.set_root(self.pf, d)
             self.root.setText(d)
+            self.fill()
+
+    def pick_own(self, path: str | None = None) -> None:
+        if self.deal.id is None:
+            info(self, "Deal folder", "Save the deal first.")
+            return
+        cur = self.folder()
+        path = path or QFileDialog.getExistingDirectory(self, f"The folder for {self.deal.name}",
+                                                        str(cur) if cur else self.root.text())
+        if path:
+            df.set_folder_of(self.pf, self.deal, path)
             self.fill()
 
     def setup(self) -> int:

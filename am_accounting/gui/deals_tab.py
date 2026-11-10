@@ -545,18 +545,13 @@ class DealDialog(QDialog):
             else:
                 dl.save_checklist(self.pf, d.id, items)
             self.costs.save(d.id)
-            if new:                    # a new deal: its Underwriting folders, when there's a Deals folder
-                from .. import deal_folders as dfo
-
-                f = dfo.folder_of(self.pf, d)
-                if f is not None:
-                    try:
-                        dfo.create(f, dfo.context(self.pf, d))
-                    except OSError:
-                        pass
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
+        if new:                        # a new deal: where its folder goes
+            from . import deal_folder_tab
+
+            deal_folder_tab.ask_where(self, self.pf, d)
         self.accept()
 
 
