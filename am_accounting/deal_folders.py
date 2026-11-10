@@ -15,6 +15,8 @@
 
 The rules:
 
+* **Folders whose documents come in versions or pile up by date have an Archive** (models, presentations,
+  agreements, term sheets, quotes, contracts, reports, statements …); other folders don't need one.
 * **The live file is the only file kept in a folder; anything older goes in its Archive.** (Model 2.0 and Model 3.0:
   only Model 3.0 stays outside.) *Archive Old Versions* finds files that are versions of the same document (v2 / v3,
   2.0 / 3.0, dates, "draft", "final", "(1)" …) and moves all but the newest into the folder's Archive.
@@ -179,6 +181,33 @@ ASSET_MANAGEMENT = F(
       F("General Property Documents", note="Lock combinations, lockbox information etc.")),
 )
 
+# folders whose documents come in versions (drafts, amendments, new quotes) or pile up by date (statements,
+# receipts): these get an Archive for the older ones — no other folder needs one
+VERSIONED = {
+    # versions
+    "Initial Letter of Intent", "Investor Term Sheet", "Shareholder Agreement - LP Agreement", "Subscription Agreement",
+    "Term Sheet", "Commitment Letter", "Lender Document Request", "Latest LOI", "Agreements", "Pest Control",
+    "Lawn Mowing", "Snow Removal", "Hydro", "Waste Management", "Quotes", "Contracts", "Rent Increase Documents",
+    "Corporate Amendments",
+    # by date
+    "Monthly Statements", "Owner Statements", "Other Revenues", "Distribution Receipts", "Invoice Requests",
+}
+
+
+def _with_archives(node: Node) -> Node:
+    """An Archive for each folder in VERSIONED that hasn't one (the standard's own Archives stay as they are)."""
+    for c in node.children:
+        if c.kind != "folder":
+            continue
+        _with_archives(c)
+        if c.name in VERSIONED and ARCHIVE not in {x.name for x in c.children if x.kind == "folder"}:
+            c.children.append(A())
+    return node
+
+
+_with_archives(F("", UNDERWRITING))
+_with_archives(F("", ASSET_MANAGEMENT))
+
 # on closing: copied from Underwriting into Asset Management
 TRANSFERS = [("Underwriting/Legal and Admin/Purchase and Sales Agreement", "Asset Management/Legal and Admin/APS"),
              ("Underwriting/Legal and Admin/Corporate Documents", "Asset Management/Legal and Admin/Corporation Document")]
@@ -315,8 +344,10 @@ def _files(p: Path) -> list[Path]:
 
 
 def _any_file(p: Path) -> bool:
+    """A current file in the folder or below it (not one only in an Archive)."""
     try:
-        return any(x.is_file() and not x.name.startswith((".", "~$")) for x in p.rglob("*"))
+        return any(x.is_file() and not x.name.startswith((".", "~$"))
+                   and ARCHIVE not in x.relative_to(p).parts[:-1] for x in p.rglob("*"))
     except OSError:
         return False
 

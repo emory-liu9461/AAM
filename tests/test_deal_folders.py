@@ -325,3 +325,38 @@ def test_folder_tab_shows_the_files(app, tmp_path):
     tab.show_files.setChecked(False)
     assert [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())] == ["Underwriting"]
     pf.close()
+
+
+def test_archives_only_where_files_have_versions_or_dates(tmp_path):
+    ctx = df.Context("45 Elm St", ["Enbridge"], ["101"], [2026], 2)
+    rels = {it.rel for it in df.layout(ctx) if it.is_folder}
+    for r in ("Underwriting/Presentation", "Underwriting/Financial Model",
+              "Underwriting/Legal and Admin/Purchase and Sales Agreement",
+              "Underwriting/Legal and Admin/Purchase and Sales Agreement/Initial Letter of Intent",
+              "Underwriting/Legal and Admin/Shareholder Documents/Subscription Agreement",
+              "Underwriting/Contracts and Quotes/Insurance", "Underwriting/Financing/Commitment Letter",
+              "Asset Management/Accounting/Banking/Monthly Statements",
+              "Asset Management/Accounting/Income/Owner Statements",
+              "Asset Management/Accounting/Financial Statements/Income Statement",
+              "Asset Management/Legal and Admin/Investor Documents/Term Sheet",
+              "Asset Management/Property/Contracts - Agreements/Snow Removal",
+              "Asset Management/Property/Initial DD Documents/Consultant Reports/BCA",
+              "Asset Management/Property/Investor Updates"):
+        assert f"{r}/Archive" in rels, r
+    for r in ("Underwriting", "Underwriting/Pictures/Original (Provided) Photos", "Underwriting/Due Diligence Files",
+              "Asset Management/Accounting/Banking/Banking Information/Void Cheque",
+              "Asset Management/Accounting/Invoices/Construction Invoices/Third-party Invoices/Unit 101/Material",
+              "Asset Management/Accounting/Invoices/Construction Invoices/AAM Invoices/2026/03 Mar",
+              "Asset Management/Legal and Admin/Corporation Document/Minute Book",
+              "Asset Management/Property/General Property Documents"):
+        assert f"{r}/Archive" not in rels, r
+    assert not any(r.endswith("Archive/Archive") for r in rels)
+    # an old version only in the Archive doesn't count as the required document
+    f = tmp_path / "Elm"
+    df.create(f, ctx)
+    loi = f / "Underwriting/Legal and Admin/Purchase and Sales Agreement/Initial Letter of Intent"
+    _touch(loi / "Archive" / "LOI draft.pdf")
+    key = "Underwriting/Legal and Admin/Purchase and Sales Agreement/Initial Letter of Intent"
+    assert next(s for s in df.check(f, ctx) if s.item.rel == key).missing
+    _touch(loi / "LOI signed.pdf")
+    assert not next(s for s in df.check(f, ctx) if s.item.rel == key).missing
