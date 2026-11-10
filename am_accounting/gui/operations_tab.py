@@ -541,13 +541,28 @@ class OperationsPage(_CompanyPage):
 
     def add_cost(self) -> None:
         p = self.perf()
-        if p and CostDialog(self.pf, p.holding, parent=self).exec():
-            self._fill_costs()
+        if p:
+            dlg = CostDialog(self.pf, p.holding, parent=self)
+            if dlg.exec():
+                self._after_cost(dlg)
 
     def edit_cost(self) -> None:
         p, ln = self.perf(), self._cost()
-        if p and ln and CostDialog(self.pf, p.holding, ln, self).exec():
-            self._fill_costs()
+        if p and ln:
+            dlg = CostDialog(self.pf, p.holding, ln, self)
+            if dlg.exec():
+                self._after_cost(dlg)
+
+    def _after_cost(self, dlg) -> None:
+        """A new vendor went onto the list: shared with every company (see shared_vendors.py)."""
+        if getattr(dlg, "vendor_added", False):
+            from .. import shared_vendors as sv
+
+            try:
+                sv.sync([p for _n, p, *_ in self.view._companies()])
+            except Exception:  # noqa: BLE001
+                pass
+        self._fill_costs()
 
     def delete_cost(self) -> None:
         from .. import op_costs as oc
@@ -765,6 +780,10 @@ class CostDialog(QDialog):
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
+        try:                                 # a provider not on the vendor list yet: added to it
+            self.vendor_added = oc.add_vendor(self.holding.company_path, ln.provider, ln.contact)
+        except Exception:  # noqa: BLE001 - the cost is saved either way
+            self.vendor_added = False
         self.accept()
 
 

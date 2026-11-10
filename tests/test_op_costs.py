@@ -226,3 +226,35 @@ def test_provider_suggests_vendors(app, tmp_path):
     dlg.provider.setCurrentText("Enbridge Gas")
     assert dlg.contact.text() == "J. Agent"                                       # not overwritten
     pf.close()
+
+
+def test_new_provider_goes_on_the_vendor_list(app, tmp_path):
+    from am_accounting import contacts as ct
+    from am_accounting.gui import operations_tab as ot
+
+    path = _books(tmp_path)
+    assert oc.add_vendor(path, "Waste Away Inc.", "Sam Lee, sam@wasteaway.example, 905-555-0142")
+    b = Books.open(path, create=False)
+    try:
+        v = ct.find(b, "Waste Away Inc.")
+        assert (v.role, v.email, v.phone, v.notes) == ("vendor", "sam@wasteaway.example", "905-555-0142", "Sam Lee")
+    finally:
+        b.close()
+    assert not oc.add_vendor(path, "waste away inc.")                       # already there: left as it is
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=path)
+    pf.save_holding(h)
+    dlg = ot.CostDialog(pf, h, oc.CostLine("Pest control"))
+    dlg.provider.setCurrentText("Bug Busters")
+    dlg.contact.setText("416-555-0199")
+    dlg.save()
+    assert dlg.vendor_added
+    b = Books.open(path, create=False)
+    try:
+        assert ct.find(b, "Bug Busters").phone == "416-555-0199"
+    finally:
+        b.close()
+    dlg = ot.CostDialog(pf, h, oc.lines(pf, h.id)[0])
+    dlg.save()
+    assert not dlg.vendor_added                                              # nothing new
+    pf.close()

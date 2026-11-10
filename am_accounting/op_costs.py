@@ -320,3 +320,33 @@ def name_with_providers(pf, holding) -> int:
         return sum(len(ids) for _ln, ids in found)
     finally:
         books.close()
+
+
+def add_vendor(company_path: str | None, name: str, contact: str = "") -> bool:
+    """An operating cost's provider not on the company's vendor list yet: add it (the Contact text's email and phone
+    go to its email and phone, the rest to its notes). Returns True when it was added."""
+    import re
+
+    from . import contacts
+    from .books import Books
+
+    name = " ".join((name or "").split())
+    if not name or not company_path or not Path(company_path).exists():
+        return False
+    books = Books.open(company_path, create=False)
+    try:
+        if contacts.find(books, name) is not None:
+            return False                     # already on the list (or one of its other names): left as it is
+        email = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", contact or "")
+        phone = re.search(r"\+?\d[\d ().-]{6,}\d", contact or "")
+        rest = contact or ""
+        for m in (email, phone):
+            if m:
+                rest = rest.replace(m.group(0), "")
+        rest = re.sub(r"^[\s,;·|/-]+|[\s,;·|/-]+$", "", re.sub(r"\s*[,;·|]\s*[,;·|]\s*", ", ", rest))
+        c = contacts.Contact(name, "vendor", "Supplier", email.group(0) if email else "",
+                             phone.group(0).strip() if phone else "", notes=rest)
+        contacts.save(books, c)
+        return True
+    finally:
+        books.close()
