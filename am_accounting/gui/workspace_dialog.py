@@ -35,7 +35,7 @@ class WorkspaceDialog(QDialog):
         lay = QVBoxLayout(self)
         intro = QLabel(
             ("<b>Choose a folder for " + books.company_name.rstrip(".") + ".</b> " if first_time else "") +
-            "AM Accounting keeps everything for this company in one folder — on this computer or in OneDrive — "
+            "Aedalus Nexus keeps everything for this company in one folder — on this computer or in OneDrive — "
             "and creates these folders inside it:")
         intro.setWordWrap(True)
         lay.addWidget(intro)

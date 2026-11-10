@@ -57,7 +57,7 @@ class InboxDialog(QDialog):
 
         intro = QLabel(
             "Drop bank statements (CSV, Excel, OFX/QFX or PDF) into a folder and they're imported into "
-            f"<b>{books.company_name}</b> automatically while AM Accounting is running. Use a folder inside "
+            f"<b>{books.company_name}</b> automatically while Aedalus Nexus is running. Use a folder inside "
             "<b>OneDrive</b> to add statements from your phone, another computer or OneDrive on the web.")
         intro.setWordWrap(True)
         layout.addWidget(intro)

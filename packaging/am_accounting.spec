@@ -1,6 +1,6 @@
-# PyInstaller build spec for AM Accounting.
+# PyInstaller build spec for Aedalus Nexus.
 #   pyinstaller packaging/am_accounting.spec --noconfirm
-# Produces dist/AM Accounting/ (a folder with "AM Accounting.exe" on Windows).
+# Produces dist/Aedalus Nexus/ (a folder with "Aedalus Nexus.exe" on Windows).
 import sys
 from pathlib import Path
 
@@ -49,10 +49,10 @@ if sys.platform == "win32":
 VSVersionInfo(
   ffi=FixedFileInfo(filevers=({nums}), prodvers=({nums})),
   kids=[StringFileInfo([StringTable('040904B0', [
-      StringStruct('CompanyName', 'AM Accounting'),
-      StringStruct('FileDescription', 'AM Accounting - offline bookkeeping'),
+      StringStruct('CompanyName', 'Aedalus'),
+      StringStruct('FileDescription', 'Aedalus Nexus'),
       StringStruct('FileVersion', '{__version__}'),
-      StringStruct('ProductName', 'AM Accounting'),
+      StringStruct('ProductName', 'Aedalus Nexus'),
       StringStruct('ProductVersion', '{__version__}')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])])
 """, encoding="utf-8")
@@ -62,9 +62,9 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="AM Accounting",
+    name="Aedalus Nexus",
     console=False,
     icon=str(ROOT / "am_accounting" / "assets" / "app.ico"),
     version=version_file,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="AM Accounting")
+coll = COLLECT(exe, a.binaries, a.datas, name="Aedalus Nexus")

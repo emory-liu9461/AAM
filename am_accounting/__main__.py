@@ -1,4 +1,4 @@
-"""Launch the AM Accounting desktop app: ``python -m am_accounting [company-file.amdb]``."""
+"""Launch the Aedalus Nexus desktop app: ``python -m am_accounting [company-file.amdb]``."""
 
 from __future__ import annotations
 
@@ -100,8 +100,11 @@ def main() -> int:
     icon = Path(__file__).parent / "assets" / "app.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
-    app.setApplicationName("AM Accounting")
+    app.setApplicationName("AM Accounting")      # (kept: where its settings and AppData live)
     app.setOrganizationName("AM Accounting")
+    from . import APP_NAME
+
+    app.setApplicationDisplayName(APP_NAME)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
     from .gui import theme

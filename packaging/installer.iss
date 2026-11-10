@@ -1,27 +1,30 @@
-; Inno Setup script for the AM Accounting Windows installer.
+; Inno Setup script for the Aedalus Nexus Windows installer.
+; (Same AppId as when it was called AM Accounting, so installing upgrades the existing copy in place.)
 ; Built by .github/workflows/build-windows.yml:
 ;   iscc /DMyAppVersion=0.1.0 packaging\installer.iss
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
 #endif
-#define MyAppName "AM Accounting"
-#define MyAppExe "AM Accounting.exe"
+#define MyAppName "Aedalus Nexus"
+#define MyAppExe "Aedalus Nexus.exe"
 
 [Setup]
 AppId={{6E0B5D51-6A0F-4C64-9A37-2B2C1E0A8C11}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher=AM Accounting
+AppPublisher=Aedalus
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; the Start menu folder takes the new name (not the one from when it was called AM Accounting)
+UsePreviousGroup=no
 ; Installs for the current user without needing an administrator; an admin can choose "all users".
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\installer
-OutputBaseFilename=AM-Accounting-Setup-{#MyAppVersion}
+OutputBaseFilename=Aedalus-Nexus-Setup-{#MyAppVersion}
 SetupIconFile=..\am_accounting\assets\app.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
 Compression=lzma2/max
@@ -37,10 +40,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "fileassoc"; Description: "Open AM Accounting company files (.amdb) with AM Accounting"; GroupDescription: "File types:"
+Name: "fileassoc"; Description: "Open company files (.amdb) with Aedalus Nexus"; GroupDescription: "File types:"
+
+[InstallDelete]
+; the program and shortcuts from when it was called AM Accounting
+Type: files; Name: "{app}\AM Accounting.exe"
+Type: files; Name: "{group}\AM Accounting.lnk"
+Type: files; Name: "{group}\Uninstall AM Accounting.lnk"
+Type: files; Name: "{autodesktop}\AM Accounting.lnk"
+Type: files; Name: "{autoprograms}\AM Accounting.lnk"
+Type: filesandordirs; Name: "{autoprograms}\AM Accounting"
 
 [Files]
-Source: "..\dist\AM Accounting\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\Aedalus Nexus\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
@@ -49,7 +61,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.amdb"; ValueType: string; ValueName: ""; ValueData: "AMAccounting.CompanyFile"; Flags: uninsdeletevalue; Tasks: fileassoc
-Root: HKA; Subkey: "Software\Classes\AMAccounting.CompanyFile"; ValueType: string; ValueName: ""; ValueData: "AM Accounting company file"; Flags: uninsdeletekey; Tasks: fileassoc
+Root: HKA; Subkey: "Software\Classes\AMAccounting.CompanyFile"; ValueType: string; ValueName: ""; ValueData: "Aedalus Nexus company file"; Flags: uninsdeletekey; Tasks: fileassoc
 Root: HKA; Subkey: "Software\Classes\AMAccounting.CompanyFile\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExe},0"; Tasks: fileassoc
 Root: HKA; Subkey: "Software\Classes\AMAccounting.CompanyFile\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExe}"" ""%1"""; Tasks: fileassoc
 

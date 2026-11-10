@@ -287,7 +287,7 @@ class HoldingDialog(QDialog):
             self.company.setCurrentIndex(self.company.count() - 1)
 
     def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Company file", str(Path.home()), "AM Accounting company (*.amdb)")
+        path, _ = QFileDialog.getOpenFileName(self, "Company file", str(Path.home()), "Aedalus Nexus company (*.amdb)")
         if path:
             self.company.addItem(Path(path).stem, path)
             self.company.setCurrentIndex(self.company.count() - 1)

@@ -53,7 +53,7 @@ jobs:
       - name: Self-test the built .exe
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\AM Accounting\AM Accounting.exe" -ArgumentList "--selftest", "$PWD\selftest.txt" -Wait -PassThru
+          $p = Start-Process -FilePath "dist\Aedalus Nexus\Aedalus Nexus.exe" -ArgumentList "--selftest", "$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
 
@@ -69,20 +69,20 @@ jobs:
 
       - name: Make the portable zip
         shell: pwsh
-        run: Compress-Archive -Path "dist\AM Accounting" -DestinationPath "installer\AM-Accounting-Portable-${{ steps.version.outputs.version }}.zip"
+        run: Compress-Archive -Path "dist\Aedalus Nexus" -DestinationPath "installer\Aedalus-Nexus-Portable-${{ steps.version.outputs.version }}.zip"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: AM-Accounting-Setup-${{ steps.version.outputs.version }}
-          path: installer/AM-Accounting-Setup-*.exe
+          name: Aedalus-Nexus-Setup-${{ steps.version.outputs.version }}
+          path: installer/Aedalus-Nexus-Setup-*.exe
           if-no-files-found: error
 
       - name: Upload portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: AM-Accounting-Portable-${{ steps.version.outputs.version }}
-          path: installer/AM-Accounting-Portable-*.zip
+          name: Aedalus-Nexus-Portable-${{ steps.version.outputs.version }}
+          path: installer/Aedalus-Nexus-Portable-*.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release (version tags, or when requested)
@@ -93,11 +93,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           TAG="v${VERSION}"
-          NOTES="Download **AM-Accounting-Setup-${VERSION}.exe** below and run it to install (no administrator needed).
+          NOTES="Download **Aedalus-Nexus-Setup-${VERSION}.exe** below and run it to install (no administrator needed).
           Windows may say \"Windows protected your PC\" because the installer isn't code-signed: choose More info → Run anyway.
           The Portable zip runs without installing. Your company files are never touched by installing or uninstalling."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" installer/* --clobber
           else
-            gh release create "$TAG" installer/* --target "$GITHUB_SHA" --title "AM Accounting ${VERSION}" --notes "$NOTES"
+            gh release create "$TAG" installer/* --target "$GITHUB_SHA" --title "Aedalus Nexus ${VERSION}" --notes "$NOTES"
           fi

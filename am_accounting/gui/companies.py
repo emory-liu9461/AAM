@@ -18,7 +18,7 @@ from .common import MUTED, confirm, error
 
 ENTITY_TYPES = ["", "Sole proprietor", "Single-member LLC", "Multi-member LLC", "Partnership", "S corporation",
                 "C corporation", "Nonprofit", "Personal / household"]
-FILE_FILTER = f"AM Accounting company files (*{EXTENSION});;All files (*)"
+FILE_FILTER = f"Aedalus Nexus company files (*{EXTENSION});;All files (*)"
 
 
 def default_registry() -> CompanyRegistry:
@@ -41,7 +41,7 @@ class CompanyProfileDialog(QDialog):
         self.resize(520, 0)
         form = QFormLayout(self)
         if first_run:
-            welcome = QLabel("<b>Welcome to AM Accounting.</b><br>Set up your first company. You can add more "
+            welcome = QLabel("<b>Welcome to Aedalus Nexus.</b><br>Set up your first company. You can add more "
                              "companies at any time from <i>File → New Company</i>.")
             welcome.setWordWrap(True)
             form.addRow(welcome)

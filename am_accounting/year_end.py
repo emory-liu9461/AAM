@@ -365,7 +365,7 @@ def build(books, folder: Path, end: date, *, rule: str | None = None, opening_uc
     pkg.checks = checks(books, start, end)
     readme = f / "Read Me.txt"
     lines = [f"{books.company_name} — year-end package", f"Fiscal year {start.isoformat()} to {end.isoformat()}",
-             f"Made {date.today().isoformat()} with AM Accounting", "", "Contents:"]
+             f"Made {date.today().isoformat()} with Aedalus Nexus", "", "Contents:"]
     lines += [f"  {p.name}" for p in pkg.files]
     lines += ["", "Checks:"] + [f"  {c}" for c in pkg.checks]
     lines += ["", "The CCA schedule is a draft: classes are guessed from account names (change them in the app) and "

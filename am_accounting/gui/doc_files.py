@@ -220,7 +220,7 @@ class FolderSettingsDialog(QDialog):
         self.example.setObjectName("hint")
         self.example.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         form.addRow("Example:", self.example)
-        self.make_pdf = QCheckBox("Create a PDF for each invoice made in AM Accounting")
+        self.make_pdf = QCheckBox("Create a PDF for each invoice made in Aedalus Nexus")
         self.make_pdf.setChecked(cfg.make_pdf)
         form.addRow("", self.make_pdf)
         self.auto_match = QCheckBox("Match bank payments to invoices and bills automatically after each import")
@@ -315,7 +315,7 @@ class FilesDialog(QDialog):
         self.list.clear()
         for f in df.files_for(self.books, self.doc_id):
             p = f.path(cfg)
-            text = f.rel_path + ("   (made by AM Accounting)" if f.generated else
+            text = f.rel_path + ("   (made by Aedalus Nexus)" if f.generated else
                                  f"   (was “{f.original_name}”)" if f.original_name and f.original_name != p.name
                                  else "")
             if not p.exists():

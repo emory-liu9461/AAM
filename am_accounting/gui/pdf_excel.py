@@ -106,7 +106,7 @@ class PdfWatchDialog(QDialog):
         self.resize(720, 520)
         cfg = service.config()
         layout = QVBoxLayout(self)
-        intro = QLabel("While AM Accounting is open, any PDF bank statement saved to the inbox folder is converted "
+        intro = QLabel("While Aedalus Nexus is open, any PDF bank statement saved to the inbox folder is converted "
                        "to an Excel workbook in the output folder automatically. Converted PDFs move to "
                        f"“{PROCESSED_DIR}” inside the inbox; ones that can't be read move to “{FAILED_DIR}”.")
         intro.setWordWrap(True)

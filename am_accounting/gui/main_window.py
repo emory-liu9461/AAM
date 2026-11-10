@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QTabWidget, QWidget)
 
-from .. import __version__
+from .. import APP_NAME, __version__
 from ..books import Books, CompanyProfile
 from ..companies import CompanyRegistry
 from ..importers import SUPPORTED
@@ -499,9 +499,9 @@ class MainWindow(QMainWindow):
     def update_title(self) -> None:
         self._update_role_bar()
         if getattr(self, "mode", "accounting") == "assets":
-            self.setWindowTitle(f"{self.books.company_name} · Asset Management — AM Accounting")
+            self.setWindowTitle(f"{self.books.company_name} · Asset Management — {APP_NAME}")
             return
-        self.setWindowTitle(f"{self.books.company_name} · Accounting — AM Accounting")
+        self.setWindowTitle(f"{self.books.company_name} · Accounting — {APP_NAME}")
         self.statusBar().showMessage(f"Company file: {self.books.path}")
 
     # -- actions ------------------------------------------------------------
@@ -854,8 +854,8 @@ class MainWindow(QMainWindow):
                 pass
 
     def about(self) -> None:
-        QMessageBox.about(self, "About AM Accounting",
-                          f"<b>AM Accounting {__version__}</b><p>Offline bookkeeping. Import bank statements "
+        QMessageBox.about(self, f"About {APP_NAME}",
+                          f"<b>{APP_NAME} {__version__}</b><p>Offline bookkeeping. Import bank statements "
                           "(CSV, Excel, OFX/QFX, PDF), categorize transactions, and produce an income statement, "
                           "balance sheet and cash-flow statement.</p><p>Your data stays on this computer in a single "
                           f"company file:<br><code>{self.books.path}</code></p>")

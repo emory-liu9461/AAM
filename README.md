@@ -1,4 +1,6 @@
-# AM-Accounting
+# Aedalus Nexus
+
+*(formerly AM Accounting — folders it made before keep that name.)*
 
 Offline bookkeeping desktop app. Import your bank statements, let the app
 categorize the transactions, and get financial statements — with all data kept
@@ -74,7 +76,7 @@ Liabilities, Equity, Income and Expenses, and every part of it can be changed:
 
 ## Company folder & automatic saving
 
-Each company gets one folder that AM Accounting organizes for you — choose it
+Each company gets one folder that Aedalus Nexus organizes for you — choose it
 when you create the company (or later: **File → Company Folder & Auto-Save…**,
 or **Company Folder…** on the dashboard). **Use OneDrive** suggests
 `OneDrive/AM Accounting/<Company>`.
@@ -951,10 +953,10 @@ dashboard shows which folder is being watched.
 
 **OneDrive**: the OneDrive app keeps a synced copy of your files in a normal
 folder on the computer, so statements uploaded from your phone, another
-computer or onedrive.com are imported the next time AM Accounting is running
+computer or onedrive.com are imported the next time Aedalus Nexus is running
 here. If OneDrive's *Files On-Demand* is on, the app downloads each file when it
 reads it. Dropbox, Google Drive and iCloud Drive folders work the same way.
-Run AM Accounting on only one computer per company file so a statement isn't
+Run Aedalus Nexus on only one computer per company file so a statement isn't
 imported into two copies of the books.
 
 Each company has its own inbox folder (two companies can't share one). To
