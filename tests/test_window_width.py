@@ -19,8 +19,11 @@ def test_pages_fit_a_scaled_laptop_screen(app, tmp_path):
     w = MainWindow(path, registry=reg)
     w.set_mode("assets")
     v = w.asset_view
-    pages = [w.tabs.widget(i) for i in range(w.tabs.count())] + [v.tabs.widget(i) for i in range(v.tabs.count())]
-    wide = {type(p).__name__: p.minimumSizeHint().width() for p in pages if p.minimumSizeHint().width() > 1100}
+    from PySide6.QtWidgets import QTabWidget
+
+    wide = {f"{type(tw).__name__}/{tw.tabText(i)}": tw.widget(i).minimumSizeHint().width()
+            for tw in [w.tabs, v.tabs] + v.findChildren(QTabWidget) for i in range(tw.count())
+            if tw.widget(i).minimumSizeHint().width() > 1100}
     assert wide == {}
     assert w.minimumSizeHint().width() < 1100
     assert w.tx_tab.findChildren(FlowLayout)                      # its toolbar wraps

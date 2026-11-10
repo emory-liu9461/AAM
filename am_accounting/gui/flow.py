@@ -123,3 +123,37 @@ def _wrap_children(parent: QBoxLayout, limit: int) -> int:
         n += 1
     return n
 
+
+def scroll_inside(page: QWidget) -> bool:
+    """The page's contents move into a scroll area inside it, so the page can be narrower than its contents (it
+    scrolls sideways) without changing which widget the tab holds."""
+    from PySide6.QtWidgets import QScrollArea, QVBoxLayout
+
+    lay = page.layout()
+    if lay is None or getattr(page, "_scrolls_inside", False):
+        return False
+    inner = QWidget()
+    inner.setLayout(lay)                 # (moves the page's layout, and with it the page's contents, into inner)
+    area = QScrollArea()
+    area.setWidget(inner)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    outer = QVBoxLayout(page)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.addWidget(area)
+    page._scrolls_inside = True
+    return True
+
+
+def fit_pages(root: QWidget, limit: int = 1000) -> int:
+    """Every tab page still wider than ``limit`` scrolls inside its tab. Returns how many."""
+    from PySide6.QtWidgets import QTabWidget
+
+    n = 0
+    for tw in root.findChildren(QTabWidget):
+        for i in range(tw.count()):
+            page = tw.widget(i)
+            if isinstance(page, QTabWidget) or page.minimumSizeHint().width() <= limit:
+                continue
+            n += scroll_inside(page)
+    return n

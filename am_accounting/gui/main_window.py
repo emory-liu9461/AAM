@@ -46,7 +46,10 @@ def relax_widths(root, limit: int = 420) -> int:
         if not lbl.wordWrap() and lbl.minimumSizeHint().width() > limit and lbl.text():
             lbl.setWordWrap(True)
             n += 1
-    return n + wrap_rows(root)       # and rows of buttons wrap onto a second line
+    n += wrap_rows(root)             # rows of buttons wrap onto a second line
+    from .flow import fit_pages
+
+    return n + fit_pages(root)       # and a page still too wide scrolls sideways inside its tab
 
 
 class MainWindow(QMainWindow):
