@@ -2244,7 +2244,10 @@ class AssetManagementView(QWidget):
         self.tabs.addTab(self.cash_page, "Cash Flow")
         self.capex_page = CapexPage(self)
         self.tabs.addTab(self.capex_page, "CapEx")
-        pages = (self.dash_page, self.ops_page, self.cash_page, self.capex_page)
+        from .company_folder_page import CompanyFolderPage
+
+        self.folder_page = CompanyFolderPage(self)
+        pages = (self.dash_page, self.ops_page, self.cash_page, self.capex_page, self.folder_page)
         self.tabs.currentChanged.connect(  # each property page shows the latest figures when it's opened
             lambda i: self.tabs.widget(i).fill() if self.tabs.widget(i) in pages else None)
         self.tabs.addTab(self._build_waterfall_tab(), "Waterfall (LP / GP)")
@@ -2458,6 +2461,7 @@ class AssetManagementView(QWidget):
         for name in ("Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
                      "Waterfall (LP / GP)", "Projections"):
             self.tabs.addTab(pages[name], name)
+        self.tabs.addTab(self.folder_page, "Deal Folder")     # the company's deal folder (see deal_folders.py)
         # Customers & Vendors sits in Rent Roll & Operations, following its company
         self.cv_page = pages["Customers && Vendors"]
         after = next(i for i in range(self.ops_page.sub.count()) if self.ops_page.sub.tabText(i) == "Operating Costs")
@@ -2472,7 +2476,7 @@ class AssetManagementView(QWidget):
         self.tabs.currentChanged.connect(self._top_buttons)
         self.tabs.currentChanged.connect(lambda *_: self._update_attention())
         for combo in (self.dash_page.pick, self.ops_page.pick, self.cash_page.pick, self.capex_page.pick,
-                      self.fin_pick):
+                      self.fin_pick, self.folder_page.pick):
             combo.currentIndexChanged.connect(lambda *_: self._update_attention())
         self.tabs.setCurrentIndex(0)
         self.tabs.blockSignals(False)
@@ -3252,7 +3256,7 @@ class AssetManagementView(QWidget):
         if i >= 0 and i != self.cv_pick.currentIndex():
             self.cv_pick.setCurrentIndex(i)
         for combo in (self.fin_pick, self.ops_page.pick, self.cash_page.pick, self.capex_page.pick,
-                      self.dash_page.pick):
+                      self.dash_page.pick, self.folder_page.pick):
             i = combo.findData(self.co_pick.currentData())
             if i >= 0 and i != combo.currentIndex():
                 combo.setCurrentIndex(i)
@@ -3266,6 +3270,7 @@ class AssetManagementView(QWidget):
                 getattr(self, "ops_page", None): getattr(getattr(self, "ops_page", None), "pick", None),
                 getattr(self, "cash_page", None): getattr(getattr(self, "cash_page", None), "pick", None),
                 getattr(self, "capex_page", None): getattr(getattr(self, "capex_page", None), "pick", None),
+                getattr(self, "folder_page", None): getattr(getattr(self, "folder_page", None), "pick", None),
                 getattr(self, "financing_page", None): getattr(self, "fin_pick", None)}.get(w, self.co_pick)
         hid = pick.currentData() if pick is not None else None
         return next((x.holding for x in (self.summary.performances if self.summary else []) if x.holding.id == hid),
@@ -3343,7 +3348,7 @@ class AssetManagementView(QWidget):
         perf = next((p for p in self.summary.performances if pfm._same_file(p.holding.company_path, v[1])), None)
         if perf:
             for combo in (self.co_pick, self.cv_pick, self.fin_pick, self.ops_page.pick, self.cash_page.pick,
-                          self.capex_page.pick, self.dash_page.pick):
+                          self.capex_page.pick, self.dash_page.pick, self.folder_page.pick):
                 i = combo.findData(perf.holding.id)
                 if i >= 0 and i != combo.currentIndex():
                     combo.setCurrentIndex(i)
@@ -3369,7 +3374,7 @@ class AssetManagementView(QWidget):
         self.fin_pick.setCurrentIndex(i if i >= 0 else 0)
         self.fin_pick.blockSignals(False)
         self._fill_financing()
-        for page in (self.dash_page, self.ops_page, self.cash_page, self.capex_page):
+        for page in (self.dash_page, self.ops_page, self.cash_page, self.capex_page, self.folder_page):
             page.fill_pick(s.performances)
         self._fill_company_pick_overview(s)
 

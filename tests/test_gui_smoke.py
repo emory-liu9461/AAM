@@ -1154,7 +1154,7 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert v.tabs.tabText(0) == "Portfolio" and v.tabs.tabText(1) == "Dashboard"
     tabs = [v.tabs.tabText(i) for i in range(1, v.tabs.count()) if v.tabs.isTabVisible(i)]
     assert tabs == ["Dashboard", "Rent Roll && Operations", "Cash Flow", "CapEx", "Financing && Cap Table",
-                    "Waterfall (LP / GP)", "Projections"]
+                    "Waterfall (LP / GP)", "Projections", "Deal Folder"]
     subs = [v.ops_page.sub.tabText(i) for i in range(v.ops_page.sub.count())]
     assert subs[3] == "Customers && Vendors" and v.ops_page.sub.widget(3) is v.cv_page    # after Operating Costs
     assert v.cv_pick.isHidden()                         # follows the company picked at the top of the page

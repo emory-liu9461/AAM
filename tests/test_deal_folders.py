@@ -263,3 +263,33 @@ def test_choose_a_folder_when_there_is_none(app, tmp_path):
     assert f == tmp_path / "Deals" / "New Deals" / "Willow Row" and f.is_dir()
     assert tab.banner.isHidden() and tab.root.text() == str(tmp_path / "Deals")
     pf.close()
+
+
+def test_deal_folder_on_the_company_pages(app, tmp_path):
+    import types
+
+    from am_accounting.gui import company_folder_page as cfp
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    df.set_root(pf, str(tmp_path / "Deals"))
+    h = pfm.Holding("Maple Court", location="12 Maple Ct, Guelph", acquired="2024-05-01")      # not from a deal
+    pf.save_holding(h)
+    g = pfm.Holding("Elm Street")
+    pf.save_holding(g)
+    d = dl.Deal("Elm Street", stage="Closed", holding_id=g.id)                                  # from a deal
+    dl.save(pf, d)
+    perfs = [types.SimpleNamespace(holding=h), types.SimpleNamespace(holding=g)]
+    view = types.SimpleNamespace(pf=pf, summary=types.SimpleNamespace(performances=perfs))
+    page = cfp.CompanyFolderPage(view)
+    page.fill_pick(perfs)
+    page.fill()
+    assert page.tab is None                                     # Maple Court: no deal folder yet
+    f = page.choose(choose=lambda: "here")
+    assert f == tmp_path / "Deals" / "Existing Deals" / "Maple Court"
+    assert (f / "Underwriting").is_dir() and (f / "Asset Management/Accounting/Banking").is_dir()
+    made = cfp.deal_for(pf, h)
+    assert made.stage == "Closed" and made.address == "12 Maple Ct, Guelph" and page.tab is not None
+    page.pick.setCurrentIndex(1)                                # Elm Street: its deal's folder tab
+    page.fill()
+    assert page.tab is not None and page.tab.deal.id == d.id
+    pf.close()
