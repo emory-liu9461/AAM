@@ -115,6 +115,20 @@ class DealFolderTab(QWidget):
         self.where.setTextFormat(Qt.TextFormat.RichText)
         self.where.setWordWrap(True)
         lay.addWidget(self.where)
+        from PySide6.QtWidgets import QFrame
+
+        self.banner = QFrame()                  # no folder for this deal yet: pick one
+        self.banner.setObjectName("card")
+        bl = QHBoxLayout(self.banner)
+        self.banner_text = QLabel("This deal has no folder yet.")
+        self.banner_text.setWordWrap(True)
+        bl.addWidget(self.banner_text, 1)
+        pick = QPushButton("Choose a Folder for This Deal…")
+        pick.setObjectName("primary")
+        pick.setToolTip("Set it up in your Deals folder (New Deals / Existing Deals), or pick another folder")
+        pick.clicked.connect(self.choose)
+        bl.addWidget(pick)
+        lay.addWidget(self.banner)
         brow = QHBoxLayout()
         self.btns = {}
         for key, text, slot, tip in (
@@ -178,13 +192,17 @@ class DealFolderTab(QWidget):
         self.tree.clear()
         f = self.folder()
         ready = f is not None and f.exists()
+        self.banner.setVisible(self.deal.id is not None and not ready)
+        self.banner_text.setText("This deal has no folder yet — choose where it goes: in your Deals folder, or a folder "
+                                 "of its own." if f is None else
+                                 f"This deal's folder isn't there yet ({f}) — set it up there or choose another one.")
         for k, b in self.btns.items():
             b.setEnabled(f is not None if k == "setup" else ready)
         if self.deal.id is None:
             self.where.setText("Save the deal, then open it again to set up its folder.")
             return
         if f is None:
-            self.where.setText("Pick the Deals folder first (Change…).")
+            self.where.setText("")          # (the box below asks where it goes)
             return
         ctx = df.context(self.pf, self.deal)
         am = self._am()
@@ -258,6 +276,16 @@ class DealFolderTab(QWidget):
             df.set_root(self.pf, d)
             self.root.setText(d)
             self.fill()
+
+    def choose(self, **kw) -> Path | None:
+        """No folder yet: ask where it goes (as for a new deal)."""
+        if self.deal.id is None:
+            info(self, "Deal folder", "Save the deal first.")
+            return None
+        f = ask_where(self, self.pf, self.deal, **kw)
+        self.root.setText(df.root(self.pf))
+        self.fill()
+        return f
 
     def pick_own(self, path: str | None = None) -> None:
         if self.deal.id is None:

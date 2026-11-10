@@ -249,3 +249,17 @@ def test_asked_where_a_new_deal_goes(app, tmp_path):
     tab.pick_own(str(tmp_path / "Elsewhere"))
     assert df.folder_of(pf, e) == tmp_path / "Elsewhere"
     pf.close()
+
+
+def test_choose_a_folder_when_there_is_none(app, tmp_path):
+    from am_accounting.gui import deal_folder_tab as dft
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    d = dl.Deal("Willow Row")
+    dl.save(pf, d)
+    tab = dft.DealFolderTab(pf, d)
+    assert not tab.banner.isHidden() and "no folder yet" in tab.banner_text.text()
+    f = tab.choose(choose=lambda: "here", pick_dir=lambda *a: str(tmp_path / "Deals"))
+    assert f == tmp_path / "Deals" / "New Deals" / "Willow Row" and f.is_dir()
+    assert tab.banner.isHidden() and tab.root.text() == str(tmp_path / "Deals")
+    pf.close()

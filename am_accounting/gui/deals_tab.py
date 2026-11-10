@@ -1098,6 +1098,8 @@ class DealPipelinePage(QWidget):
                 ("New Deal…", self.new_deal, "Add a deal you're looking at"),
                 ("Open…", self.open_deal, "The selected deal's details, due-diligence checklist and notes"),
                 ("Checklist…", self.open_checklist, "The selected deal's checklist: deliverables, status, notes"),
+                ("Deal Folder…", self.open_folder, "The selected deal's folder: set it up, choose where it goes, "
+                                                   "what's still needed"),
                 ("◂ Back", self.move_back, "Move the selected deal back a stage"),
                 ("Advance ▸", self.advance, "New → Due Diligence → Under Contract → Closed"),
                 ("Mark Dead", self.mark_dead, "The deal didn't go ahead (kept under Closed & dead)"),
@@ -1329,6 +1331,9 @@ class DealPipelinePage(QWidget):
             self.refresh()
             self.select(d.id)
 
+    def open_folder(self) -> None:
+        self.open_deal(tab="Deal Folder")
+
     def open_checklist(self) -> None:
         self.open_deal(tab="Deal Checklist")
 
@@ -1384,6 +1389,12 @@ class DealPipelinePage(QWidget):
         if self.create_company is None:
             error(self, "Can't create companies here", "Open the Deal Pipeline from Asset Management.")
             return
+        from .. import deal_folders as dfo
+        from . import deal_folder_tab
+
+        f = dfo.folder_of(self.pf, d)
+        if f is None or not f.exists():          # its folder: where the closed deal's accounting will be kept
+            deal_folder_tab.ask_where(self, self.pf, d)
         dlg = CloseDealDialog(self.pf, dl.deal(self.pf, d.id), self.create_company, self)
         if not dlg.exec():
             return
