@@ -2,7 +2,11 @@
 
 ::
 
-    <Deals folder>/<deal>/
+    <Deals folder>/
+        New Deals/<deal>/          while it's in the pipeline
+        Existing Deals/<deal>/     once it has closed (moved there on closing)
+
+    <deal>/
         Underwriting/              set up when the deal is added
             Presentation/  Financial Model/  Legal and Admin/  Due Diligence Files/  Contracts and Quotes/
             Pictures/  Financing/
@@ -281,8 +285,14 @@ def layout(ctx: Context, *, asset_management: bool = True) -> list[Item]:
 
 # ---- on disk ----
 
+NEW_DEALS, EXISTING_DEALS = "New Deals", "Existing Deals"
+
+
 def deal_folder(root: str | Path, deal) -> Path:
-    return Path(root) / _safe(deal.name)
+    """<Deals folder>/New Deals/<deal> while it's in the pipeline; <Deals folder>/Existing Deals/<deal> once it has
+    closed."""
+    group = EXISTING_DEALS if (deal.stage == "Closed" or deal.holding_id) else NEW_DEALS
+    return Path(root) / group / _safe(deal.name)
 
 
 def create(folder: Path, ctx: Context, *, asset_management: bool = False) -> int:
@@ -487,12 +497,38 @@ def set_root(pf, path: str) -> None:
 
 
 def folder_of(pf, deal) -> Path | None:
-    """The deal's folder: the one picked for it, else <Deals folder>/<deal name>; None without a Deals folder."""
+    """The deal's folder: the one picked for it, else <Deals folder>/New Deals or Existing Deals/<deal name> (or
+    <Deals folder>/<deal name> for a folder set up before those two existed); None without a Deals folder."""
     r = pf.conn.execute("SELECT value FROM settings WHERE key=?", (f"deal_folder:{deal.id}",)).fetchone()
     if r and r[0]:
         return Path(r[0])
     base = root(pf)
-    return deal_folder(base, deal) if base else None
+    if not base:
+        return None
+    want = deal_folder(base, deal)
+    if not want.exists():
+        for old in (Path(base) / _safe(deal.name), Path(base) / NEW_DEALS / _safe(deal.name)):
+            if old != want and old.exists():
+                return old                 # not moved yet (see move_to_existing)
+    return want
+
+
+def move_to_existing(pf, deal) -> Path | None:
+    """A closed deal's folder moves from New Deals (or straight under the Deals folder) into Existing Deals. A folder
+    picked by hand stays where it is. Returns where it is now."""
+    current = folder_of(pf, deal)
+    base = root(pf)
+    if current is None or not base or not current.exists():
+        return current
+    r = pf.conn.execute("SELECT value FROM settings WHERE key=?", (f"deal_folder:{deal.id}",)).fetchone()
+    if r and r[0]:
+        return current
+    want = Path(base) / EXISTING_DEALS / _safe(deal.name)
+    if current == want or want.exists():
+        return current
+    want.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(current), str(want))
+    return want
 
 
 def set_folder_of(pf, deal, path: str | Path) -> None:
@@ -565,6 +601,7 @@ def on_closing(pf, deal) -> tuple[int, int]:
     folder = folder_of(pf, deal)
     if folder is None or not folder.exists():
         return 0, 0
+    folder = move_to_existing(pf, deal) or folder      # New Deals → Existing Deals
     ctx = context(pf, deal)
     made = create(folder, ctx, asset_management=True)
     copied = transfer_on_closing(folder)

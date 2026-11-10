@@ -95,12 +95,24 @@ def test_deal_settings_and_closing_hook(tmp_path):
     dl.save(pf, d)
     assert df.folder_of(pf, d) is None
     df.set_root(pf, str(tmp_path / "Deals"))
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "45 Elm St"
+    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm St"     # in the pipeline
     assert df.on_closing(pf, d) == (0, 0)                                    # no folder yet: nothing done
     df.create(df.folder_of(pf, d), df.context(pf, d))
     d.stage, d.closing_date = "Closed", "2026-01-15"
+    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm St"     # not moved yet
     made, copied = df.on_closing(pf, d)
     assert made > 50 and copied == 0
+    moved = tmp_path / "Deals" / "Existing Deals" / "45 Elm St"                 # closed: moved to Existing Deals
+    assert df.folder_of(pf, d) == moved and (moved / "Underwriting").is_dir()
+    assert not (tmp_path / "Deals" / "New Deals" / "45 Elm St").exists()
+    # a folder made before New Deals / Existing Deals is still found, and moved on closing
+    old = dl.Deal("Old Mill")
+    dl.save(pf, old)
+    df.create(tmp_path / "Deals" / "Old Mill", df.context(pf, old))
+    assert df.folder_of(pf, old) == tmp_path / "Deals" / "Old Mill"
+    old.stage = "Closed"
+    df.on_closing(pf, old)
+    assert df.folder_of(pf, old) == tmp_path / "Deals" / "Existing Deals" / "Old Mill"
     df.set_folder_of(pf, d, tmp_path / "elsewhere")
     assert df.folder_of(pf, d) == tmp_path / "elsewhere"
     pf.close()
@@ -120,7 +132,7 @@ def test_deal_folder_tab(app, tmp_path, monkeypatch):
     dlg = dt.DealDialog(pf, companies=lambda: [])
     dlg.name.setText("Oak Plaza")
     dlg.save()
-    f = tmp_path / "Deals" / "Oak Plaza"
+    f = tmp_path / "Deals" / "New Deals" / "Oak Plaza"
     assert asked == [1]                                                         # asked where its folder goes
     assert (f / "Underwriting/Presentation/Archive").is_dir()                   # made when the deal was added
     dlg = dt.DealDialog(pf, dl.deal(pf, dlg.deal.id))
@@ -171,6 +183,9 @@ def test_closed_deal_links_the_accounting(tmp_path):
 
     cl.close_deal(pf, d.id, s, create_company)
     d = dl.deal(pf, d.id)
+    assert f.parent.name == "New Deals" and not f.exists()
+    f = df.folder_of(pf, d)
+    assert f == tmp_path / "Deals" / "Existing Deals" / "45 Elm St"           # moved there on closing
     acct = f / "Asset Management" / "Accounting"
     assert df.linked(pf, d)
     b = Books.open(df.company_path(pf, d), create=False)
@@ -222,7 +237,7 @@ def test_asked_where_a_new_deal_goes(app, tmp_path):
     assert dft.ask_where(None, pf, d, choose=lambda: "later") is None and df.root(pf) == ""
     # no Deals folder yet: picking it sets it for every deal from now on
     f = dft.ask_where(None, pf, d, choose=lambda: "here", pick_dir=lambda *a: str(tmp_path / "Deals"))
-    assert f == tmp_path / "Deals" / "Birch Court" and df.root(pf) == str(tmp_path / "Deals")
+    assert f == tmp_path / "Deals" / "New Deals" / "Birch Court" and df.root(pf) == str(tmp_path / "Deals")
     assert (f / "Underwriting/Financing/Term Sheet").is_dir()
     # a folder of its own (e.g. one that already exists)
     e = dl.Deal("Cedar Lane")

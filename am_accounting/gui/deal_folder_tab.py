@@ -26,14 +26,14 @@ def ask_where(parent, pf, deal, *, choose=None, pick_dir=None) -> Path | None:
     if base:
         target = df.deal_folder(base, deal)
         box.setText(f"Set up the folder for “{deal.name}”?")
-        box.setInformativeText(f"{target}\n\nIt gets the Underwriting folders now; Asset Management is added when the "
-                               "deal closes.")
+        box.setInformativeText(f"{target}\n\nIt gets the Underwriting folders now. When the deal closes it moves to "
+                               "Existing Deals and gets its Asset Management folders.")
         here = box.addButton("Set Up Here", QMessageBox.ButtonRole.AcceptRole)
     else:
         target = None
         box.setText(f"Where should “{deal.name}”'s folder go?")
-        box.setInformativeText("Pick the folder that holds a folder for each deal (e.g. a “Deals” folder on OneDrive). "
-                               "New deals go there from now on.")
+        box.setInformativeText("Pick your Deals folder (e.g. a “Deals” folder on OneDrive). Deals in the pipeline go "
+                               "in its New Deals folder; closed deals move to Existing Deals.")
         here = box.addButton("Pick the Deals Folder…", QMessageBox.ButtonRole.AcceptRole)
     other = box.addButton("Use a Different Folder…", QMessageBox.ButtonRole.ActionRole)
     later = box.addButton("Not Now", QMessageBox.ButtonRole.RejectRole)
@@ -100,7 +100,7 @@ class DealFolderTab(QWidget):
         row.addWidget(QLabel("Deals folder:"))
         self.root = QLineEdit(df.root(pf))
         self.root.setReadOnly(True)
-        self.root.setPlaceholderText("Pick the folder that holds a folder for each deal (e.g. on OneDrive)")
+        self.root.setPlaceholderText("Pick your Deals folder (e.g. on OneDrive): New Deals and Existing Deals go in it")
         row.addWidget(self.root, 1)
         ch = QPushButton("Change…")
         ch.setToolTip("The folder that holds a folder for each deal")
