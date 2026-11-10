@@ -150,6 +150,14 @@ class DealFolderTab(QWidget):
             brow.addWidget(b)
             self.btns[key] = b
         brow.addStretch(1)
+        from PySide6.QtWidgets import QCheckBox
+
+        self.show_files = QCheckBox("Show files")
+        self.show_files.setChecked(True)
+        self.show_files.setToolTip("Show the files and your own subfolders in each folder (double-click a file to open "
+                                   "it)")
+        self.show_files.toggled.connect(lambda *_: self.fill())
+        brow.addWidget(self.show_files)
         lay.addLayout(brow)
         self.tree = _Tree(self._dropped)
         self.tree.setColumnCount(4)
@@ -159,7 +167,8 @@ class DealFolderTab(QWidget):
         self.tree.itemDoubleClicked.connect(lambda *_: self.open_selected())
         lay.addWidget(self.tree, 1)
         hint = QLabel("Only the live file stays in a folder; older versions go in its Archive. Required items (⚠ when "
-                      "empty) need a file. Drop files on a folder to file them there.")
+                      "empty) need a file. 📄 files and 📁 your own subfolders are listed in each folder — double-click "
+                      "one to open it. Drop files on a folder to file them there.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -228,6 +237,7 @@ class DealFolderTab(QWidget):
             "Accounting)"))
         parents: list[QTreeWidgetItem] = []
         self.items = []
+        folder_nodes: dict[str, QTreeWidgetItem] = {}      # the standard's folders, by path
         for s in rows:
             it = s.item
             node = QTreeWidgetItem([("📄 " if it.node.kind != "folder" else "") + it.label, "", "", ""])
@@ -251,6 +261,16 @@ class DealFolderTab(QWidget):
             (parents[-1].addChild(node) if parents else self.tree.addTopLevelItem(node))
             if it.is_folder:
                 parents.append(node)
+                folder_nodes[it.rel] = node
+        if ready and self.show_files.isChecked():          # what's actually in the folders: files and subfolders
+            standard = {}
+            for it in self.items:
+                if it.is_folder:
+                    parent = it.rel.rsplit("/", 1)[0] if "/" in it.rel else ""
+                    standard.setdefault(parent, set()).add(it.rel.rsplit("/", 1)[-1].lower())
+            self._add_disk(None, f, "", 0, standard.get("", set()))
+            for rel, node in folder_nodes.items():
+                self._add_disk(node, f / rel, rel, rel.count("/") + 1, standard.get(rel, set()))
         if keep_open:
             stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
             while stack:
@@ -262,6 +282,40 @@ class DealFolderTab(QWidget):
                 stack += [n.child(i) for i in range(n.childCount())]
         else:
             self.tree.expandToDepth(1)
+
+    def _add_disk(self, parent: QTreeWidgetItem | None, path: Path, rel: str, depth: int, skip: set[str]) -> None:
+        """The folders and files in ``path`` that aren't the standard's own folders (those are already shown)."""
+        try:
+            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            return
+        for e in entries:
+            if e.name.startswith((".", "~$")) or (e.is_dir() and e.name.lower() in skip):
+                continue
+            r = f"{rel}/{e.name}" if rel else e.name
+            is_dir = e.is_dir()
+            it = df.Item(r, df.Node(e.name, "disk_dir" if is_dir else "disk_file"), depth, e.name)
+            node = QTreeWidgetItem([("📁 " if is_dir else "📄 ") + e.name, "", "", ""])
+            node.setData(0, Qt.ItemDataRole.UserRole, len(self.items))
+            self.items.append(it)
+            node.setToolTip(0, str(e))
+            if is_dir:
+                node.setText(3, "your folder")
+                node.setForeground(3, MUTED)
+            else:
+                try:
+                    st = e.stat()
+                    from datetime import datetime
+
+                    size = st.st_size
+                    node.setText(2, f"{size / 1024:,.0f} KB" if size >= 1024 else f"{size} B")
+                    node.setText(3, f"changed {datetime.fromtimestamp(st.st_mtime):%b %d, %Y %H:%M}")
+                    node.setForeground(3, MUTED)
+                except OSError:
+                    pass
+            (parent.addChild(node) if parent is not None else self.tree.addTopLevelItem(node))
+            if is_dir:
+                self._add_disk(node, e, r, depth + 1, set())
 
     def _selected(self) -> df.Item | None:
         cur = self.tree.currentItem()
@@ -351,6 +405,11 @@ class DealFolderTab(QWidget):
         if it is None:
             info(self, "Add files", "Select the folder to file them in.")
             return None
+        if it.node.kind == "disk_file":                  # a file: into the folder it's in
+            parent = it.rel.rsplit("/", 1)[0] if "/" in it.rel else ""
+            return df.Item(parent, df.Node(Path(parent).name), it.depth, Path(parent).name)
+        if it.node.kind == "disk_dir":
+            return df.Item(it.rel, df.Node(it.label), it.depth, it.label)
         if it.node.kind == "file":                       # a named file: into its folder
             return df.Item(str(Path(it.rel).parent).replace("\\", "/"), it.node, it.depth, it.label, it.naming)
         return it

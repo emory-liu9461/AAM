@@ -293,3 +293,35 @@ def test_deal_folder_on_the_company_pages(app, tmp_path):
     page.fill()
     assert page.tab is not None and page.tab.deal.id == d.id
     pf.close()
+
+
+def test_folder_tab_shows_the_files(app, tmp_path):
+    from am_accounting.gui import deal_folder_tab as dft
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    df.set_root(pf, str(tmp_path / "Deals"))
+    d = dl.Deal("Pine Ridge")
+    dl.save(pf, d)
+    f = df.folder_of(pf, d)
+    df.create(f, df.context(pf, d))
+    _touch(f / "Underwriting/Financial Model/Pine Model 3.0.xlsx")
+    _touch(f / "Underwriting/Pictures/Original (Provided) Photos/Site Visit/front.jpg")    # a subfolder of my own
+    _touch(f / "Notes.txt")                                                                 # at the top
+    tab = dft.DealFolderTab(pf, d)
+
+    def names(node):
+        return [node.child(i).text(0) for i in range(node.childCount())]
+
+    top = [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())]
+    assert top == ["Underwriting", "📄 Notes.txt"]
+    under = tab.tree.topLevelItem(0)
+    model = next(under.child(i) for i in range(under.childCount()) if under.child(i).text(0) == "Financial Model")
+    assert "📄 Pine Model 3.0.xlsx" in names(model) and names(model).count("Archive") == 1      # not listed twice
+    pics = next(under.child(i) for i in range(under.childCount()) if under.child(i).text(0) == "Pictures")
+    orig = pics.child(0)
+    assert names(orig) == ["📁 Site Visit"] and names(orig.child(0)) == ["📄 front.jpg"]
+    tab.tree.setCurrentItem(orig.child(0).child(0))                     # a file: add files beside it
+    assert tab._target().rel == "Underwriting/Pictures/Original (Provided) Photos/Site Visit"
+    tab.show_files.setChecked(False)
+    assert [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())] == ["Underwriting"]
+    pf.close()
