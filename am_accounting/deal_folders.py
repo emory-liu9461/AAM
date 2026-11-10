@@ -2,14 +2,8 @@
 
 ::
 
-    <Deals folder>/
-        New Deals/<deal>/          while it's in the pipeline
-        Existing Deals/<deal>/     once it has closed (moved there on closing)
-
-    <deal>/
-        Underwriting/              set up when the deal is added
-            Presentation/  Financial Model/  Legal and Admin/  Due Diligence Files/  Contracts and Quotes/
-            Pictures/  Financing/
+    <the folder chosen for the deal, e.g. 123 ABC St>/
+        Underwriting/              set up when the folder is chosen
         Asset Management/          set up when the deal closes
             Accounting/  Legal and Admin/  Property/
 
@@ -628,22 +622,20 @@ def set_root(pf, path: str) -> None:
 
 
 def folder_of(pf, deal) -> Path | None:
-    """The deal's folder: the one picked for it, else <Deals folder>/New Deals or Existing Deals/<deal name> (or
-    <Deals folder>/<deal name> for a folder set up before those two existed); None without a Deals folder."""
+    """The deal's folder: the one chosen for it (Underwriting and Asset Management straight inside). A deal set up by
+    an earlier version under a Deals folder (New Deals / Existing Deals / <name>) is still found there. None when it
+    has no folder yet."""
     r = pf.conn.execute("SELECT value FROM settings WHERE key=?", (f"deal_folder:{deal.id}",)).fetchone()
     if r and r[0]:
         return Path(r[0])
-    base = root(pf)
+    base = root(pf)                       # (folders set up under a Deals folder by earlier versions)
     if not base:
         return None
-    want = deal_folder(base, deal)
-    if not lpth.exists(want):
-        group = want.parent.name
-        for name in _names(deal):        # made before: under the deal's name, or not moved yet
-            for old in (Path(base) / group / name, Path(base) / name, Path(base) / NEW_DEALS / name):
-                if old != want and lpth.exists(old):
-                    return old
-    return want
+    for name in _names(deal):
+        for old in (Path(base) / EXISTING_DEALS / name, Path(base) / NEW_DEALS / name, Path(base) / name):
+            if lpth.exists(old):
+                return old
+    return None
 
 
 def move_to_existing(pf, deal) -> Path | None:
@@ -734,7 +726,6 @@ def on_closing(pf, deal) -> tuple[int, int]:
     folder = folder_of(pf, deal)
     if folder is None or not lpth.exists(folder):
         return 0, 0
-    folder = move_to_existing(pf, deal) or folder      # New Deals → Existing Deals
     ctx = context(pf, deal)
     made = create(folder, ctx, asset_management=True)
     copied = transfer_on_closing(folder)

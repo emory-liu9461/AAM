@@ -93,28 +93,26 @@ def test_deal_settings_and_closing_hook(tmp_path):
     pf = pfm.Portfolio(tmp_path / "p.ampf")
     d = dl.Deal("45 Elm St", address="45 Elm St, Hamilton")
     dl.save(pf, d)
-    assert df.folder_of(pf, d) is None
-    df.set_root(pf, str(tmp_path / "Deals"))
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm"        # in the pipeline
-    assert df.on_closing(pf, d) == (0, 0)                                    # no folder yet: nothing done
-    df.create(df.folder_of(pf, d), df.context(pf, d))
+    assert df.folder_of(pf, d) is None                                       # no folder chosen yet
+    assert df.on_closing(pf, d) == (0, 0)                                    # nothing to do
+    f = tmp_path / "123 ABC St"
+    df.set_folder_of(pf, d, f)                                               # the chosen folder is the deal's
+    df.create(f, df.context(pf, d))
+    assert sorted(p.name for p in f.iterdir()) == ["Underwriting"]
     d.stage, d.closing_date = "Closed", "2026-01-15"
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "45 Elm"        # not moved yet
     made, copied = df.on_closing(pf, d)
     assert made > 50 and copied == 0
-    moved = tmp_path / "Deals" / "Existing Deals" / "45 Elm"                    # closed: moved to Existing Deals
-    assert df.folder_of(pf, d) == moved and (moved / "Underwriting").is_dir()
-    assert not (tmp_path / "Deals" / "New Deals" / "45 Elm").exists()
-    # a folder made before New Deals / Existing Deals is still found, and moved on closing
+    assert df.folder_of(pf, d) == f                                          # not moved on closing
+    assert sorted(p.name for p in f.iterdir()) == ["Asset Management", "Underwriting"]
+    # a deal set up by an earlier version under a Deals folder is still found there
+    df.set_root(pf, str(tmp_path / "Deals"))
     old = dl.Deal("Old Mill")
     dl.save(pf, old)
-    df.create(tmp_path / "Deals" / "Old Mill", df.context(pf, old))
-    assert df.folder_of(pf, old) == tmp_path / "Deals" / "Old Mill"
-    old.stage = "Closed"
-    df.on_closing(pf, old)
+    (tmp_path / "Deals" / "Existing Deals" / "Old Mill").mkdir(parents=True)
     assert df.folder_of(pf, old) == tmp_path / "Deals" / "Existing Deals" / "Old Mill"
-    df.set_folder_of(pf, d, tmp_path / "elsewhere")
-    assert df.folder_of(pf, d) == tmp_path / "elsewhere"
+    new = dl.Deal("Fresh Deal")
+    dl.save(pf, new)
+    assert df.folder_of(pf, new) is None                                     # nothing made for it automatically
     pf.close()
 
 
@@ -125,21 +123,22 @@ def test_deal_folder_tab(app, tmp_path, monkeypatch):
     monkeypatch.setattr(dft, "confirm", lambda *a: True)
     monkeypatch.setattr(dft, "info", lambda *a: None)
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    df.set_root(pf, str(tmp_path / "Deals"))
+    f = tmp_path / "Oak Plaza"
     asked = []
     real = dft.ask_where
-    monkeypatch.setattr(dft, "ask_where", lambda *a, **k: asked.append(1) or real(*a, choose=lambda: "here"))
+    monkeypatch.setattr(dft, "ask_where", lambda *a, **k: asked.append(1) or real(
+        *a, choose=lambda: "pick", pick_dir=lambda *x: str(f)))
     dlg = dt.DealDialog(pf, companies=lambda: [])
     dlg.name.setText("Oak Plaza")
     dlg.save()
-    f = tmp_path / "Deals" / "New Deals" / "Oak Plaza"
-    assert asked == [1]                                                         # asked where its folder goes
-    assert (f / "Underwriting/Presentation/Archive").is_dir()                   # made when the deal was added
+    assert asked == [1]                                                         # asked for its folder
+    assert (f / "Underwriting/Presentation/Archive").is_dir()                   # straight inside the chosen folder
     dlg = dt.DealDialog(pf, dl.deal(pf, dlg.deal.id))
     tab = dlg.folder_tab
-    assert dlg.tabs.tabText(dlg.tabs.indexOf(tab)) == "Deal Folder"
+    assert dlg.tabs.tabText(dlg.tabs.indexOf(tab)) == "Deal Folder" and tab.path.text() == str(f)
     assert "required items still needed" in tab.where.text()
     assert tab.tree.topLevelItemCount() == 1 and tab.tree.topLevelItem(0).text(0) == "Underwriting"
+    assert not tab.tree.topLevelItem(0).isExpanded()                            # just the top items to start
     pres = tab.tree.topLevelItem(0).child(0)
     tab.tree.setCurrentItem(pres)
     src = _touch(tmp_path / "Deck v2.pptx", age=100)
@@ -152,7 +151,8 @@ def test_deal_folder_tab(app, tmp_path, monkeypatch):
     assert live.text(1) == "✓"
     tab.asset_management()
     assert (f / "Asset Management/Legal and Admin/APS").is_dir()
-    assert tab.tree.topLevelItemCount() == 2
+    assert [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())] == [
+        "Underwriting", "Asset Management"]
     pf.close()
 
 
@@ -167,11 +167,11 @@ def test_closed_deal_links_the_accounting(tmp_path):
 
     reg = CompanyRegistry(tmp_path / "c.json", tmp_path / "Companies")
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    df.set_root(pf, str(tmp_path / "Deals"))
     d = dl.Deal("45 Elm St", address="45 Elm St, Hamilton", stage="Under Contract", price_cents=1_000_000_00,
                 equity_cents=300_000_00, closing_date="2026-01-15")
     dl.save(pf, d)
-    f = df.folder_of(pf, d)
+    f = tmp_path / "45 Elm"
+    df.set_folder_of(pf, d, f)
     df.create(f, df.context(pf, d))
     s = cl.default_setup(dl.deal(pf, d.id), pf)
     s.company_name = "1001234567 Ontario Inc."
@@ -183,9 +183,7 @@ def test_closed_deal_links_the_accounting(tmp_path):
 
     cl.close_deal(pf, d.id, s, create_company)
     d = dl.deal(pf, d.id)
-    assert f.parent.name == "New Deals" and not f.exists()
-    f = df.folder_of(pf, d)
-    assert f == tmp_path / "Deals" / "Existing Deals" / "45 Elm"              # moved there on closing
+    assert df.folder_of(pf, d) == f                                           # stays where it was chosen
     acct = f / "Asset Management" / "Accounting"
     assert df.linked(pf, d)
     b = Books.open(df.company_path(pf, d), create=False)
@@ -232,22 +230,16 @@ def test_asked_where_a_new_deal_goes(app, tmp_path):
     from am_accounting.gui import deal_folder_tab as dft
 
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    d = dl.Deal("Birch Court")
+    d = dl.Deal("Birch Court", address="123 ABC St, Toronto")
     dl.save(pf, d)
-    assert dft.ask_where(None, pf, d, choose=lambda: "later") is None and df.root(pf) == ""
-    # no Deals folder yet: picking it sets it for every deal from now on
-    f = dft.ask_where(None, pf, d, choose=lambda: "here", pick_dir=lambda *a: str(tmp_path / "Deals"))
-    assert f == tmp_path / "Deals" / "New Deals" / "Birch Court" and df.root(pf) == str(tmp_path / "Deals")
+    assert dft.ask_where(None, pf, d, choose=lambda: "later") is None and df.folder_of(pf, d) is None
+    f = dft.ask_where(None, pf, d, choose=lambda: "pick", pick_dir=lambda *a: str(tmp_path / "123 ABC St"))
+    assert f == tmp_path / "123 ABC St" and df.folder_of(pf, d) == f
+    assert sorted(p.name for p in f.iterdir()) == ["Underwriting"]           # straight inside: no extra levels
     assert (f / "Underwriting/Financing/Term Sheet").is_dir()
-    # a folder of its own (e.g. one that already exists)
-    e = dl.Deal("Cedar Lane")
-    dl.save(pf, e)
-    own = tmp_path / "OneDrive" / "Cedar"
-    g = dft.ask_where(None, pf, e, choose=lambda: "other", pick_dir=lambda *a: str(own))
-    assert g == own and df.folder_of(pf, e) == own and (own / "Underwriting/Pictures").is_dir()
-    tab = dft.DealFolderTab(pf, e)
+    tab = dft.DealFolderTab(pf, d)
     tab.pick_own(str(tmp_path / "Elsewhere"))
-    assert df.folder_of(pf, e) == tmp_path / "Elsewhere"
+    assert df.folder_of(pf, d) == tmp_path / "Elsewhere" and (tmp_path / "Elsewhere" / "Underwriting").is_dir()
     pf.close()
 
 
@@ -255,13 +247,14 @@ def test_choose_a_folder_when_there_is_none(app, tmp_path):
     from am_accounting.gui import deal_folder_tab as dft
 
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    d = dl.Deal("Willow Row")
+    d = dl.Deal("Willow Row", address="9 Willow Row, Ajax")
     dl.save(pf, d)
     tab = dft.DealFolderTab(pf, d)
     assert not tab.banner.isHidden() and "no folder yet" in tab.banner_text.text()
-    f = tab.choose(choose=lambda: "here", pick_dir=lambda *a: str(tmp_path / "Deals"))
-    assert f == tmp_path / "Deals" / "New Deals" / "Willow Row" and f.is_dir()
-    assert tab.banner.isHidden() and tab.root.text() == str(tmp_path / "Deals")
+    assert "9 Willow" in tab.banner_text.text()                              # the suggested name
+    f = tab.choose(choose=lambda: "pick", pick_dir=lambda *a: str(tmp_path / "9 Willow"))
+    assert f == tmp_path / "9 Willow" and (f / "Underwriting").is_dir()
+    assert tab.banner.isHidden() and tab.path.text() == str(f)
     pf.close()
 
 
@@ -271,7 +264,6 @@ def test_deal_folder_on_the_company_pages(app, tmp_path):
     from am_accounting.gui import company_folder_page as cfp
 
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    df.set_root(pf, str(tmp_path / "Deals"))
     h = pfm.Holding("Maple Court", location="12 Maple Ct, Guelph", acquired="2024-05-01")      # not from a deal
     pf.save_holding(h)
     g = pfm.Holding("Elm Street")
@@ -284,8 +276,8 @@ def test_deal_folder_on_the_company_pages(app, tmp_path):
     page.fill_pick(perfs)
     page.fill()
     assert page.tab is None                                     # Maple Court: no deal folder yet
-    f = page.choose(choose=lambda: "here")
-    assert f == tmp_path / "Deals" / "Existing Deals" / "12 Maple"            # from its address
+    f = page.choose(choose=lambda: "pick", pick_dir=lambda *a: str(tmp_path / "12 Maple"))
+    assert f == tmp_path / "12 Maple"
     assert (f / "Underwriting").is_dir() and (f / "Asset Management/Accounting/Banking").is_dir()
     made = cfp.deal_for(pf, h)
     assert made.stage == "Closed" and made.address == "12 Maple Ct, Guelph" and page.tab is not None
@@ -299,10 +291,10 @@ def test_folder_tab_shows_the_files(app, tmp_path):
     from am_accounting.gui import deal_folder_tab as dft
 
     pf = pfm.Portfolio(tmp_path / "p.ampf")
-    df.set_root(pf, str(tmp_path / "Deals"))
     d = dl.Deal("Pine Ridge")
     dl.save(pf, d)
-    f = df.folder_of(pf, d)
+    f = tmp_path / "Pine Ridge"
+    df.set_folder_of(pf, d, f)
     df.create(f, df.context(pf, d))
     _touch(f / "Underwriting/Financial Model/Pine Model 3.0.xlsx")
     _touch(f / "Underwriting/Pictures/Original (Provided) Photos/Site Visit/front.jpg")    # a subfolder of my own
@@ -373,7 +365,7 @@ def test_a_folder_with_files_keeps_them_in_previous_files(app, tmp_path, monkeyp
     _touch(old / "Broker OM.pdf")
     _touch(old / "Rent roll Sept.xlsx")
     _touch(old / "Photos" / "lobby.jpg")
-    f = dft.ask_where(None, pf, d, choose=lambda: "other", pick_dir=lambda *a: str(old))
+    f = dft.ask_where(None, pf, d, choose=lambda: "pick", pick_dir=lambda *a: str(old))
     prev = old / "Previous Files"
     assert f == old and sorted(p.name for p in prev.iterdir()) == ["Broker OM.pdf", "Photos", "Rent roll Sept.xlsx"]
     assert (prev / "Photos" / "lobby.jpg").exists()                # kept as it was
@@ -384,13 +376,6 @@ def test_a_folder_with_files_keeps_them_in_previous_files(app, tmp_path, monkeyp
     tab = dft.DealFolderTab(pf, d)
     top = [tab.tree.topLevelItem(i).text(0) for i in range(tab.tree.topLevelItemCount())]
     assert top == ["Underwriting", "📁 Previous Files", "📄 Notes.txt"]
-    # the same when the Deals folder already had a folder for it
-    df.set_root(pf, str(tmp_path / "Deals"))
-    e = dl.Deal("Ash Court")
-    dl.save(pf, e)
-    _touch(tmp_path / "Deals" / "New Deals" / "Ash Court" / "LOI.pdf")
-    g = dft.ask_where(None, pf, e, choose=lambda: "here")
-    assert (g / "Previous Files" / "LOI.pdf").exists() and (g / "Underwriting").is_dir()
     pf.close()
 
 
@@ -424,14 +409,3 @@ def test_deal_folder_named_number_and_street(tmp_path):
     assert name("Birch", "12 St. Clair Ave W, Toronto") == "12 St Clair"
     assert name("45 Elm St", "45 Elm St, Hamilton") == "45 Elm"
     assert name("Oak Plaza") == "Oak Plaza"                                  # no street number: its name
-    # a folder made before under the deal's name is still found
-    pf = pfm.Portfolio(tmp_path / "p.ampf")
-    df.set_root(pf, str(tmp_path / "Deals"))
-    d = dl.Deal("Old Name Deal", address="7 Pine Rd, Barrie")
-    dl.save(pf, d)
-    (tmp_path / "Deals" / "New Deals" / "Old Name Deal").mkdir(parents=True)
-    assert df.folder_of(pf, d) == tmp_path / "Deals" / "New Deals" / "Old Name Deal"
-    e = dl.Deal("Fresh", address="7 Pine Rd, Barrie")
-    dl.save(pf, e)
-    assert df.folder_of(pf, e) == tmp_path / "Deals" / "New Deals" / "7 Pine"
-    pf.close()
