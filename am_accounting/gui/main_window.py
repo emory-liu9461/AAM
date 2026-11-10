@@ -36,6 +36,19 @@ SWITCH_NEW = "__new__"
 SWITCH_MANAGE = "__manage__"
 
 
+def relax_widths(root, limit: int = 420) -> int:
+    """Long one-line labels (hints, notes) wrap instead of making their page — and the window — wider than the
+    screen. Returns how many were changed."""
+    from .flow import wrap_rows
+
+    n = 0
+    for lbl in root.findChildren(QLabel):
+        if not lbl.wordWrap() and lbl.minimumSizeHint().width() > limit and lbl.text():
+            lbl.setWordWrap(True)
+            n += 1
+    return n + wrap_rows(root)       # and rows of buttons wrap onto a second line
+
+
 class MainWindow(QMainWindow):
     def __init__(self, books_path: str | None = None, registry: CompanyRegistry | None = None):
         super().__init__()
@@ -143,7 +156,14 @@ class MainWindow(QMainWindow):
         hl.addStretch(1)
         cl.addWidget(head)
         cl.addWidget(self.stack, 1)
-        self.setCentralWidget(central)
+        from PySide6.QtWidgets import QScrollArea
+
+        outer = QScrollArea()          # a page wider than the screen scrolls instead of pushing the window off it
+        outer.setWidget(central)
+        outer.setWidgetResizable(True)
+        outer.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setCentralWidget(outer)
+        relax_widths(central)
 
         # "To Categorize" side panel, available from every tab
         self.review_panel = ReviewPanel(self.books)
@@ -900,6 +920,7 @@ class MainWindow(QMainWindow):
                 self.asset_view.open_unnamed.connect(self.open_company_unnamed)
                 self.asset_view.open_review.connect(self.open_company_review)
                 self.stack.addWidget(self.asset_view)
+                relax_widths(self.asset_view)
             self._dock_was_visible = self.review_dock.isVisible()
             self.review_dock.hide()
             if self.books.path == ":memory:":   # otherwise focusing on the company (below) refreshes it

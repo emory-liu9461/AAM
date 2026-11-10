@@ -167,7 +167,7 @@ class ContactsTab(QWidget):
         lay = QVBoxLayout(self)
         bar = QHBoxLayout()
         self.which = QButtonGroup(self)
-        for i, (text, key) in enumerate([("Customers", "customer"), ("Vendors", "vendor"), ("Everyone", None)]):
+        for i, (text, key) in enumerate([("Customers", "customer"), ("Vendors", "vendor")]):
             b = QPushButton(text)
             b.setCheckable(True)
             b.setChecked(i == 0)
@@ -177,15 +177,13 @@ class ContactsTab(QWidget):
             bar.addWidget(b)
         self.search = QLineEdit(placeholderText="Search name, type, other names…")
         self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(120)
         self.search.textChanged.connect(self.refresh)
         bar.addWidget(self.search, 1)
-        for text, slot, primary in [("New Customer…", lambda: self.new("customer"), True),
-                                    ("New Vendor…", lambda: self.new("vendor"), True)]:
-            b = QPushButton(text)
-            if primary:
-                b.setObjectName("primary")
-            b.clicked.connect(slot)
-            bar.addWidget(b)
+        self.new_btn = QPushButton("New Customer…")     # follows Customers / Vendors
+        self.new_btn.setObjectName("primary")
+        self.new_btn.clicked.connect(lambda: self.new(self._role()))
+        bar.addWidget(self.new_btn)
         lay.addLayout(bar)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
@@ -231,8 +229,13 @@ class ContactsTab(QWidget):
         except KeyError:
             return fallback
 
+    def _role(self) -> str:
+        b = self.which.checkedButton()
+        return (b.property("role_key") if b else None) or "customer"
+
     def refresh(self, *_) -> None:
-        role = self.which.checkedButton().property("role_key") if self.which.checkedButton() else None
+        role = self._role()
+        self.new_btn.setText("New Vendor…" if role == "vendor" else "New Customer…")
         q = self.search.text().strip().lower()
         sums = ct.summaries(self.books)
         rows = [s for s in sums if role is None or (s.contact.is_customer if role == "customer"

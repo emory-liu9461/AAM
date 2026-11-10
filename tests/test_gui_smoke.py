@@ -802,10 +802,8 @@ def test_customers_vendors_tab(app, tmp_path):
     assert tab.table.rowCount() == 1 and tab.table.item(0, 3).text() == "Due from Sister Co Ltd"
     tab.which.button(1).setChecked(True)
     tab.refresh()
-    assert tab.table.item(0, 0).text() == "Harbor Supply Co"
-    tab.which.button(2).setChecked(True)
-    tab.refresh()
-    assert tab.table.rowCount() == 2
+    assert tab.table.item(0, 0).text() == "Harbor Supply Co" and tab.new_btn.text() == "New Vendor…"
+    assert tab.which.button(2) is None                       # no "Everyone": customers or vendors
     books.close()
 
 
