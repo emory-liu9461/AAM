@@ -200,3 +200,29 @@ def test_breakdown_is_reused_until_the_books_change(tmp_path):
     b.close()
     c = party_totals.company_breakdown(path)
     assert c is not a and c.expenses == a.expenses + 10_00           # changed file: worked out again
+
+
+def test_provider_suggests_vendors(app, tmp_path):
+    from am_accounting import contacts as ct
+    from am_accounting.gui import operations_tab as ot
+
+    path = _books(tmp_path)
+    b = Books.open(path, create=False)
+    try:
+        ct.save(b, ct.Contact("Enbridge Gas", "vendor", "Supplier", "billing@enbridge.example", "555-0100"))
+    finally:
+        b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", company_path=path)
+    pf.save_holding(h)
+    dlg = ot.CostDialog(pf, h, oc.CostLine("Gas", vendors=[("North Plow Ltd", 100)]))
+    items = [dlg.provider.itemText(i) for i in range(dlg.provider.count())]
+    assert items[1] == "North Plow Ltd" and "Enbridge Gas" in items            # paid first, then the vendor list
+    assert items.count("North Plow Ltd") == 1
+    dlg.provider.setCurrentText("Enbridge Gas")
+    assert dlg.contact.text() == "billing@enbridge.example · 555-0100"           # filled from the vendor list
+    dlg.contact.setText("J. Agent")
+    dlg.provider.setCurrentText("North Plow Ltd")
+    dlg.provider.setCurrentText("Enbridge Gas")
+    assert dlg.contact.text() == "J. Agent"                                       # not overwritten
+    pf.close()

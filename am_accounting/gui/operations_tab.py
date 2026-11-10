@@ -653,6 +653,26 @@ COST_COLS = ["Category", "Provider", "Account #", "Contact", "Contract ends", "L
              "Budget / yr", "Account in the books", "Notes"]
 
 
+def _vendor_list(company_path: str | None) -> dict[str, str]:
+    """{vendor name: "email · phone"} from the company's Customers & Vendors (active vendors)."""
+    from pathlib import Path
+
+    from .. import contacts as ct
+    from ..books import Books
+
+    if not company_path or not Path(company_path).exists():
+        return {}
+    try:
+        b = Books.open(company_path, create=False)
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        return {c.name: " · ".join(x for x in (c.email, c.phone) if x)
+                for c in ct.all_contacts(b, "vendor", active_only=True)}
+    finally:
+        b.close()
+
+
 class CostDialog(QDialog):
     """One operating cost: its category, provider (with the account number and contact), contract and budget."""
 
@@ -671,8 +691,19 @@ class CostDialog(QDialog):
         self.category.setCurrentText(ln.category)
         self.provider = QComboBox()
         self.provider.setEditable(True)
-        self.provider.addItems([""] + [v for v, _c in ln.vendors])
+        self.provider.setMaxVisibleItems(20)
+        self.vendor_info = _vendor_list(holding.company_path)       # {name: "email · phone"} from the vendor list
+        paid = [v for v, _c in ln.vendors]                            # paid for this category in the books: first
+        names = paid + [n for n in self.vendor_info if n not in paid]
+        self.provider.addItems([""] + names)
+        from PySide6.QtWidgets import QCompleter
+
+        comp = QCompleter(names, self.provider)                      # typing suggests vendors
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.provider.setCompleter(comp)
         self.provider.setCurrentText(ln.provider)
+        self.provider.setToolTip("Pick from your vendors (shared by every company) or type a new one")
         self.account_no = QLineEdit(ln.account_no)
         self.account_no.setPlaceholderText("Your account number with them")
         self.contact = QLineEdit(ln.contact)
@@ -693,6 +724,7 @@ class CostDialog(QDialog):
         self.account.setCurrentIndex(max(0, self.account.findData(ln.book_account)))
         self.notes = QLineEdit(ln.notes)
         self.category.currentTextChanged.connect(self._example)
+        self.provider.currentTextChanged.connect(self._vendor_picked)
         form.addRow("Category:", self.category)
         form.addRow("Provider:", self.provider)
         form.addRow("Account #:", self.account_no)
@@ -706,6 +738,12 @@ class CostDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self._example()
+
+    def _vendor_picked(self, name: str) -> None:
+        """A vendor from the list: its email / phone fill a blank Contact."""
+        details = self.vendor_info.get(name.strip())
+        if details and not self.contact.text().strip():
+            self.contact.setText(details)
 
     def _example(self, *_) -> None:
         from .. import op_costs as oc
