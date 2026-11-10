@@ -47,8 +47,18 @@ def ask_where(parent, pf, deal, *, choose=None, pick_dir=None) -> Path | None:
         d = pick_dir("The folder that holds a folder for each deal")
         if not d:
             return None
-        df.set_root(pf, d)
-        target = df.deal_folder(d, deal)
+        own = choose is None and df.looks_like_deal_folder(d, deal) and QMessageBox.question(
+            parent, "This deal's own folder?",
+            f"“{Path(d).name}” looks like {deal.name}'s own folder rather than the folder that holds every deal.\n\n"
+            "Use it as this deal's folder? (Its files go into Previous Files and the standard folders are set up "
+            "in it.)\n\nNo: use it as the Deals folder (New Deals and Existing Deals go inside it).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        if own:
+            target = Path(d)
+            df.set_folder_of(pf, deal, target)
+        else:
+            df.set_root(pf, d)
+            target = df.deal_folder(d, deal)
     elif clicked is other:
         d = pick_dir(f"The folder for {deal.name}", base or "")
         if not d:
@@ -58,11 +68,11 @@ def ask_where(parent, pf, deal, *, choose=None, pick_dir=None) -> Path | None:
     elif clicked is not here:
         return None
     try:
-        moved = df.move_to_previous(target) if target.exists() else 0
+        moved = df.move_to_previous(target) if df.lpth.exists(target) else 0
         df.create(target, df.context(pf, deal))
     except OSError as e:
-        error(parent, "Couldn't make the folders", str(e))
-        return None
+        error(parent, "Couldn't make all the folders", str(e))
+        return target if df.lpth.exists(target) else None
     if moved and choose is None:
         info(parent, "Previous files", f"The folder already had {moved} file(s) / folder(s) in it — they're in "
                                        f"“{df.PREVIOUS}” at the top of the deal's folder, as they were.")
@@ -226,6 +236,12 @@ class DealFolderTab(QWidget):
                       f"needed</span>")
         self.where.setText(f"This deal: <b>{f}</b>" + (" · " + state if ready else " · not set up yet — "
                                                         "click <b>Set Up Folders</b>"))
+        too_long = df.long_paths(f, ctx, asset_management=True)
+        if too_long:
+            self.where.setText(self.where.text() + (
+                f"<br><span style='color:{NEGATIVE.name()}'>⚠ {len(too_long)} folder(s) here have paths over 260 "
+                "characters — the app handles them, but Explorer and Excel may not open files there. A shorter Deals "
+                "folder (higher up in OneDrive, or a shorter name) avoids it.</span>"))
         self.btns["close"].setText("Update Asset Management" if am else "Set Up Asset Management")
         books = df.company_path(self.pf, self.deal)
         try:
@@ -289,15 +305,14 @@ class DealFolderTab(QWidget):
 
     def _add_disk(self, parent: QTreeWidgetItem | None, path: Path, rel: str, depth: int, skip: set[str]) -> None:
         """The folders and files in ``path`` that aren't the standard's own folders (those are already shown)."""
-        try:
-            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except OSError:
-            return
+        from .. import longpath as lpth
+
+        entries = sorted(lpth.listdir(path), key=lambda p: (not lpth.is_dir(p), p.name.lower()))
         for e in entries:
-            if e.name.startswith((".", "~$")) or (e.is_dir() and e.name.lower() in skip):
+            is_dir = lpth.is_dir(e)
+            if e.name.startswith((".", "~$")) or (is_dir and e.name.lower() in skip):
                 continue
             r = f"{rel}/{e.name}" if rel else e.name
-            is_dir = e.is_dir()
             it = df.Item(r, df.Node(e.name, "disk_dir" if is_dir else "disk_file"), depth, e.name)
             node = QTreeWidgetItem([("📁 " if is_dir else "📄 ") + e.name, "", "", ""])
             node.setData(0, Qt.ItemDataRole.UserRole, len(self.items))
@@ -308,7 +323,7 @@ class DealFolderTab(QWidget):
                 node.setForeground(3, MUTED)
             else:
                 try:
-                    st = e.stat()
+                    st = lpth.stat(e)
                     from datetime import datetime
 
                     size = st.st_size
@@ -363,7 +378,7 @@ class DealFolderTab(QWidget):
         if f is None:
             return 0
         try:
-            moved = df.move_to_previous(f) if f.exists() else 0
+            moved = df.move_to_previous(f) if df.lpth.exists(f) else 0
             n = df.create(f, df.context(self.pf, self.deal), asset_management=self._am())
         except OSError as e:
             error(self, "Couldn't make the folders", str(e))
@@ -405,9 +420,15 @@ class DealFolderTab(QWidget):
         if f is None:
             return
         it = self._selected()
+        from .. import longpath as lpth
+
         p = f / it.rel if it is not None else f
-        while not p.exists() and p != f:
+        while not lpth.exists(p) and p != f:
             p = p.parent
+        if lpth.too_long(p):
+            info(self, "Path too long", f"Windows programs may not open this — its path is {len(str(p))} characters "
+                                        f"(most stop at 260):\n\n{p}\n\nMove the Deals folder somewhere shorter "
+                                        "(e.g. closer to the top of OneDrive) to open it from here.")
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
     def _target(self) -> df.Item | None:

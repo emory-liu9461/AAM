@@ -45,10 +45,11 @@ Nothing is ever deleted: setting up again only adds what's missing.
 from __future__ import annotations
 
 import re
-import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+
+from . import longpath as lpth
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ORDINALS = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth"]
@@ -335,7 +336,7 @@ STANDARD_TOP = {"underwriting", "asset management", PREVIOUS.lower()}
 def previous_items(folder: Path) -> list[Path]:
     """What's already in a deal's folder that isn't the standard's: its files and folders from before."""
     try:
-        return sorted((p for p in Path(folder).iterdir()
+        return sorted((p for p in lpth.listdir(folder)
                        if not p.name.startswith((".", "~$")) and p.name.lower() not in STANDARD_TOP),
                       key=lambda p: p.name.lower())
     except OSError:
@@ -345,37 +346,65 @@ def previous_items(folder: Path) -> list[Path]:
 def move_to_previous(folder: Path) -> int:
     """A folder that already had files in it: everything that was there goes into Previous Files/ (kept as it was),
     so the standard folders start clean beside it. Returns how many files and folders were moved."""
-    if any((Path(folder) / n).is_dir() for n in ("Underwriting", "Asset Management")):
+    if any(lpth.is_dir(Path(folder) / n) for n in ("Underwriting", "Asset Management")):
         return 0                     # already set up: files added since are left where they are
     items = previous_items(folder)
     if not items:
         return 0
     dest = Path(folder) / PREVIOUS
-    dest.mkdir(parents=True, exist_ok=True)
+    lpth.mkdir(dest)
     for p in items:
         target, k = dest / p.name, 2
-        while target.exists():
-            target = dest / f"{p.stem} ({k}){p.suffix}" if p.is_file() else dest / f"{p.name} ({k})"
+        while lpth.exists(target):
+            target = dest / f"{p.stem} ({k}){p.suffix}" if lpth.is_file(p) else dest / f"{p.name} ({k})"
             k += 1
-        shutil.move(str(p), str(target))
+        lpth.move(p, target)
     return len(items)
 
 
 def create(folder: Path, ctx: Context, *, asset_management: bool = False) -> int:
-    """Make the folders that aren't there yet. Returns how many were made."""
-    n = 0
+    """Make the folders that aren't there yet (long paths included). Returns how many were made. One that can't be
+    made doesn't stop the rest; afterwards an OSError says how many couldn't be made and why."""
+    n, failed = 0, []
     for it in layout(ctx, asset_management=asset_management):
         if it.is_folder:
             p = folder / it.rel
-            if not p.exists():
-                p.mkdir(parents=True, exist_ok=True)
-                n += 1
+            try:
+                if not lpth.exists(p):
+                    lpth.mkdir(p)
+                    n += 1
+            except OSError as e:
+                failed.append((p, e))
+    if failed:
+        p, e = failed[0]
+        raise OSError(f"{n} folder(s) made, but {len(failed)} couldn't be — e.g. {p}: {e.strerror or e}")
     return n
+
+
+GENERIC = {"street", "avenue", "road", "drive", "court", "place", "limited", "investment", "investments",
+           "holdings", "properties", "property", "apartments", "inc", "ltd", "corp", "the", "and", "deals", "deal"}
+
+
+def looks_like_deal_folder(folder: str | Path, deal) -> bool:
+    """A folder named after this deal (its street or name) — likely the deal's own folder, not the Deals folder."""
+    import re as _re
+
+    words = {w for w in _re.findall(r"[a-z]{4,}", f"{deal.name} {getattr(deal, 'address', '')}".lower())
+             if w not in GENERIC}
+    name = Path(folder).name.lower()
+    return any(w in name for w in words)
+
+
+def long_paths(folder: Path, ctx: Context, *, asset_management: bool = True) -> list[Path]:
+    """The deal's folders whose full path is too long for Explorer, Excel and most programs to open (260+
+    characters) — the app handles them, other programs may not."""
+    return [folder / it.rel for it in layout(ctx, asset_management=asset_management)
+            if it.is_folder and lpth.too_long(folder / it.rel)]
 
 
 def _files(p: Path) -> list[Path]:
     try:
-        return [x for x in p.iterdir() if x.is_file() and not x.name.startswith((".", "~$"))]
+        return [x for x in lpth.listdir(p) if lpth.is_file(x) and not x.name.startswith((".", "~$"))]
     except OSError:
         return []
 
@@ -383,8 +412,8 @@ def _files(p: Path) -> list[Path]:
 def _any_file(p: Path) -> bool:
     """A current file in the folder or below it (not one only in an Archive)."""
     try:
-        return any(x.is_file() and not x.name.startswith((".", "~$"))
-                   and ARCHIVE not in x.relative_to(p).parts[:-1] for x in p.rglob("*"))
+        return any(not x.name.startswith((".", "~$")) and ARCHIVE not in x.relative_to(p).parts[:-1]
+                   for x in lpth.walk_files(p))
     except OSError:
         return False
 
@@ -406,12 +435,13 @@ def check(folder: Path, ctx: Context, *, asset_management: bool = False) -> list
     for it in layout(ctx, asset_management=asset_management):
         p = folder / it.rel
         if it.node.kind == "folder":
-            files = len(_files(p)) if p.exists() else 0
-            ok = (not it.node.required) or (p.exists() and _any_file(p))
-            out.append(Status(it, p.exists(), files, ok))
+            there = lpth.exists(p)
+            files = len(_files(p)) if there else 0
+            ok = (not it.node.required) or (there and _any_file(p))
+            out.append(Status(it, there, files, ok))
         elif it.node.kind == "live":
             files = [f for f in _files(p) if not it.node.ext or f.suffix.lower() == it.node.ext]
-            out.append(Status(it, p.exists(), len(files), (not it.node.required) or bool(files)))
+            out.append(Status(it, lpth.exists(p), len(files), (not it.node.required) or bool(files)))
         else:                                   # a named file: matched by its name without the extension
             want = Path(_safe(it.label)).stem.lower()
             files = [f for f in _files(p.parent) if f.stem.lower().startswith(want)]
@@ -451,7 +481,7 @@ def _version(p: Path) -> tuple:
             if m.group(1) or "." in m.group(2)]
     d = re.search(r"\b(\d{4})[-_.](\d{1,2})[-_.](\d{1,2})\b", s)
     try:
-        mtime = p.stat().st_mtime
+        mtime = lpth.stat(p).st_mtime
     except OSError:
         mtime = 0
     return (max(nums) if nums else (), tuple(int(x) for x in d.groups()) if d else (), mtime)
@@ -479,7 +509,7 @@ def archive_plan(folder: Path, ctx: Context, *, asset_management: bool = True) -
     for it in layout(ctx, asset_management=asset_management):
         if it.is_folder and any(c.name == ARCHIVE for c in it.node.children):
             p = folder / it.rel
-            if p.exists():
+            if lpth.exists(p):
                 for f, _newer in old_versions(p):
                     out.append((f, p / ARCHIVE / f.name))
     return out
@@ -488,12 +518,12 @@ def archive_plan(folder: Path, ctx: Context, *, asset_management: bool = True) -
 def archive(plan: list[tuple[Path, Path]]) -> int:
     n = 0
     for src, dest in plan:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        lpth.mkdir(dest.parent)
         target, k = dest, 2
-        while target.exists():
+        while lpth.exists(target):
             target = dest.with_name(f"{dest.stem} ({k}){dest.suffix}")
             k += 1
-        shutil.move(str(src), str(target))
+        lpth.move(src, target)
         n += 1
     return n
 
@@ -506,16 +536,14 @@ def transfer_on_closing(folder: Path) -> int:
     n = 0
     for src_rel, dest_rel in TRANSFERS:
         src, dest = folder / src_rel, folder / dest_rel
-        if not src.exists():
+        if not lpth.exists(src):
             continue
-        for f in src.rglob("*"):
-            if not f.is_file():
-                continue
+        for f in lpth.walk_files(src):
             target = dest / f.relative_to(src)
-            if target.exists():
+            if lpth.exists(target):
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, target)
+            lpth.mkdir(target.parent)
+            lpth.copy2(f, target)
             n += 1
     return n
 
@@ -541,13 +569,13 @@ def file_into(folder: Path, item: Item, source: str | Path, name: str | None = N
     """Copy (or move) a file into the item's folder under ``name`` (never overwriting)."""
     source = Path(source)
     dest_dir = folder / item.rel
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    lpth.mkdir(dest_dir)
     name = _safe(Path(name).stem) + (Path(name).suffix or source.suffix) if name else source.name
     dest, k = dest_dir / name, 2
-    while dest.exists():
+    while lpth.exists(dest):
         dest = dest_dir / f"{Path(name).stem} ({k}){Path(name).suffix}"
         k += 1
-    (shutil.move if move else shutil.copy2)(str(source), str(dest))
+    (lpth.move if move else lpth.copy2)(source, dest)
     return dest
 
 
@@ -574,9 +602,9 @@ def folder_of(pf, deal) -> Path | None:
     if not base:
         return None
     want = deal_folder(base, deal)
-    if not want.exists():
+    if not lpth.exists(want):
         for old in (Path(base) / _safe(deal.name), Path(base) / NEW_DEALS / _safe(deal.name)):
-            if old != want and old.exists():
+            if old != want and lpth.exists(old):
                 return old                 # not moved yet (see move_to_existing)
     return want
 
@@ -586,16 +614,16 @@ def move_to_existing(pf, deal) -> Path | None:
     picked by hand stays where it is. Returns where it is now."""
     current = folder_of(pf, deal)
     base = root(pf)
-    if current is None or not base or not current.exists():
+    if current is None or not base or not lpth.exists(current):
         return current
     r = pf.conn.execute("SELECT value FROM settings WHERE key=?", (f"deal_folder:{deal.id}",)).fetchone()
     if r and r[0]:
         return current
     want = Path(base) / EXISTING_DEALS / _safe(deal.name)
-    if current == want or want.exists():
+    if current == want or lpth.exists(want):
         return current
-    want.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(current), str(want))
+    lpth.mkdir(want.parent)
+    lpth.move(current, want)
     return want
 
 
@@ -667,7 +695,7 @@ def on_closing(pf, deal) -> tuple[int, int]:
     """When a deal closes: its Asset Management folders, and the underwriting's legal documents copied over.
     Returns (folders made, files copied); (0, 0) without a deal folder."""
     folder = folder_of(pf, deal)
-    if folder is None or not folder.exists():
+    if folder is None or not lpth.exists(folder):
         return 0, 0
     folder = move_to_existing(pf, deal) or folder      # New Deals → Existing Deals
     ctx = context(pf, deal)

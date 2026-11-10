@@ -392,3 +392,26 @@ def test_a_folder_with_files_keeps_them_in_previous_files(app, tmp_path, monkeyp
     g = dft.ask_where(None, pf, e, choose=lambda: "here")
     assert (g / "Previous Files" / "LOI.pdf").exists() and (g / "Underwriting").is_dir()
     pf.close()
+
+
+def test_long_paths_and_own_folder_guess(tmp_path, monkeypatch):
+    from am_accounting import longpath as lpth
+
+    d = dl.Deal("286-286 Saguenay Investment Limited", address="286 Saguenay Ave, Oshawa")
+    assert df.looks_like_deal_folder(r"C:\OneDrive\1. Active\286-296 Saguenay Avenue, Oshawa", d)
+    assert not df.looks_like_deal_folder(r"C:\OneDrive\Multi-Family\1. Deals", d)
+    # the extended form on Windows, plain elsewhere
+    monkeypatch.setattr(lpth, "WINDOWS", True)
+    long = "C:\\" + "x" * 250
+    monkeypatch.setattr(lpth.os.path, "abspath", lambda p: str(p))
+    assert lpth.lp(long).startswith("\\\\?\\C:\\") and lpth.lp("C:\\short") == "C:\\short"
+    assert lpth.lp("\\\\server\\share\\" + "y" * 250).startswith("\\\\?\\UNC\\server\\share\\")
+    monkeypatch.undo()
+    # deep folders: made and listed through the helpers; long ones are reported
+    base = tmp_path / ("Deals " + "z" * 120)
+    ctx = df.Context("286 Saguenay Ave", ["Enbridge Gas Distribution"], ["101"], [2026], 3)
+    df.create(base / "Existing Deals" / d.name, ctx, asset_management=True)
+    longs = df.long_paths(base / "Existing Deals" / d.name, ctx)
+    assert longs and all(len(str(p)) >= 260 for p in longs)
+    assert lpth.is_dir(longs[0])
+    assert any(r.item.node.required for r in df.check(base / "Existing Deals" / d.name, ctx, asset_management=True))
