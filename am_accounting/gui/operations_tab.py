@@ -889,6 +889,7 @@ class CapexPage(_CompanyPage):
         split = QSplitter(Qt.Orientation.Vertical)
         self.table = _table(CAPEX_COLS, 7)
         self.table.doubleClicked.connect(lambda *_: self.edit_line())
+        self.table.clicked.connect(self._arrow_clicked)
         split.addWidget(self.table)
         mw = QWidget()
         ml = QVBoxLayout(mw)
@@ -961,17 +962,25 @@ class CapexPage(_CompanyPage):
         self.cards["pct"].set(f"{tot.to_date / tot.budget * 100:.0f}%" if tot.budget else "—", "of the budget spent")
         order = list(dict.fromkeys([g for g in cx.GROUPS if any(ln.grp == g for ln in lines)]
                                    + [ln.grp for ln in lines]))
+        parents = {ln.parent_id for ln in lines if ln.parent_id is not None}
+        shut = self._collapsed()
         for g in order:
             members = [ln for ln in lines if ln.grp == g]
             self._add(t, [g] + [""] * 7, head=True)
             for k, ln in enumerate(members):
                 unit = ln.parent_id is not None
-                self._add(t, [("          " if unit else "    ") + ln.item, fmt_money(ln.budget_cents),
+                lead = ("          " if unit else
+                        ("  ▸ " if ln.id in shut else "  ▾ ") if ln.id in parents else "    ")
+                self._add(t, [lead + ln.item, fmt_money(ln.budget_cents),
                               fmt_money(ln.book_cents) if ln.account_id is not None else "—",
                               fmt_money(ln.manual_cents) if ln.manual_cents else "",
                               fmt_money(ln.to_date), fmt_money(ln.to_complete),
                               f"{ln.pct_complete * 100:.0f}%" if ln.pct_complete is not None else "",
                               ln.account_name or "not linked"], line=ln, unit=unit)
+                if unit and ln.parent_id in shut:
+                    t.setRowHidden(t.rowCount() - 1, True)
+                if ln.id in parents:
+                    t.item(t.rowCount() - 1, 0).setToolTip("Click the arrow to show or hide its units")
                 last_unit = unit and (k + 1 == len(members) or members[k + 1].parent_id != ln.parent_id)
                 if last_unit:   # the line with its units
                     fam = [x for x in members if x.id == ln.parent_id or x.parent_id == ln.parent_id]
@@ -989,6 +998,46 @@ class CapexPage(_CompanyPage):
         t.horizontalHeader().setStretchLastSection(True)
         self._fill_months(lines, as_of)
         self._fill_recon(p, as_of)
+
+    # -- lines with units (In-suite renovations) open and close --------------------------------
+
+    @staticmethod
+    def _settings():
+        from PySide6.QtCore import QSettings
+
+        return QSettings("AM Accounting", "AM Accounting")
+
+    def _collapsed(self) -> set[int]:
+        raw = self._settings().value("capex/collapsed", "") or ""
+        return {int(x) for x in str(raw).split(",") if x.strip().isdigit()}
+
+    def toggle_units(self, line_id: int) -> None:
+        """Show or hide the unit sub-lines under a line (remembered)."""
+        shut = self._collapsed() ^ {line_id}
+        self._settings().setValue("capex/collapsed", ",".join(map(str, sorted(shut))))
+        closed = line_id in shut
+        t = self.table
+        for r, x in enumerate(self._rows):
+            if x is None:
+                continue
+            if x.parent_id == line_id:
+                t.setRowHidden(r, closed)
+            elif x.id == line_id:
+                it = t.item(r, 0)
+                it.setText(("  ▸ " if closed else "  ▾ ") + x.item)
+
+    def _arrow_clicked(self, index) -> None:
+        if index.column() != 0 or not 0 <= index.row() < len(self._rows):
+            return
+        ln = self._rows[index.row()]
+        if ln is None or not any(x is not None and x.parent_id == ln.id for x in self._rows):
+            return
+        from PySide6.QtGui import QCursor
+
+        t = self.table
+        x = t.viewport().mapFromGlobal(QCursor.pos()).x() - t.visualRect(index).x()
+        if x < 32:                                   # on the arrow (a double-click on the name still edits)
+            self.toggle_units(ln.id)
 
     def _add(self, t, vals, *, head=False, bold=False, line=None, unit=False) -> None:
         r = t.rowCount()
