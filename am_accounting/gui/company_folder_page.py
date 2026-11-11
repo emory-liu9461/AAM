@@ -21,7 +21,7 @@ class CompanyFolderPage(_CompanyPage):
         super().__init__(view)
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
+        row.addWidget(self.pick_label)
         row.addWidget(self.pick)
         row.addStretch(1)
         lay.addLayout(row)

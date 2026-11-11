@@ -67,6 +67,11 @@ class _CompanyPage(QWidget):
         self.pick = QComboBox()
         self.pick.setMinimumWidth(260)
         self.pick.currentIndexChanged.connect(lambda *_: self.fill_if_shown())
+        # the company shown is the one picked in the Company box at the very top of the window (kept in step);
+        # the page's own picker stays hidden
+        self.pick_label = QLabel("Company:")
+        self.pick.hide()
+        self.pick_label.hide()
 
     @property
     def pf(self):
@@ -208,7 +213,7 @@ class OperationsPage(_CompanyPage):
 
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
+        row.addWidget(self.pick_label)
         row.addWidget(self.pick)
         row.addSpacing(12)
         row.addWidget(QLabel("Rent increase:"))
@@ -860,7 +865,7 @@ class CapexPage(_CompanyPage):
 
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
+        row.addWidget(self.pick_label)
         row.addWidget(self.pick)
         row.addStretch(1)
         for text, slot in (("Add Line…", self.add_line), ("Add Unit…", self.add_unit), ("Edit…", self.edit_line),
@@ -1448,7 +1453,7 @@ class CashFlowPage(_CompanyPage):
 
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
+        row.addWidget(self.pick_label)
         row.addWidget(self.pick)
         row.addSpacing(12)
         row.addWidget(QLabel("Show:"))
@@ -1659,7 +1664,7 @@ class DashboardPage(_CompanyPage):
 
         outer = QVBoxLayout(self)
         head = QHBoxLayout()
-        head.addWidget(QLabel("Company:"))
+        head.addWidget(self.pick_label)
         head.addWidget(self.pick)
         head.addStretch(1)
         for text, slot in (("Details…", self.edit_details), ("Timeline…", self.edit_timeline),

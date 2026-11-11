@@ -3460,10 +3460,10 @@ class AssetManagementView(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Company:"))
-        self.fin_pick = QComboBox()
+        self.fin_pick = QComboBox()        # hidden: follows the Company box at the very top of the window
         self.fin_pick.setMinimumWidth(260)
         self.fin_pick.currentIndexChanged.connect(lambda *_: self._fill_financing())
+        self.fin_pick.hide()
         row.addWidget(self.fin_pick)
         self.fin_info = QLabel()
         self.fin_info.setTextFormat(Qt.TextFormat.RichText)
