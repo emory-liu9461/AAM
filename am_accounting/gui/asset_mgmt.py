@@ -2253,14 +2253,9 @@ class AssetManagementView(QWidget):
         self.tabs.addTab(self._build_waterfall_tab(), "Waterfall (LP / GP)")
         pv = QWidget()
         pl = QVBoxLayout(pv)
-        prow = QHBoxLayout()
-        prow.addWidget(QLabel("Projections for:"))
-        self.proj_pick = QComboBox()
-        self.proj_pick.setMinimumWidth(280)
+        self.proj_pick = QComboBox(pv)      # hidden: follows the Company box at the very top of the window
         self.proj_pick.currentIndexChanged.connect(lambda *_: self._fill_projections())
-        prow.addWidget(self.proj_pick)
-        prow.addStretch(1)
-        pl.addLayout(prow)
+        self.proj_pick.hide()
         self.proj_note = QLabel()
         self.proj_note.setObjectName("hint")
         self.proj_note.setWordWrap(True)
@@ -2637,20 +2632,18 @@ class AssetManagementView(QWidget):
 
         w = QWidget()
         lay = QVBoxLayout(w)
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Waterfall for:"))
-        self.wf_pick = QComboBox()
-        self.wf_pick.setMinimumWidth(280)
+        # always the company picked in the Company box at the very top (the pickers below stay hidden)
+        self.wf_for = QLabel()
+        self.wf_for.setWordWrap(True)
+        lay.addWidget(self.wf_for)
+        self.wf_pick = QComboBox(w)
         self.wf_pick.currentIndexChanged.connect(lambda *_: self._wf_owner_changed())
-        top.addWidget(self.wf_pick)
-        self.wf_scope_label = QLabel("Holdings:")
-        top.addWidget(self.wf_scope_label)
-        self.wf_scope = QComboBox()
-        self.wf_scope.setMinimumWidth(240)
+        self.wf_pick.hide()
+        self.wf_scope_label = QLabel("Holdings:", w)
+        self.wf_scope_label.hide()
+        self.wf_scope = QComboBox(w)
         self.wf_scope.currentIndexChanged.connect(lambda *_: self._fill_waterfall())
-        top.addWidget(self.wf_scope)
-        top.addStretch(1)
-        lay.addLayout(top)
+        self.wf_scope.hide()
         terms = QGroupBox("Terms (per holding company)")
         tl = QHBoxLayout(terms)
         self.wf_lp = QDoubleSpinBox()
@@ -2728,23 +2721,53 @@ class AssetManagementView(QWidget):
         for p in (self.summary.performances if self.summary else []):   # each company's own cap table
             if any(not x.worked_out for x in pfm.cap_table(self.pf, p)):
                 self.wf_pick.addItem(f"{p.holding.name} – cap table (equity value)", f"__co__:{p.holding.id}")
-        v = self.viewing.currentData()
-        if v and v[0] == "owner":
-            want = v[1]
         i = self.wf_pick.findData(want)
         self.wf_pick.setCurrentIndex(i if i >= 0 else 0)
         self.wf_pick.blockSignals(False)
-        self._wf_owner_changed()
+        self._wf_follow()
+
+    def _wf_follow(self) -> None:
+        """The waterfall for the company in the Company box at the top: its own cap table when it has one, else its
+        holding company's waterfall for this company alone (deal by deal)."""
+        hid = self.co_pick.currentData()
+        p = next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
+        if p is None:
+            self.wf_for.setText("No company picked — choose one in the Company box at the top.")
+            self._wf_owner_changed()
+            return
+        i = self.wf_pick.findData(f"__co__:{hid}")
+        scope = None
+        if i >= 0:
+            how = "its cap table (equity value)"
+        else:
+            owner = self.pf.owner_of(p.holding) or ""
+            i = next((k for k in range(self.wf_pick.count()) if isinstance(self.wf_pick.itemData(k), str)
+                      and not self.wf_pick.itemData(k).startswith("__")
+                      and pfm._same_file(self.wf_pick.itemData(k), owner)), -1)
+            if i < 0:
+                self.wf_pick.blockSignals(True)
+                self.wf_pick.addItem(p.holding.name, owner)
+                self.wf_pick.blockSignals(False)
+                i = self.wf_pick.count() - 1
+            scope = hid
+            n = self.wf_pick.itemText(i)
+            how = f"its holding company's terms ({n})" if n != p.holding.name else "the holding company's terms"
+        self.wf_for.setText(f"Waterfall for <b>{__import__('html').escape(p.holding.name)}</b> — {how}. Change the company in the "
+                            "Company box at the top.")
+        self.wf_pick.blockSignals(True)
+        self.wf_pick.setCurrentIndex(i)
+        self.wf_pick.blockSignals(False)
+        self._wf_owner_changed(scope=scope)
 
     def _wf_company(self) -> int | None:
         owner = self.wf_pick.currentData()
         return int(owner.split(":")[1]) if isinstance(owner, str) and owner.startswith("__co__:") else None
 
-    def _wf_owner_changed(self) -> None:
+    def _wf_owner_changed(self, scope: int | None = None) -> None:
         owner = self.wf_pick.currentData()
         hid = self._wf_company()
         company = hid is not None
-        for wdg in (self.wf_scope, self.wf_scope_label, self.wf_gp, self.wf_parts, self.wf_parts_label):
+        for wdg in (self.wf_gp, self.wf_parts, self.wf_parts_label):
             wdg.setVisible(not company)
         self.wf_gp_class.setVisible(company)
         self.wf_owners.setVisible(company)
@@ -2776,6 +2799,7 @@ class AssetManagementView(QWidget):
             self.wf_scope.addItem("All its holdings (fund level)", None)
             for h in pfm.select(self.pf, owner=owner):
                 self.wf_scope.addItem(f"{h.name} (deal by deal)", h.id)
+        self.wf_scope.setCurrentIndex(max(0, self.wf_scope.findData(scope)) if scope is not None else 0)
         self.wf_scope.blockSignals(False)
         self.wf_terms_box.setEnabled(not overall)
         if not overall:
@@ -2916,6 +2940,8 @@ class AssetManagementView(QWidget):
         self.proj_pick.addItem("Portfolio (our share)", None)
         for p in (self.summary.performances if self.summary else []):
             self.proj_pick.addItem(p.holding.name, p.holding.id)
+        if self.co_pick.currentData() is not None:
+            want = self.co_pick.currentData()
         i = self.proj_pick.findData(want)
         self.proj_pick.setCurrentIndex(i if i >= 0 else 0)
         self.proj_pick.blockSignals(False)
@@ -2958,7 +2984,7 @@ class AssetManagementView(QWidget):
         hid = self.proj_pick.currentData()
         perfs = self.summary.performances if self.summary else []
         if hid is None:
-            error(self, "Pick a company", "Choose a company in “Projections for” to enter its future years.")
+            error(self, "Pick a company", "Choose a company in the Company box at the top to enter its future years.")
             return
         p = next((x for x in perfs if x.holding.id == hid), None)
         if p and ProjectionsDialog(self.pf, p.holding, p.financials if p.has_books else None, self).exec():
@@ -3256,10 +3282,12 @@ class AssetManagementView(QWidget):
         if i >= 0 and i != self.cv_pick.currentIndex():
             self.cv_pick.setCurrentIndex(i)
         for combo in (self.fin_pick, self.ops_page.pick, self.cash_page.pick, self.capex_page.pick,
-                      self.dash_page.pick, self.folder_page.pick):
+                      self.dash_page.pick, self.folder_page.pick, self.proj_pick):
             i = combo.findData(self.co_pick.currentData())
             if i >= 0 and i != combo.currentIndex():
                 combo.setCurrentIndex(i)
+        if hasattr(self, "wf_for"):
+            self._wf_follow()
 
     def _company_shown(self):
         """The holding the current company page shows (None on the portfolio / deal pipeline)."""
@@ -3348,7 +3376,7 @@ class AssetManagementView(QWidget):
         perf = next((p for p in self.summary.performances if pfm._same_file(p.holding.company_path, v[1])), None)
         if perf:
             for combo in (self.co_pick, self.cv_pick, self.fin_pick, self.ops_page.pick, self.cash_page.pick,
-                          self.capex_page.pick, self.dash_page.pick, self.folder_page.pick):
+                          self.capex_page.pick, self.dash_page.pick, self.folder_page.pick, self.proj_pick):
                 i = combo.findData(perf.holding.id)
                 if i >= 0 and i != combo.currentIndex():
                     combo.setCurrentIndex(i)
