@@ -1873,10 +1873,15 @@ def test_operations_and_capex_tabs(app, tmp_path, monkeypatch):
     d.budget.setValue(50_000)
     d.save()
     cap.fill()
-    cap.table.selectRow(1)                       # row 0 is the "Hard Costs" heading
+    # rows: "Hard Costs", "Exterior & common area", then Roofing
+    assert [cap.table.item(r, 0).text().strip() for r in range(3)] == ["Hard Costs", "Exterior & common area",
+                                                                        "Roofing"]
+    cap.table.selectRow(2)
     cap.create_account()
-    assert any(a.name == "CapEx – Roofing" for a in w.books.accounts())   # in the open books too
-    assert cap.cards["budget"].value.text() == "$50,000.00" and cap.table.item(1, 7).text() == "CapEx – Roofing"
+    accts = {a.name: a for a in w.books.accounts()}                       # in the open books too
+    assert accts["CapEx – Roofing"].parent_id == accts["CapEx – Exterior & common area"].id
+    assert "CapEx – In-suite renovations" in accts                       # the other hard-cost category
+    assert cap.cards["budget"].value.text() == "$50,000.00" and cap.table.item(2, 7).text() == "CapEx – Roofing"
     bank_id = w.books.account_by_code("1000").id
     w.books.import_transactions(bank_id, [ParsedTransaction(date.today().replace(day=1), "ROOFER", -12_500_00)])
     roofer = next(t for t in w.books.transactions() if t.description == "ROOFER")

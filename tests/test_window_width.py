@@ -78,16 +78,72 @@ def test_capex_in_suite_units_collapse(app, tmp_path):
     pid = cap._rows[parent].id
     units = [r for r, x in enumerate(cap._rows) if x is not None and x.parent_id == pid]
     try:
-        assert len(units) == 3 and t.item(parent, 0).text().startswith("  ▾ ")
+        assert len(units) == 3 and t.item(parent, 0).text().strip().startswith("▾ ")
         assert not any(t.isRowHidden(r) for r in units)
         cap.toggle_units(pid)
-        assert all(t.isRowHidden(r) for r in units) and t.item(parent, 0).text().startswith("  ▸ ")
+        assert all(t.isRowHidden(r) for r in units) and t.item(parent, 0).text().strip().startswith("▸ ")
         cap.fill()                                                  # stays closed
         assert all(t.isRowHidden(r) for r in units)
         assert any("Total In-suite renovations" in (t.item(r, 0).text() if t.item(r, 0) else "")
                    and not t.isRowHidden(r) for r in range(t.rowCount()))   # its total still shows
         cap.toggle_units(pid)
         assert not any(t.isRowHidden(r) for r in units)
+        # Hard Costs in two categories: in-suite renovations, and everything else (exterior & common area)
+        names = [t.item(r, 0).text().strip() for r in range(t.rowCount())]
+        ins, ext = names.index("In-suite renovations"), names.index("Exterior & common area")
+        assert names.index("Hard Costs") < ins < names.index("▾ In-suite renovations") < ext < names.index("Roofing")
+        assert names.index("Common area renovations") > ext and names.index("Contingency") > ext
+        assert "Total In-suite renovations" in names and "Total exterior & common area" in names
+        assert names.index("Total exterior & common area") < names.index("Total Hard Costs")
+        lines = cx.lines(v.pf, h)
+        assert {cx.category(x) for x in lines if x.parent_id == pid} == {cx.IN_SUITE}
+        assert cx.category(next(x for x in lines if x.item == "Roofing")) == cx.EXTERIOR
+        assert cx.category(next(x for x in lines if x.item == "GC fees")) == ""
     finally:
         cap._settings().remove("capex/collapsed")
         w.close()
+
+
+def test_click_a_selected_line_again_to_unselect(app, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidget, QTableWidgetItem
+
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    t = QTableWidget(3, 2)
+    t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    for r in range(3):
+        t.setItem(r, 0, QTableWidgetItem(f"line {r}"))
+    opened = []
+    t.doubleClicked.connect(lambda i: opened.append(i.row()))
+    t.show()
+    QApplication.processEvents()
+    at = t.visualItemRect(t.item(1, 0)).center()
+
+    def wait():
+        QTest.qWait(QApplication.doubleClickInterval() + 80)
+
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)
+    wait()
+    assert [i.row() for i in t.selectionModel().selectedRows()] == [1]
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)     # again: the highlight goes off
+    wait()
+    assert t.selectionModel().selectedRows() == [] and t.currentRow() == -1
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)     # and on again
+    wait()
+    assert [i.row() for i in t.selectionModel().selectedRows()] == [1]
+    QTest.mouseDClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)    # a double-click still opens it
+    wait()
+    assert opened == [1] and [i.row() for i in t.selectionModel().selectedRows()] == [1]
+    other = t.visualItemRect(t.item(2, 0)).center()
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=other)  # another line: just picks it
+    wait()
+    assert [i.row() for i in t.selectionModel().selectedRows()] == [2]
+    t.close()
+    w.close()

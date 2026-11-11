@@ -1,6 +1,7 @@
 """Capital expenditure schedule for one company in the portfolio, linked to its books.
 
 Budget lines are grouped (Hard Costs, Fees, Soft Costs, Closing Costs, Acquisition, Interest — or your own groups).
+Hard Costs is in two categories: **In-suite renovations** and **Exterior & common area** (every other hard cost).
 Each line has a budget and can be linked to an account in the company's books: its **cost to date** and monthly
 spending are then what was recorded to that account (debits less credits, opening balances included), plus any
 cost entered by hand that isn't in the books. Cost to complete = budget − cost to date.
@@ -86,6 +87,24 @@ class CapexLine:
 
 
 UNIT_WORDS = ("in-suite", "in suite", "insuite", "suite reno", "unit reno")
+
+# Hard Costs is in two categories: in-suite renovations (the line with a sub-line per unit, and its units), and
+# everything else — exterior and common area
+HARD = "Hard Costs"
+IN_SUITE = "In-suite renovations"
+EXTERIOR = "Exterior & common area"
+HARD_SUBS = [IN_SUITE, EXTERIOR]
+
+
+def is_in_suite(ln: CapexLine) -> bool:
+    return ln.parent_id is not None or any(w in ln.item.lower() for w in UNIT_WORDS)
+
+
+def category(ln: CapexLine) -> str:
+    """A hard cost's category (In-suite renovations, or Exterior & common area); '' for the other groups."""
+    if ln.grp != HARD:
+        return ""
+    return IN_SUITE if is_in_suite(ln) else EXTERIOR
 
 
 def ready(pf) -> None:
@@ -263,18 +282,22 @@ class Totals:
     to_date: int = 0
     to_complete: int = 0
     by_group: dict | None = None
+    by_category: dict | None = None    # the hard costs: {In-suite renovations / Exterior & common area: [b, d, c]}
 
 
 def totals(rows: list[CapexLine]) -> Totals:
-    t = Totals(by_group={})
+    t = Totals(by_group={}, by_category={})
     for ln in rows:
         t.budget += ln.budget_cents
         t.to_date += ln.to_date
         t.to_complete += ln.to_complete
-        g = t.by_group.setdefault(ln.grp, [0, 0, 0])
-        g[0] += ln.budget_cents
-        g[1] += ln.to_date
-        g[2] += ln.to_complete
+        cat = category(ln)
+        for g in (t.by_group.setdefault(ln.grp, [0, 0, 0]),) + ((t.by_category.setdefault(cat, [0, 0, 0]),)
+                                                                 if cat else ()):
+            g[0] += ln.budget_cents
+            g[1] += ln.to_date
+            g[2] += ln.to_complete
+    t.by_category = {c: t.by_category[c] for c in HARD_SUBS if c in t.by_category}
     return t
 
 
@@ -319,6 +342,68 @@ def _account_ok(books, account_id: int | None) -> bool:
         return False
 
 
+CATEGORY_ACCOUNTS = {IN_SUITE: "CapEx – In-suite renovations", EXTERIOR: "CapEx – Exterior & common area"}
+
+
+def _category_ids(pf, holding_id: int) -> dict[str, int]:
+    ready(pf)
+    pf.conn.execute("CREATE TABLE IF NOT EXISTS capex_category_accounts (holding_id INTEGER NOT NULL, category TEXT "
+                    "NOT NULL, account_id INTEGER NOT NULL, PRIMARY KEY (holding_id, category))")
+    return dict(pf.conn.execute("SELECT category, account_id FROM capex_category_accounts WHERE holding_id=?",
+                                (holding_id,)).fetchall())
+
+
+def _fixed_asset(books, account_id: int | None):
+    if not _account_ok(books, account_id):
+        return None
+    a = books.account(account_id)
+    return a if a.type == "asset" and a.subtype == "fixed_asset" and a.active else None
+
+
+def category_accounts(pf, holding, books=None) -> dict[str, int]:
+    """The two hard-cost categories as fixed-asset accounts in the company's books — "CapEx – In-suite renovations"
+    (the in-suite line's own account, its units under it) and "CapEx – Exterior & common area" — with every hard-cost
+    line's account put under its category, so the balance sheet shows CapEx in those two. Made once the schedule has
+    hard costs; an account you placed under another parent is left there. Returns {category: account id}."""
+    from .books import Books
+
+    hard = [ln for ln in lines_raw(pf, holding.id) if ln.grp == HARD and ln.parent_id is None]
+    if not hard or not holding.company_path or not Path(holding.company_path).exists():
+        return {}
+    own = books is None
+    books = books or Books.open(holding.company_path, create=False)
+    try:
+        stored = _category_ids(pf, holding.id)
+        out: dict[str, int] = {}
+        top = unit_line(pf, holding.id)
+        for cat, name in CATEGORY_ACCOUNTS.items():
+            if cat == IN_SUITE and top is not None and _fixed_asset(books, top.account_id):
+                acct = top.account_id
+            else:
+                acct = stored.get(cat) if _fixed_asset(books, stored.get(cat)) else None
+                acct = acct or next((a.id for a in books.accounts() if a.name.lower() == name.lower()
+                                     and _fixed_asset(books, a.id)), None)
+                acct = acct or _new_account(books, name)
+                if cat == IN_SUITE and top is not None and top.account_id is None:
+                    top.account_id = acct             # the in-suite line is the category
+                    save_line(pf, holding.id, top)
+            out[cat] = acct
+        with pf.conn:
+            pf.conn.executemany("INSERT OR REPLACE INTO capex_category_accounts(holding_id, category, account_id) "
+                                "VALUES (?,?,?)", [(holding.id, c, i) for c, i in out.items()])
+        for ln in hard:                               # each hard cost's account under its category
+            a = _fixed_asset(books, ln.account_id)
+            target = out[category(ln)]
+            if a is None or a.id in out.values() or a.parent_id is not None:
+                continue
+            books.update_account(a.id, code=a.code, name=a.name, type_=a.type, subtype=a.subtype, active=a.active,
+                                 parent_id=target)
+        return out
+    finally:
+        if own:
+            books.close()
+
+
 def create_account(pf, holding, ln: CapexLine) -> int:
     """A fixed-asset account in the company's books for this line ("CapEx – <item>"), linked to it. A unit's
     account is a sub-account of its line's account (created too if needed), so the balance sheet shows the line
@@ -336,6 +421,12 @@ def create_account(pf, holding, ln: CapexLine) -> int:
                 save_line(pf, holding.id, top)
             ln.parent_item = ln.parent_item or (top.item if top else "")
             ln.account_id = _new_account(books, f"CapEx – {ln.label}", top.account_id if top else None)
+        elif ln.grp == HARD:                   # under its category: in-suite, or exterior & common area
+            cats = category_accounts(pf, holding, books)
+            if is_in_suite(ln) and ln.id is not None and (unit_line(pf, holding.id) or ln).id == ln.id:
+                ln.account_id = cats[IN_SUITE]  # the in-suite line is its category's account
+            else:
+                ln.account_id = _new_account(books, f"CapEx – {ln.label}", cats.get(category(ln)))
         else:
             ln.account_id = _new_account(books, f"CapEx – {ln.label}")
         save_line(pf, holding.id, ln)

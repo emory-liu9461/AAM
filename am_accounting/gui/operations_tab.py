@@ -948,6 +948,7 @@ class CapexPage(_CompanyPage):
         as_of = self.view._as_of_date()
         cx.sync_units(self.pf, p.holding.id)      # a sub-line for each unit on the rent roll
         try:
+            cx.category_accounts(self.pf, p.holding)    # hard costs in the books: in-suite / exterior & common
             cx.link_unit_accounts(self.pf, p.holding)   # and, once in-suite is in the books, a sub-account each
         except Exception:  # noqa: BLE001 — the books may be busy or read-only; try again next time
             pass
@@ -967,10 +968,17 @@ class CapexPage(_CompanyPage):
         for g in order:
             members = [ln for ln in lines if ln.grp == g]
             self._add(t, [g] + [""] * 7, head=True)
+            cats = cx.HARD_SUBS if g == cx.HARD else [""]
+            if g == cx.HARD:     # its two categories: in-suite first, then exterior & common area
+                members = [ln for c in cats for ln in members if cx.category(ln) == c]
             for k, ln in enumerate(members):
+                cat = cx.category(ln)
+                if g == cx.HARD and (k == 0 or cx.category(members[k - 1]) != cat):
+                    self._add(t, ["  " + cat] + [""] * 7, sub=True)
+                pad = "    " if g == cx.HARD else ""
                 unit = ln.parent_id is not None
-                lead = ("          " if unit else
-                        ("  ▸ " if ln.id in shut else "  ▾ ") if ln.id in parents else "    ")
+                lead = pad + ("          " if unit else
+                              ("  ▸ " if ln.id in shut else "  ▾ ") if ln.id in parents else "    ")
                 self._add(t, [lead + ln.item, fmt_money(ln.budget_cents),
                               fmt_money(ln.book_cents) if ln.account_id is not None else "—",
                               fmt_money(ln.manual_cents) if ln.manual_cents else "",
@@ -982,11 +990,17 @@ class CapexPage(_CompanyPage):
                 if ln.id in parents:
                     t.item(t.rowCount() - 1, 0).setToolTip("Click the arrow to show or hide its units")
                 last_unit = unit and (k + 1 == len(members) or members[k + 1].parent_id != ln.parent_id)
-                if last_unit:   # the line with its units
-                    fam = [x for x in members if x.id == ln.parent_id or x.parent_id == ln.parent_id]
+                fam = [x for x in members if x.id == ln.parent_id or x.parent_id == ln.parent_id]
+                in_cat = [x for x in members if cx.category(x) == cat]
+                if last_unit and not (g == cx.HARD and len(fam) == len(in_cat)):   # the line with its units
                     b_, d_ = sum(x.budget_cents for x in fam), sum(x.to_date for x in fam)
-                    self._add(t, [f"    Total {ln.parent_item}", fmt_money(b_), "", "", fmt_money(d_),
+                    self._add(t, [f"{pad}    Total {ln.parent_item}", fmt_money(b_), "", "", fmt_money(d_),
                                   fmt_money(b_ - d_), f"{d_ / b_ * 100:.0f}%" if b_ else "", ""], bold=True)
+                if g == cx.HARD and (k + 1 == len(members) or cx.category(members[k + 1]) != cat):
+                    b_, d_, c2 = tot.by_category[cat]
+                    self._add(t, [f"  Total {cat[0].lower() + cat[1:] if cat == cx.EXTERIOR else cat}",
+                                  fmt_money(b_), "", "", fmt_money(d_), fmt_money(c2),
+                                  f"{d_ / b_ * 100:.0f}%" if b_ else "", ""], bold=True)
             b, d, c_ = tot.by_group[g]
             self._add(t, [f"Total {g}", fmt_money(b), "", "", fmt_money(d), fmt_money(c_),
                           f"{d / b * 100:.0f}%" if b else "", ""], bold=True)
@@ -1024,7 +1038,7 @@ class CapexPage(_CompanyPage):
                 t.setRowHidden(r, closed)
             elif x.id == line_id:
                 it = t.item(r, 0)
-                it.setText(("  ▸ " if closed else "  ▾ ") + x.item)
+                it.setText(it.text().replace("▾", "▸") if closed else it.text().replace("▸", "▾"))
 
     def _arrow_clicked(self, index) -> None:
         if index.column() != 0 or not 0 <= index.row() < len(self._rows):
@@ -1036,20 +1050,22 @@ class CapexPage(_CompanyPage):
 
         t = self.table
         x = t.viewport().mapFromGlobal(QCursor.pos()).x() - t.visualRect(index).x()
-        if x < 32:                                   # on the arrow (a double-click on the name still edits)
+        if x < 52:                                   # on the arrow (a double-click on the name still edits)
             self.toggle_units(ln.id)
 
-    def _add(self, t, vals, *, head=False, bold=False, line=None, unit=False) -> None:
+    def _add(self, t, vals, *, head=False, bold=False, line=None, unit=False, sub=False) -> None:
         r = t.rowCount()
         t.insertRow(r)
         for c, v in enumerate(vals):
             colour = MUTED if unit and c == 0 else None
+            if sub:
+                colour = None
             if line is not None and c == 5 and line.to_complete < 0:
                 colour = NEGATIVE
             if line is not None and c == 7 and line.account_id is None:
                 colour = MUTED
-            t.setItem(r, c, _cell(v, right=0 < c < 7, bold=head or bold, colour=colour))
-        if head:
+            t.setItem(r, c, _cell(v, right=0 < c < 7, bold=head or bold or sub, colour=colour))
+        if head or sub:
             t.setSpan(r, 0, 1, len(vals))
         self._rows.append(line)
 
@@ -1195,10 +1211,17 @@ class CapexPage(_CompanyPage):
         for grp in dict.fromkeys(ln.grp for ln in active):
             body.append(f"<tr><td colspan='{len(keys) + 2}' style='padding:10px 0 2px 0; color:{accent}; "
                         f"font-size:8.5pt; font-weight:700'>{esc(grp.upper())}</td></tr>")
-            for ln in (x for x in active if x.grp == grp):
+            members = [x for x in active if x.grp == grp]
+            if grp == cx.HARD:
+                members = [x for c in cx.HARD_SUBS for x in members if cx.category(x) == c]
+            for k, ln in enumerate(members):
+                cat = cx.category(ln)
+                if cat and (k == 0 or cx.category(members[k - 1]) != cat):
+                    body.append(f"<tr><td colspan='{len(keys) + 2}' style='padding:4px 0 1px 8px; color:{text}; "
+                                f"font-weight:700'>{esc(cat)}</td></tr>")
                 vals = [ln.monthly.get(k, 0) for k in keys]
-                body.append(f"<tr><td style='padding:2px 24px 2px 14px; color:{muted}; white-space:nowrap'>"
-                            f"{esc(ln.label)}</td>"
+                body.append(f"<tr><td style='padding:2px 24px 2px {22 if cat else 14}px; color:{muted}; "
+                            f"white-space:nowrap'>{esc(ln.label)}</td>"
                             + "".join(f"<td align='right' style='{td}; color:{text}'>{_whole(v) if v else ''}</td>"
                                       for v in vals)
                             + f"<td align='right' style='{td}; color:{text}; font-weight:700'>{_whole(sum(vals))}</td>"
@@ -1855,7 +1878,13 @@ class DashboardPage(_CompanyPage):
                        ["Op. Ex", fmt_money(opx), fmt_money(opx), fmt_money(nxt("Total operating expenses"))],
                        ["NOI", fmt_money(egi - opx), fmt_money(run_egi - opx), fmt_money(nxt("Net operating income"))]]
         tot = cx.totals(cx.lines(self.pf, h, as_of))
-        d["construction"] = [[g, fmt_money(b), fmt_money(dd), fmt_money(c_)] for g, (b, dd, c_) in tot.by_group.items()]
+        d["construction"] = []
+        for g, (b, dd, c_) in tot.by_group.items():
+            if g == cx.HARD and tot.by_category:   # hard costs: in-suite, and exterior & common area
+                d["construction"] += [[f"Hard costs – {c[0].lower() + c[1:]}", fmt_money(b), fmt_money(dd),
+                                       fmt_money(c_)] for c, (b, dd, c_) in tot.by_category.items()]
+            else:
+                d["construction"].append([g, fmt_money(b), fmt_money(dd), fmt_money(c_)])
         if d["construction"]:
             d["construction"].append(["Total budget", fmt_money(tot.budget), fmt_money(tot.to_date),
                                       fmt_money(tot.to_complete)])

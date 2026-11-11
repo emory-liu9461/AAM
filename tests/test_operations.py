@@ -220,5 +220,24 @@ def test_capex_unit_sub_lines_and_sub_accounts(tmp_path):
     assert rows["In-suite renovations – Unit 102"].to_date == 12_000_00
     assert rows["In-suite renovations"].to_date == 0
     assert cx.totals(list(rows.values())).to_date == 12_000_00
+    # the hard costs on the balance sheet in two categories: in-suite renovations, exterior & common area
+    roof = next(ln for ln in cx.lines(pf, h) if ln.item == "Roofing")
+    b = Books.open(tmp_path / "op.amdb")
+    own = b.add_account("1700", "Roof work", "asset", "fixed_asset")       # an account linked by hand
+    b.close()
+    cx.link_account(pf, h, roof.id, own.id)
+    cats = cx.category_accounts(pf, h)
+    assert cats[cx.IN_SUITE] == top_acct                              # the in-suite line's own account
+    paving = next(ln for ln in cx.lines(pf, h) if ln.item == "Paving & parking")
+    cx.create_account(pf, h, paving)
+    b = Books.open(tmp_path / "op.amdb")
+    ext = b.account(cats[cx.EXTERIOR])
+    assert ext.name == "CapEx – Exterior & common area" and ext.subtype == "fixed_asset"
+    assert {a.name for a in b.children(ext.id)} == {"Roof work", "CapEx – Paving & parking"}   # moved / made there
+    b.set_category(b.transactions()[0].id, own.id, source="manual")
+    labels = [ln.label for ln in reports.balance_sheet(b, "2026-12-31").lines]
+    assert labels.index("CapEx – Exterior & common area") < labels.index("Roof work")
+    b.close()
+    assert cx.category_accounts(pf, h) == cats                        # nothing twice
     cx.delete_line(pf, top.id)                                    # the line with its units
     assert not [ln for ln in cx.lines(pf, h) if ln.parent_id is not None]

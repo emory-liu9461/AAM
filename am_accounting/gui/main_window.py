@@ -65,6 +65,9 @@ def relax_widths(root, limit: int = 420) -> int:
 class MainWindow(QMainWindow):
     def __init__(self, books_path: str | None = None, registry: CompanyRegistry | None = None):
         super().__init__()
+        from .deselect import install
+
+        install()                     # click a selected line again to unselect it
         self.settings = QSettings("AM Accounting", "AM Accounting")
         self.registry = registry or default_registry()
         path = books_path or self._startup_path()
