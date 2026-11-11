@@ -41,10 +41,20 @@ def relax_widths(root, limit: int = 420) -> int:
     screen. Returns how many were changed."""
     from .flow import wrap_rows
 
+    import html as _html
+    import re
+
     n = 0
     for lbl in root.findChildren(QLabel):
         if not lbl.wordWrap() and lbl.minimumSizeHint().width() > limit and lbl.text():
-            lbl.setWordWrap(True)
+            m = re.match(r"^(<b>[^<]+</b>)\s*\((.*)\)\s*$", lbl.text(), re.S)
+            if m:      # a heading with a long note: one line — the note's first part, all of it in the tooltip
+                note = m.group(2)
+                first = re.split(r";| — ", note)[0].strip()
+                lbl.setText(m.group(1) + (f" <span style='color:gray'>({first})</span>" if len(first) <= 60 else ""))
+                lbl.setToolTip(_html.unescape(re.sub(r"<[^>]+>", "", note)))
+            else:
+                lbl.setWordWrap(True)
             n += 1
     n += wrap_rows(root)             # rows of buttons wrap onto a second line
     from .flow import fit_pages
