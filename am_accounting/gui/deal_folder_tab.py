@@ -122,6 +122,9 @@ class DealFolderTab(QWidget):
                 ("open", "Open Folder", self.open_selected, "Open the selected folder (or the deal's)"),
                 ("add", "Add Files Here…", self.add_files, "Copy files into the selected folder, named as its "
                                                             "naming convention says"),
+                ("package", "Lender Package…", self.lender_package,
+                 "Copy the documents a lender asks for into a new folder in Underwriting → Financing → Lender "
+                 "Submission Package — you pick the files"),
                 ("archive", "Archive Old Versions…", self.archive,
                  "Keep only the newest version of each document; move the older ones to the folder's Archive"),
                 ("link", "Link the Company's Accounting", self.link,
@@ -444,6 +447,28 @@ class DealFolderTab(QWidget):
                 error(self, "Couldn't file it", f"{Path(src).name}: {e}")
         self.fill()
         return n
+
+    def lender_package(self, *, run=None) -> Path | None:
+        """Pick the files for a lender submission package and copy them into a new folder (see
+        lender_package.py). ``run`` (for tests) takes the dialog instead of showing it."""
+        from .lender_package_dialog import LenderPackageDialog
+
+        f = self.folder()
+        if f is None:
+            info(self, "No folder yet", "Choose a folder for this deal first.")
+            return None
+        dlg = LenderPackageDialog(f, self)
+        if not (run(dlg) if run is not None else dlg.exec()) or dlg.package is None:
+            return None
+        self.fill()
+        from .. import longpath as lpth
+
+        n = sum(1 for _ in lpth.walk_files(dlg.package)) - 1
+        if run is None and confirm(self, "Package made", f"{n} file(s) copied into\n{dlg.package}\n\nwith "
+                                                         "a checklist of what's included and what's missing. "
+                                                         "Open the folder?"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(dlg.package)))
+        return dlg.package
 
     def archive(self, *, ask: bool = True) -> int:
         f = self.folder()

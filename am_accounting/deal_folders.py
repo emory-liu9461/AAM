@@ -119,7 +119,9 @@ UNDERWRITING = F(
       F("Property Management", F("Quote", required=True), F("Contract", required=True), A()),
       note="Any other contract: a folder with Quote, Contract and Archive, like these"),
     F("Pictures", F("Original (Provided) Photos"), F("Updated (Taken Internally) Photos")),
-    F("Financing", F("Term Sheet"), F("Commitment Letter"), F("Lender Document Request")),
+    F("Financing", F("Term Sheet"), F("Commitment Letter"), F("Lender Document Request"),
+      F("Lender Submission Package",
+        note="Lender Package… copies the documents a lender asks for into a folder per submission, with a checklist")),
 )
 
 ASSET_MANAGEMENT = F(
