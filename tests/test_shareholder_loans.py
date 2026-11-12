@@ -103,3 +103,46 @@ def test_tab(app, tmp_path):
     page.tabs.setCurrentWidget(page.net_worth)
     assert page.net_worth.statement().loans_to_companies == 27_500_00
     pf.close()
+
+
+def test_holding_company_in_net_worth(app, tmp_path):
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf, hold, op, loan = _setup(tmp_path)
+    b = Books.open(hold)
+    bank = b.account_by_code("1000").id
+    inv = b.add_account("1610", "Investment in Elm Street", "asset", "other_asset").id
+    b.add_journal_entry("2026-02-01", "bought Elm", [(inv, 15_000_00, 0), (bank, 0, 15_000_00)])
+    b.close()
+    h = pf.holdings()[0]
+    h.invest_accounts = [inv]
+    pf.save_holding(h)
+    shl.auto_link(pf)
+    s = pers.load(pf)
+    s.holdco, s.holdco_pct = str(hold), 50.0
+    pers.save(pf, s)
+    hc = pers.holdco_part(pf, as_of=date(2026, 6, 30))
+    # bank 25,000 lent − 15,000 invested = 10,000 cash; the investment is left out (it's in the real estate)
+    assert (hc.cash, hc.other_assets, hc.left_out, hc.liabilities) == (10_000_00, 0, 15_000_00, 25_000_00)
+    assert (hc.my_assets, hc.my_liabilities) == (5_000_00, 12_500_00)
+    props = pers.properties(pf, as_of=date(2026, 6, 30))
+    assert props[0].share_pct == 50.0 and props[0].default_pct == 50.0      # 100% held × your 50% of the holdco
+    st = pers.statement(pf, as_of=date(2026, 6, 30))
+    assert st.holdco.name == "Maple Holdings Inc."
+    # your 10,000 cash + the loan it owes you 25,000 + your half of its cash 5,000; less your half of its debts
+    assert st.total_assets == 10_000_00 + 25_000_00 + 5_000_00 + st.real_estate
+    assert st.total_liabilities == 12_500_00 + st.real_estate_debt
+    assert "Maple Holdings Inc. — cash and other assets (your 50%)" in pers.html(st)
+    assert pers.snapshot(st).by_kind[pers.HOLDCO] == 5_000_00
+    # on the page
+    s.holdco = ""
+    pers.save(pf, s)
+    page = NetWorthPage(pf, as_of=date(2026, 6, 30))
+    assert page.holdco_box.currentData() == "" and page.statement().holdco is None
+    page._holdco_picked(str(hold))
+    assert pers.load(pf).holdco == str(hold) and page.holdco_box.currentData() == str(hold)
+    page.holdco_pct.setValue(100)
+    assert page.props[0].share_pct == 100 and page.statement().holdco.my_assets == 10_000_00
+    assert "your 100%" in page.holdco_label.text() and "$15,000.00 invested" in page.holdco_label.text()
+    assert pers.load(pf).shares == {}                                      # not changed by hand: not kept
+    pf.close()

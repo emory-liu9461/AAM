@@ -174,6 +174,30 @@ class NetWorthPage(QWidget):
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
+        hrow = QHBoxLayout()
+        hrow.addWidget(QLabel("<b>Your holding company:</b>"))
+        self.holdco_box = QComboBox()
+        self.holdco_box.setMinimumWidth(260)
+        self.holdco_box.setToolTip("The company you own your properties through: its own cash, other assets and "
+                                   "liabilities count at your share (its investments in the properties are in the "
+                                   "real estate below, at market value)")
+        self.holdco_box.activated.connect(lambda *_: self._holdco_picked())
+        hrow.addWidget(self.holdco_box, 1)
+        hrow.addWidget(QLabel("Your share:"))
+        from PySide6.QtWidgets import QDoubleSpinBox
+
+        self.holdco_pct = QDoubleSpinBox()
+        self.holdco_pct.setRange(0.01, 100)
+        self.holdco_pct.setDecimals(2)
+        self.holdco_pct.setSuffix(" %")
+        self.holdco_pct.setValue(self.saved.holdco_pct)
+        self.holdco_pct.valueChanged.connect(lambda *_: self._holdco_share())
+        hrow.addWidget(self.holdco_pct)
+        ll.addLayout(hrow)
+        self.holdco_label = QLabel()
+        self.holdco_label.setObjectName("hint")
+        self.holdco_label.setWordWrap(True)
+        ll.addWidget(self.holdco_label)
         ll.addWidget(QLabel("<b>Real estate from the portfolio</b> — set <b>Your share</b> when you own only part of "
                             "the holding company"))
         self.re = QTableWidget(0, 6)
@@ -222,6 +246,8 @@ class NetWorthPage(QWidget):
         lay.addWidget(hint)
         self.props = pers.properties(pf, self.saved, self.as_of)
         self.loans = self._loans()
+        self._fill_holdco_box()
+        self.holdco = pers.holdco_part(pf, self.saved, self.as_of)
         self._fill_re()
         for e in self.saved.assets:
             self.assets.add(e)
@@ -249,10 +275,82 @@ class NetWorthPage(QWidget):
                 box.add(e)
         self.props = pers.properties(self.pf, self.saved, self.as_of)
         self.loans = self._loans()
+        self._fill_holdco_box()
+        self.holdco_pct.blockSignals(True)
+        self.holdco_pct.setValue(self.saved.holdco_pct)
+        self.holdco_pct.blockSignals(False)
+        self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
         self._fill_re()
         self._show_folder()
         self._loading = False
         self._preview()
+
+    # ---- your holding company ----
+    def _fill_holdco_box(self) -> None:
+        from .. import shareholder_loans as shl
+
+        b = self.holdco_box
+        b.blockSignals(True)
+        b.clear()
+        b.addItem("— none —", "")
+        try:
+            comps = shl.companies(self.pf)
+        except Exception:  # noqa: BLE001
+            comps = []
+        owners = {self.pf.owner_of(h) for h in self.pf.holdings()}
+        for name, path in sorted(comps, key=lambda c: (not any(pers._same(c[1], o) for o in owners), c[0].lower())):
+            b.addItem(name, path)
+        if self.saved.holdco and b.findData(self.saved.holdco) < 0:
+            from ..companies import _read_name
+
+            b.addItem(_read_name(self.saved.holdco) or Path(self.saved.holdco).stem, self.saved.holdco)
+        b.addItem("Another company file…", "other")
+        b.setCurrentIndex(max(0, b.findData(self.saved.holdco)))
+        b.blockSignals(False)
+        self.holdco_pct.setEnabled(bool(self.saved.holdco))
+
+    def _holdco_picked(self, path: str | None = None) -> None:
+        """Pick your holding company (``path`` for tests)."""
+        data = path if path is not None else self.holdco_box.currentData()
+        if data == "other":
+            data, _ = QFileDialog.getOpenFileName(self, "Your holding company's file", "",
+                                                  "Company files (*.amdb);;All files (*)")
+            if not data:
+                self._fill_holdco_box()
+                return
+        self.saved = self.current()
+        self.saved.holdco = data or ""
+        pers.save(self.pf, self.saved)
+        self._fill_holdco_box()
+        self._recompute()
+
+    def _holdco_share(self) -> None:
+        if getattr(self, "_loading", True):
+            return
+        self.saved = self.current()
+        pers.save(self.pf, self.saved)
+        self._recompute()
+
+    def _recompute(self) -> None:
+        """Your shares of the properties follow your share of your holding company (unless you changed them)."""
+        self.props = pers.properties(self.pf, self.saved, self.as_of)
+        self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
+        self._fill_re()
+        self._preview()
+
+    def _show_holdco(self, st) -> None:
+        hc = st.holdco
+        if hc is None:
+            self.holdco_label.setText("Pick the company you own your properties through, and its own money counts "
+                                      "too.")
+        elif hc.error:
+            self.holdco_label.setText(f"<span style='color:#b3261e'>{hc.name}: {hc.error}</span>")
+        else:
+            self.holdco_label.setText(
+                f"{hc.name}: cash {fmt_money(hc.cash)} · other assets {fmt_money(hc.other_assets)} · liabilities "
+                f"{fmt_money(hc.liabilities)} → your {hc.share_pct:g}%: <b>{fmt_money(hc.my_net)}</b>"
+                + (f" (its {fmt_money(hc.left_out)} invested in the properties is in the real estate below)"
+                   if hc.left_out else ""))
 
     # ---- real estate ----
     def _fill_re(self) -> None:
@@ -294,8 +392,9 @@ class NetWorthPage(QWidget):
 
     # ---- the statement ----
     def current(self) -> pers.Saved:
-        shares = {p.holding_id: p.share_pct for p in self.props}
-        return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares)
+        shares = {p.holding_id: p.share_pct for p in self.props if abs(p.share_pct - p.default_pct) > 1e-9}
+        return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares, "",
+                          self.saved.holdco, self.holdco_pct.value())
 
     def _loans(self) -> list:
         """Shareholder loans with your companies, from their books (read when the page opens, not as you type)."""
@@ -307,12 +406,14 @@ class NetWorthPage(QWidget):
             return []
 
     def statement(self) -> pers.Statement:
-        return pers.statement(self.pf, self.current(), self.as_of, self.props, getattr(self, "loans", []))
+        return pers.statement(self.pf, self.current(), self.as_of, self.props, getattr(self, "loans", []),
+                              getattr(self, "holdco", None))
 
     def _preview(self) -> None:
         if getattr(self, "_loading", True) or not hasattr(self, "props"):
             return
         st = self.statement()
+        self._show_holdco(st)
         self.page.setHtml(pers.html(st))
         self.when.setText(f"  as of {self.as_of:%b} {self.as_of.day}, {self.as_of.year}")
         n_other = len(st.assets)

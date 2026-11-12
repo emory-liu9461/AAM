@@ -113,6 +113,7 @@ class Property:
     debt: int = 0             # mortgages and other loans, 100%
     share_pct: float = 100.0  # your share
     lenders: str = ""
+    default_pct: float = 100.0  # your share to start with (kept only when you change it)
 
     @property
     def my_value(self) -> int:
@@ -134,6 +135,8 @@ class Saved:
     liabilities: list[Entry] = field(default_factory=list)
     shares: dict[int, float] = field(default_factory=dict)   # holding id -> your share % (when changed)
     guarantees: str = ""
+    holdco: str = ""                  # your holding company's file ('' = none)
+    holdco_pct: float = 100.0         # your share of it
 
 
 def load(pf) -> Saved:
@@ -143,13 +146,92 @@ def load(pf) -> Saved:
     d = json.loads(raw)
     return Saved(d.get("name", ""), [Entry(**e) for e in d.get("assets", [])],
                  [Entry(**e) for e in d.get("liabilities", [])],
-                 {int(k): float(v) for k, v in d.get("shares", {}).items()}, d.get("guarantees", ""))
+                 {int(k): float(v) for k, v in d.get("shares", {}).items()}, d.get("guarantees", ""),
+                 d.get("holdco", ""), float(d.get("holdco_pct", 100.0)))
 
 
 def save(pf, s: Saved) -> None:
     _set(pf, "net_worth", json.dumps({
         "name": s.name, "assets": [e.__dict__ for e in s.assets], "liabilities": [e.__dict__ for e in s.liabilities],
-        "shares": {str(k): v for k, v in s.shares.items()}, "guarantees": s.guarantees}))
+        "shares": {str(k): v for k, v in s.shares.items()}, "guarantees": s.guarantees, "holdco": s.holdco,
+        "holdco_pct": s.holdco_pct}))
+
+
+# ---- your holding company ----
+
+@dataclass
+class Holdco:
+    """Your holding company's own balance sheet (its investments in the portfolio's holdings left out: they're in
+    the real estate at market value), and your share of it."""
+    name: str
+    path: str
+    share_pct: float = 100.0
+    cash: int = 0
+    other_assets: int = 0
+    liabilities: int = 0
+    left_out: int = 0                 # its investments in the holdings (in the real estate instead)
+    error: str = ""
+
+    @property
+    def my_assets(self) -> int:
+        return round((self.cash + self.other_assets) * self.share_pct / 100)
+
+    @property
+    def my_liabilities(self) -> int:
+        return round(self.liabilities * self.share_pct / 100)
+
+    @property
+    def my_net(self) -> int:
+        return self.my_assets - self.my_liabilities
+
+
+def _same(a: str, b: str) -> bool:
+    try:
+        return bool(a and b) and Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return a == b
+
+
+def holdco_part(pf, saved: Saved | None = None, as_of: date | None = None) -> Holdco | None:
+    """Your holding company's cash, other assets and liabilities from its books (None when none is picked)."""
+    import sqlite3
+
+    from .companies import _read_name
+
+    saved = saved or load(pf)
+    if not saved.holdco:
+        return None
+    as_of = (as_of or date.today()).isoformat()
+    hc = Holdco(_read_name(saved.holdco) or Path(saved.holdco).stem, saved.holdco, saved.holdco_pct)
+    if not Path(saved.holdco).exists():
+        hc.error = "its company file isn't there"
+        return hc
+    skip: set[int] = set()
+    for h in pf.holdings():
+        if _same(pf.owner_of(h), saved.holdco):
+            skip |= set(h.invest_accounts) | set(h.income_accounts)
+    try:
+        conn = sqlite3.connect(f"file:{Path(saved.holdco)}?mode=ro", uri=True)
+        try:
+            for i, typ, bank, net in conn.execute(
+                    "SELECT a.id, a.type, a.is_bank, COALESCE(SUM(l.debit_cents - l.credit_cents), 0) FROM accounts a "
+                    "LEFT JOIN journal_lines l ON l.account_id = a.id LEFT JOIN journal_entries e ON e.id = l.entry_id "
+                    "WHERE a.type IN ('asset','liability') AND (e.date IS NULL OR e.date <= ?) GROUP BY a.id",
+                    (as_of,)):
+                if typ == "asset":
+                    if i in skip:
+                        hc.left_out += net
+                    elif bank:
+                        hc.cash += net
+                    else:
+                        hc.other_assets += net
+                else:
+                    hc.liabilities += -net
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        hc.error = str(e)
+    return hc
 
 
 def properties(pf, saved: Saved | None = None, as_of: date | None = None) -> list[Property]:
@@ -162,13 +244,16 @@ def properties(pf, saved: Saved | None = None, as_of: date | None = None) -> lis
     for h in pf.holdings():
         if h.status != "active":
             continue
+        # your share to start with: the holding's ownership — times your share of your holding company when it's
+        # the one that holds it
+        default = h.ownership_pct * (saved.holdco_pct / 100 if _same(pf.owner_of(h), saved.holdco) else 1)
         p = pfm.performance(pf, h, as_of, with_financials=True)
         loans = [ln for ln in pfm.loans(pf, h, as_of) if not (ln.start_date and ln.start_date > as_of.isoformat())]
         debt = sum(ln.balance or 0 for ln in loans) if loans else (p.debt or 0)
         value = p.company_value if p.company_value is not None else (p.value_100 or 0) + debt
         out.append(Property(h.id, h.name, h.location, h.sector or h.type, value or 0, debt,
-                            saved.shares.get(h.id, h.ownership_pct),
-                            ", ".join(dict.fromkeys(ln.lender for ln in loans if ln.lender))))
+                            saved.shares.get(h.id, round(default, 4)),
+                            ", ".join(dict.fromkeys(ln.lender for ln in loans if ln.lender)), round(default, 4)))
     return out
 
 
@@ -181,6 +266,7 @@ class Statement:
     liabilities: list[Entry]
     guarantees: str = ""
     loans: list = field(default_factory=list)   # shareholder loans with your companies (shareholder_loans.Position)
+    holdco: Holdco | None = None                # your holding company's own cash, other assets and liabilities
 
     @property
     def loans_to_companies(self) -> int:
@@ -202,11 +288,13 @@ class Statement:
 
     @property
     def total_assets(self) -> int:
-        return self.real_estate + self.loans_to_companies + sum(e.amount for e in self.assets)
+        return self.real_estate + self.loans_to_companies + (self.holdco.my_assets if self.holdco else 0) + \
+            sum(e.amount for e in self.assets)
 
     @property
     def total_liabilities(self) -> int:
-        return self.real_estate_debt + self.owed_to_companies + sum(e.amount for e in self.liabilities)
+        return self.real_estate_debt + self.owed_to_companies + (self.holdco.my_liabilities if self.holdco else 0) + \
+            sum(e.amount for e in self.liabilities)
 
     @property
     def net_worth(self) -> int:
@@ -214,7 +302,7 @@ class Statement:
 
 
 def statement(pf, saved: Saved | None = None, as_of: date | None = None,
-              props: list[Property] | None = None, loans: list | None = None) -> Statement:
+              props: list[Property] | None = None, loans: list | None = None, holdco=...) -> Statement:
     saved = saved or load(pf)
     as_of = as_of or date.today()
     if loans is None:
@@ -224,9 +312,13 @@ def statement(pf, saved: Saved | None = None, as_of: date | None = None,
             loans = [p for p in shl.positions(pf, as_of) if p.owed_to_you]
         except Exception:  # noqa: BLE001 — a company file that can't be read: left out
             loans = []
+    if holdco is ...:
+        holdco = holdco_part(pf, saved, as_of)
+    elif holdco is not None:
+        holdco.share_pct = saved.holdco_pct
     return Statement(saved.name, as_of, props if props is not None else properties(pf, saved, as_of),
                      [e for e in saved.assets if e.amount], [e for e in saved.liabilities if e.amount],
-                     saved.guarantees, loans)
+                     saved.guarantees, loans, holdco)
 
 
 # ---- history: a snapshot per day you update it ----
@@ -234,6 +326,7 @@ def statement(pf, saved: Saved | None = None, as_of: date | None = None,
 CASH_KINDS = {"Cash and bank accounts"}
 REAL_ESTATE = "Real estate (your share)"
 LOANS_TO = "Shareholder loans to your companies"
+HOLDCO = "Your holding company (cash and other assets)"
 
 
 @dataclass
@@ -252,6 +345,8 @@ def snapshot(st: Statement) -> Snapshot:
         by_kind[REAL_ESTATE] = st.real_estate
     if st.loans_to_companies:
         by_kind[LOANS_TO] = st.loans_to_companies
+    if st.holdco and st.holdco.my_assets:
+        by_kind[HOLDCO] = st.holdco.my_assets
     for e in st.assets:
         by_kind[e.kind] = by_kind.get(e.kind, 0) + e.amount
     return Snapshot(st.as_of.isoformat(), st.total_assets, st.total_liabilities, st.net_worth,
@@ -299,6 +394,9 @@ def html(st: Statement) -> str:
     for p in st.loans:
         if p.owed_to_you > 0:
             out.append(row(f"Shareholder loan to {p.company}", p.owed_to_you, indent=8))
+    if st.holdco and st.holdco.my_assets:
+        out.append(row(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)",
+                       st.holdco.my_assets, indent=8))
     if st.properties:
         out.append(row("Real estate owned (your share of market value — see schedule)", st.real_estate, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
@@ -309,6 +407,9 @@ def html(st: Statement) -> str:
     for p in st.loans:
         if p.owed_to_you < 0:
             out.append(row(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you, indent=8))
+    if st.holdco and st.holdco.my_liabilities:
+        out.append(row(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities,
+                       indent=8))
     if st.properties:
         out.append(row("Mortgages on real estate owned (your share — see schedule)", st.real_estate_debt, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total liabilities</b></td><td align='right' style='{td};{tr_}'>"
@@ -363,6 +464,8 @@ def write_xlsx(st: Statement, path: Path) -> None:
     for p in st.loans:
         if p.owed_to_you > 0:
             put(f"Shareholder loan to {p.company}", p.owed_to_you)
+    if st.holdco and st.holdco.my_assets:
+        put(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)", st.holdco.my_assets)
     if st.properties:
         put("Real estate owned (your share of market value)", st.real_estate)
     put("Total assets", st.total_assets, b=True)
@@ -373,6 +476,8 @@ def write_xlsx(st: Statement, path: Path) -> None:
     for p in st.loans:
         if p.owed_to_you < 0:
             put(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you)
+    if st.holdco and st.holdco.my_liabilities:
+        put(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities)
     if st.properties:
         put("Mortgages on real estate owned (your share)", st.real_estate_debt)
     put("Total liabilities", st.total_liabilities, b=True)
