@@ -77,9 +77,37 @@ def selftest(out_path: str) -> int:
     return code
 
 
+def morning_summary() -> int:
+    """Send today's morning summary email (run by the daily task; no window)."""
+    from datetime import datetime
+    from pathlib import Path
+
+    from PySide6.QtCore import QCoreApplication
+
+    QCoreApplication.setApplicationName("AM Accounting")      # (where its settings and AppData live)
+    QCoreApplication.setOrganizationName("AM Accounting")
+    from . import morning_summary as ms
+    from .gui.companies import default_registry
+
+    reg = default_registry()
+    data = Path(reg.registry_file).parent
+    try:
+        ms.run(data, [(e.name, e.path) for e in reg.companies() if e.exists], data / "portfolio.ampf")
+        return 0
+    except Exception as e:  # noqa: BLE001 — kept in the settings (shown in the app), and in a log
+        try:
+            with open(data / "morning_summary.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M} {e}\n")
+        except OSError:
+            pass
+        return 1
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
         return selftest(sys.argv[2])
+    if len(sys.argv) == 2 and sys.argv[1] == "--morning-summary":
+        return morning_summary()
     from PySide6.QtWidgets import QApplication
 
     from .gui.common import STYLE

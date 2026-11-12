@@ -314,6 +314,10 @@ class MainWindow(QMainWindow):
         except AttributeError:
             pass
 
+        summary_menu = self.menuBar().addMenu("&Summary")
+        self._action(summary_menu, "&Morning Email Summary…", self.morning_summary)
+        self._action(summary_menu, "&Preview Today's Summary", lambda: self.morning_summary(preview=True))
+
         help_menu = self.menuBar().addMenu("&Help")
         self._action(help_menu, "Create &Sample Company", self.create_sample_company)
         self._action(help_menu, "&About", self.about)
@@ -919,6 +923,20 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     # -- Accounting / Asset Management ---------------------------------------------
+
+    def morning_summary(self, *, preview: bool = False, run=None):
+        """Summary → Morning Email Summary… (see morning_summary.py). ``run`` (for tests) takes the dialog."""
+        from .morning_summary_dialog import MorningSummaryDialog
+
+        reg = self.registry
+        dlg = MorningSummaryDialog(Path(reg.registry_file).parent,
+                                   lambda: [(e.name, e.path) for e in reg.companies() if e.exists],
+                                   self.portfolio_path(), self)
+        if run is not None:
+            return run(dlg)
+        if preview:
+            return dlg.preview()
+        return dlg.exec()
 
     def portfolio_path(self) -> Path:
         return Path(self.registry.registry_file).parent / "portfolio.ampf"
