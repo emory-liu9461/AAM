@@ -137,7 +137,7 @@ def test_holding_company_in_net_worth(app, tmp_path):
     # your 10,000 cash + the loan it owes you 25,000 + your half of its cash 5,000; less your half of its debts
     assert st.total_assets == 10_000_00 + 25_000_00 + 5_000_00 + st.real_estate
     assert st.total_liabilities == 12_500_00 + st.real_estate_debt
-    assert "Maple Holdings Inc. — cash and other assets (your 50%)" in pers.html(st)
+    assert "Maple Holdings Inc. — cash and other assets" in pers.html(st) and "50%" in pers.html(st)
     assert pers.snapshot(st).by_kind[pers.HOLDCO] == 5_000_00
     # on the page
     s.holdco = ""

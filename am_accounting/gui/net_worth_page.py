@@ -37,8 +37,9 @@ class _Entries(QGroupBox):
                 b.clicked.connect(lambda *_, s=slot: s())
                 head.addWidget(b)
             lay.addLayout(head)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["What", "Description", "Amount"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["What", "Description", "Amount", "Yours"])
+        self.table.setColumnWidth(3, 70)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 250)
         self.table.setColumnWidth(2, 130)
@@ -54,14 +55,16 @@ class _Entries(QGroupBox):
         t.blockSignals(True)
         for _ in range(self.n_auto):
             t.removeRow(0)
-        for r, (what, desc, amount, tip, key) in enumerate(rows):
+        for r, row in enumerate(rows):
+            what, desc, amount, tip, key = row[:5]
+            pct = row[5] if len(row) > 5 else ""
             t.insertRow(r)
-            for c, v in enumerate((what, desc, fmt_money(amount))):
+            for c, v in enumerate((what, desc, fmt_money(amount), pct)):
                 it = QTableWidgetItem(v)
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 it.setData(Qt.ItemDataRole.UserRole, key)
                 it.setToolTip(tip)
-                if c == 2:
+                if c in (2, 3):
                     it.setTextAlignment(ALIGN_RIGHT)
                 if c == 0:
                     f = it.font()
@@ -340,22 +343,21 @@ class NetWorthPage(QWidget):
         for p in self.props:
             tip = (f"{p.name}: market value {fmt_money(p.value)} (100%), your share {p.share_pct:g}% — double-click "
                    "to change your share")
-            a_rows.append(("Real estate", f"{p.name} — your {p.share_pct:g}% of {fmt_money(p.value)}", p.my_value, tip,
-                           ("share", p.holding_id)))
+            a_rows.append(("Real estate", p.short or p.name, p.my_value, tip, ("share", p.holding_id),
+                           f"{p.share_pct:g}%"))
             if p.debt:
-                l_rows.append(("Mortgage", f"{p.name} — your {p.share_pct:g}% of {fmt_money(p.debt)}"
-                               + (f" ({p.lenders})" if p.lenders else ""), p.my_debt,
-                               "From Financing & Cap Table — double-click to change your share",
-                               ("share", p.holding_id)))
+                l_rows.append(("Mortgage", (p.short or p.name) + (f" — {p.lenders}" if p.lenders else ""), p.my_debt,
+                               f"Your {p.share_pct:g}% of {fmt_money(p.debt)} (Financing & Cap Table) — double-click "
+                               "to change your share", ("share", p.holding_id), f"{p.share_pct:g}%"))
         hc = getattr(self, "holdco", None)
         if hc is not None and not hc.error:
             if hc.my_assets:
-                a_rows.append(("Your holding company", f"{hc.name} — cash and other assets, your {hc.share_pct:g}%",
-                               hc.my_assets, "From its books (its investments in the properties are in Real estate)",
-                               None))
+                a_rows.append(("Your holding company", f"{hc.name} — cash and other assets", hc.my_assets,
+                               "From its books (its investments in the properties are in Real estate)", None,
+                               f"{hc.share_pct:g}%"))
             if hc.my_liabilities:
-                l_rows.append(("Your holding company", f"{hc.name} — liabilities, your {hc.share_pct:g}%",
-                               hc.my_liabilities, "From its books", None))
+                l_rows.append(("Your holding company", f"{hc.name} — liabilities", hc.my_liabilities,
+                               "From its books", None, f"{hc.share_pct:g}%"))
         for ln in getattr(self, "loans", []):
             if ln.owed_to_you > 0:
                 a_rows.append(("Shareholder loan", f"to {ln.company}", ln.owed_to_you,
@@ -521,7 +523,7 @@ class NetWorthPage(QWidget):
             pdf = out / pers.file_name(st, "pdf")
             xlsx = out / pers.file_name(st, "xlsx")
             pers.archive_older(out, [pdf, xlsx])
-            write_pdf(pers.html(st), lpth.lp(pdf), font_pt=8.5)
+            write_pdf(pers.html(st), lpth.lp(pdf), font_pt=8.5, landscape=True)   # assets and debts side by side
             pers.write_xlsx(st, xlsx)
         except OSError as e:
             error(self, "Couldn't save the statement", str(e))

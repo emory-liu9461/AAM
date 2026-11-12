@@ -65,7 +65,8 @@ def test_net_worth(tmp_path):
 
     wb = load_workbook(out)
     vals = {r[0]: r[1] for r in wb["Net Worth"].iter_rows(values_only=True) if r and r[0]}
-    assert vals["NET WORTH"] == st.net_worth / 100 and "Real Estate Owned" in wb.sheetnames
+    net = next(r for r in wb["Net Worth"].iter_rows(values_only=True) if r and r[0] == "NET WORTH")
+    assert net[4] == st.net_worth / 100 and "Real Estate Owned" in wb.sheetnames
     pf.close()
 
 
@@ -76,9 +77,9 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     f = tmp_path / "Me"
     dlg = NetWorthPage(pf, as_of=date(2026, 11, 1))
     # the property is a line in Assets (and its mortgage in Liabilities), not a table of its own
-    assert dlg.assets.auto_rows() == [("Real estate", "45 Elm St — your 50% of $5,000,000.00", "$2,500,000.00")]
-    assert dlg.liabs.auto_rows() == [("Mortgage", "45 Elm St — your 50% of $2,750,000.00 (First National)",
-                                      "$1,375,000.00")]
+    assert dlg.assets.auto_rows() == [("Real estate", "45 Elm", "$2,500,000.00")]   # the short name
+    assert dlg.assets.table.item(0, 3).text() == "50%"                                 # your % on the side
+    assert dlg.liabs.auto_rows() == [("Mortgage", "45 Elm — First National", "$1,375,000.00")]
     n = dlg.assets.n_auto
     assert not hasattr(dlg, "name")                                    # your name is a setting, not on the page
 
@@ -102,7 +103,7 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     dlg.assets.remove()                                                # the property's line stays
     assert dlg.assets.n_auto == 1 and dlg.assets.auto_rows()[0][0] == "Real estate"
     page_html = pers.html(dlg.statement())
-    assert "45 Elm St (your 25%)" in page_html and "Mortgage — First National" in page_html
+    assert "45 Elm St" in page_html and "(your 25%)" not in page_html and "Mortgage — First National" in page_html
     sec = dict(pers.statement_sections(dlg.statement()))
     assert sec["Real estate"][0][1] == 1_250_000_00 and sec["Real estate"][0][3] == 687_500_00   # side by side
     old = f / "Net Worth Statements/2025-01-01 Net Worth Statement - Pat Lee.pdf"
@@ -222,4 +223,22 @@ def test_history_and_charts(app, tmp_path):
     past.assets.add(pers.Entry("Vehicles", "Car"))
     past.assets.table.item(past.assets.n_auto, 2).setText("1")
     assert "2025-06-30" not in [x.date for x in pers.history(pf)]
+    pf.close()
+
+
+def test_short_property_names(tmp_path):
+    from am_accounting import deals as dl
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("286-286 Saguenay Investment Limited", "Real estate", location="Oshawa, ON")
+    pf.save_holding(h)
+    assert pers.short_name(pf, h) == "286-286 Saguenay"                 # from the name, without "Investment Limited"
+    d = dl.Deal("286-286 Saguenay Investment Limited", address="286-296 Saguenay Avenue, Oshawa", holding_id=h.id)
+    dl.save(pf, d)
+    assert pers.short_name(pf, h) == "286-296 Saguenay"                 # from its deal's address
+    other = pfm.Holding("Aedalus Asset Management Inc", "Operating company")
+    pf.save_holding(other)
+    assert pers.short_name(pf, other) == "Aedalus Asset Management Inc"  # no street: its name
+    sec = dict(pers.statement_sections(pers.statement(pf, pers.Saved("Pat"), date(2026, 6, 30))))
+    assert ("286-296 Saguenay", "100%") in [(r[0], r[4]) for r in sec["Real estate"]]
     pf.close()
