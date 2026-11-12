@@ -187,9 +187,15 @@ class NetWorthPage(QWidget):
         self.plan.setToolTip("Projected = your budget (a week is 12/52 of a month; the year is the whole year's "
                              "budget); actual = so far, from your statements and what you entered. Cash projected = "
                              "your cash at the start (as kept that day) plus what the budget says you'd save.")
+        for c in range(1, 7):                 # headings over their numbers: right-aligned like them
+            self.plan.horizontalHeaderItem(c).setTextAlignment(ALIGN_RIGHT)
+        self.plan.horizontalHeaderItem(0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         rh = self.plan.verticalHeader().defaultSectionSize()
         self.plan.setFixedHeight(rh * 4 + self.plan.horizontalHeader().sizeHint().height() + 4)
-        lay.addWidget(self.plan)
+        plan_box = QGroupBox("Projected (your budget) vs actual — this week, month and year")
+        pv = QVBoxLayout(plan_box)
+        pv.addWidget(self.plan)
+        lay.addWidget(plan_box)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         ll = QVBoxLayout(left)

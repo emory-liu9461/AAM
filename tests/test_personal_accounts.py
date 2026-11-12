@@ -194,3 +194,18 @@ def test_projected_vs_actual(app, tmp_path):
     html = pers.html(page.statement())
     assert html.index("Cash and bank accounts") < html.index("TFSA")
     pf.close()
+
+
+def test_plan_headings_right_aligned_in_a_box(app, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QGroupBox
+
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf = _pf(tmp_path)
+    page = NetWorthPage(pf)
+    for c in range(1, 7):
+        assert page.plan.horizontalHeaderItem(c).textAlignment() & Qt.AlignmentFlag.AlignRight
+    box = page.plan.parent()
+    assert isinstance(box, QGroupBox) and "Projected" in box.title()
+    pf.close()
