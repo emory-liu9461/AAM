@@ -14,10 +14,38 @@ from .common import ALIGN_RIGHT, MUTED, NEGATIVE, POSITIVE, account_label, confi
 COLUMNS = ["Date", "Bank Account", "Description", "Customer / Vendor", "Amount", "Category", "Source", "Reviewed"]
 C_DATE, C_BANK, C_DESC, C_PARTY, C_AMT, C_CAT, C_SRC, C_REV = range(8)
 SOURCE_LABELS = {"manual": "You", "rule": "Rule", "learned": "Learned", "keyword": "Suggested", "loan": "Loan",
-                 None: ""}
+                 "journal": "Journal", None: ""}
 
 
 NO_NAME = "\x00no-name"     # the name filter: transactions with no customer / vendor
+
+
+class JournalRow:
+    """A journal entry (not through a bank account — e.g. a mortgage put on the balance sheet, depreciation, an
+    accrual) shown among the transactions; double-click to change it."""
+
+    def __init__(self, books: Books, entry: dict):
+        self.entry = entry
+        self.id = -entry["id"]                 # (negative: not a bank transaction)
+        self.date = entry["date"]
+        self.description = entry["memo"] or "Journal entry"
+        self.memo = ""
+        self.amount_cents = sum(d for _a, d, _c in entry["lines"])
+        self.category_id = None
+        self.category_source = "journal"
+        self.reviewed = True
+        self.manual = False
+        self.bank_account_id = None
+        self.parties = [p for p in (entry.get("parties") or []) if p]
+
+        def name(a):
+            try:
+                return books.account(a).name
+            except KeyError:
+                return "?"
+        self.accounts = " · ".join(f"{name(a)} {'Dr' if d else 'Cr'} {fmt_money(d or c, parens=False)}"
+                                   for a, d, c in entry["lines"])
+        self.account_ids = {a for a, _d, _c in entry["lines"]}
 
 
 def show_unnamed(tab) -> None:
@@ -62,6 +90,8 @@ class TransactionModel(QAbstractTableModel):
 
     def flags(self, index):
         f = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if isinstance(self.rows[index.row()], JournalRow):
+            return f                            # changed in its own window (double-click)
         if index.column() == C_CAT:
             f |= Qt.ItemFlag.ItemIsEditable
         if index.column() == C_REV:
@@ -71,6 +101,8 @@ class TransactionModel(QAbstractTableModel):
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         tx = self.rows[index.row()]
         c = index.column()
+        if isinstance(tx, JournalRow):
+            return self._journal_data(tx, c, role)
         if role == Qt.ItemDataRole.DisplayRole:
             if c == C_DATE:
                 return tx.date
@@ -109,8 +141,23 @@ class TransactionModel(QAbstractTableModel):
             return "Double-click to set the customer / vendor"
         return None
 
+    def _journal_data(self, j: JournalRow, c: int, role):
+        if role == Qt.ItemDataRole.DisplayRole:
+            return {C_DATE: j.date, C_BANK: "Journal entry", C_DESC: j.description, C_PARTY: ", ".join(j.parties),
+                    C_AMT: fmt_money(j.amount_cents, parens=False), C_CAT: j.accounts, C_SRC: "Journal"}.get(c)
+        if role == Qt.ItemDataRole.TextAlignmentRole and c == C_AMT:
+            return ALIGN_RIGHT
+        if role == Qt.ItemDataRole.ForegroundRole and c in (C_BANK, C_SRC):
+            return MUTED
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return (f"{j.description}\n\n" + "\n".join(j.accounts.split(" · "))
+                    + "\n\nA journal entry (not through a bank account) — double-click to change its lines")
+        return None
+
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         tx = self.rows[index.row()]
+        if isinstance(tx, JournalRow):
+            return False
         if index.column() == C_CAT and role == Qt.ItemDataRole.EditRole:
             if value == "__sep__":
                 return False
@@ -169,7 +216,8 @@ class TransactionsTab(QWidget):
         self.bank_filter = QComboBox()
         self.status_filter = QComboBox()
         for label, key in [("All transactions", "all"), ("Uncategorized", "uncategorized"),
-                           ("Needs review", "unreviewed"), ("Reviewed", "reviewed")]:
+                           ("Needs review", "unreviewed"), ("Reviewed", "reviewed"),
+                           ("Journal entries (non-cash)", "journal")]:
             self.status_filter.addItem(label, key)
         self.status_filter.setCurrentIndex(2)
         self.search = QLineEdit(placeholderText="Search description, category, name, amount…")
@@ -301,14 +349,24 @@ class TransactionsTab(QWidget):
     def refresh(self) -> None:
         from .. import parties
 
-        rows = self.books.transactions(bank_account_id=self.bank_filter.currentData(),
-                                       status=self.status_filter.currentData())
+        status = self.status_filter.currentData()
+        bank = self.bank_filter.currentData()
+        rows = [] if status == "journal" else self.books.transactions(bank_account_id=bank, status=status)
+        if status in ("all", "journal"):        # journal entries too: everything on the books, not only the bank's
+            rows = rows + [j for j in (JournalRow(self.books, e) for e in self.books.manual_entries())
+                           if bank is None or bank in j.account_ids]
+            rows.sort(key=lambda t: t.date, reverse=True)
         names = {i: n.name for i, n in parties.names(self.books).items()}
+        names.update({t.id: ", ".join(t.parties) for t in rows if isinstance(t, JournalRow) and t.parties})
         q = self.search.text().strip().lower()
         if q:  # every word must appear in the description, memo, category, name, bank account or amount
             acct_names = {a.id: f"{a.code} {a.name} {a.label}".lower() for a in self.books.accounts()}
 
             def haystack(t) -> str:
+                if isinstance(t, JournalRow):
+                    return " ".join([t.description, t.accounts, names.get(t.id, ""), "journal entry",
+                                     fmt_money(t.amount_cents, parens=False), f"{t.amount_cents / 100:.2f}",
+                                     t.date]).lower().replace("&", " and ")
                 cat = acct_names.get(t.category_id, "uncategorized") if t.category_id else "uncategorized"
                 return " ".join([t.description, t.memo, cat, names.get(t.id, ""), acct_names.get(t.bank_account_id, ""),
                                  fmt_money(t.amount_cents, parens=False), f"{abs(t.amount_cents) / 100:.2f}",
@@ -337,9 +395,24 @@ class TransactionsTab(QWidget):
         self.summary.setText(f"Showing {len(rows)} · {len(all_tx)} total · {unc} uncategorized · {unrev} to review")
 
     def _double_clicked(self, index) -> None:
+        row = self.model.rows[index.row()]
+        if isinstance(row, JournalRow):
+            self.edit_journal_entry(row.entry)
+            return
         if index.column() in (C_CAT, C_REV):
             return  # the category has its own drop-down; Reviewed is a tick box
         self.edit_transaction(self.model.rows[index.row()].id)
+
+    def edit_journal_entry(self, entry: dict, *, run=None) -> bool:
+        """Change a journal entry's date, description and lines (``run`` for tests takes the dialog)."""
+        from .manual_entry import JournalEntryDialog
+
+        dlg = JournalEntryDialog(self.books, entry, self)
+        if run(dlg) if run is not None else dlg.exec():
+            self.refresh()
+            self.changed.emit()
+            return True
+        return False
 
     def edit_transaction(self, tx_id: int) -> bool:
         from .transaction_dialog import TransactionDialog
@@ -421,8 +494,13 @@ class TransactionsTab(QWidget):
         self.changed.emit()
 
     def selected_ids(self) -> list[int]:
+        """The bank transactions selected (journal entries left out: they're changed in their own window)."""
         rows = sorted({i.row() for i in self.table.selectionModel().selectedRows()})
-        return [self.model.rows[r].id for r in rows]
+        return [self.model.rows[r].id for r in rows if not isinstance(self.model.rows[r], JournalRow)]
+
+    def selected_entries(self) -> list[dict]:
+        rows = sorted({i.row() for i in self.table.selectionModel().selectedRows()})
+        return [self.model.rows[r].entry for r in rows if isinstance(self.model.rows[r], JournalRow)]
 
     def apply_bulk_category(self) -> None:
         cat = self.bulk_category.currentData()
@@ -460,8 +538,14 @@ class TransactionsTab(QWidget):
             f"{stats.get('unmatched', 0)} need your attention.", 10000)
 
     def delete_selected(self) -> None:
-        ids = self.selected_ids()
-        if ids and confirm(self, "Delete transactions", f"Delete {len(ids)} transaction(s)? This can't be undone."):
-            self.books.delete_transactions(ids)
+        ids, entries = self.selected_ids(), self.selected_entries()
+        n = len(ids) + len(entries)
+        if n and confirm(self, "Delete transactions", f"Delete {n} transaction(s)"
+                                                      + (f" ({len(entries)} journal entr{'y' if len(entries) == 1 else 'ies'})"
+                                                         if entries else "") + "? This can't be undone."):
+            if ids:
+                self.books.delete_transactions(ids)
+            for e in entries:
+                self.books.delete_journal_entry(e["id"])
             self.refresh()
             self.changed.emit()

@@ -335,7 +335,9 @@ class DocumentsTab(QWidget):
 
         # Folder strip: where files live, and files waiting to be filed
         folder_bar = QHBoxLayout()
-        self.folder_label = QLabel()
+        from .common import OneLineLabel
+
+        self.folder_label = OneLineLabel()          # one line ("…" when there's no room; all of it on hover)
         self.folder_label.setObjectName("hint")
         folder_bar.addWidget(self.folder_label, 1)
         self.unfiled_btn = QPushButton()

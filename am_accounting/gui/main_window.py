@@ -46,6 +46,8 @@ def relax_widths(root, limit: int = 420) -> int:
 
     n = 0
     for lbl in root.findChildren(QLabel):
+        if lbl.property("one_line"):
+            continue
         if not lbl.wordWrap() and lbl.minimumSizeHint().width() > limit and lbl.text():
             m = re.match(r"^(<b>[^<]+</b>)\s*\((.*)\)\s*$", lbl.text(), re.S)
             if m:      # a heading with a long note: one line — the note's first part, all of it in the tooltip

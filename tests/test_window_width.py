@@ -201,3 +201,72 @@ def test_top_bar_never_scrolls_off(app, tmp_path):
     QApplication.processEvents()
     assert bar.value() == 0
     w.close()
+
+
+def test_journal_entries_in_transactions(app, tmp_path):
+    """The Transactions tab shows the journal entries too (not only bank lines), and they can be changed there."""
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+    from am_accounting.gui.transactions import JournalRow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("High Park Ltd"))), registry=reg)
+    b = w.books
+    held = b.add_account("1650", "Assets Held", "asset", "fixed_asset").id
+    kingsett = b.add_account("2810", "Term loan – Kingsett Capital", "liability", "long_term").id
+    golden = b.add_account("2820", "Mortgage – Goldenbell Capital", "liability", "long_term").id
+    eid = b.add_journal_entry("2025-09-01", "Mortgage – Goldenbell Capital (matched to Assets Held)",
+                              [(held, 2_600_000_00, 0), (kingsett, 0, 2_600_000_00)])
+    tab = w.tx_tab
+    tab.status_filter.setCurrentIndex(tab.status_filter.findData("journal"))
+    assert [type(r) for r in tab.model.rows] == [JournalRow]
+    j = tab.model.rows[0]
+    assert tab.model.data(tab.model.index(0, 1)) == "Journal entry"
+    assert "Term loan – Kingsett Capital Cr" in tab.model.data(tab.model.index(0, 5))
+    tab.status_filter.setCurrentIndex(tab.status_filter.findData("all"))
+    assert any(isinstance(r, JournalRow) for r in tab.model.rows)           # with everything else
+    tab.search.setText("goldenbell")
+    assert [r.id for r in tab.model.rows] == [-eid]
+    tab.search.setText("")
+    tab.status_filter.setCurrentIndex(tab.status_filter.findData("unreviewed"))
+    assert not any(isinstance(r, JournalRow) for r in tab.model.rows)
+
+    def fix(dlg):                                                            # credit the right lender
+        for r in range(dlg.table.rowCount()):
+            box = dlg.table.cellWidget(r, 1)
+            if box.currentData() == kingsett:
+                box.setCurrentIndex(box.findData(golden))
+        dlg.save()
+        return dlg.result()
+
+    assert tab.edit_journal_entry(j.entry, run=fix)
+    assert b.account_balance(golden) == 2_600_000_00 and b.account_balance(kingsett) == 0
+    tab.status_filter.setCurrentIndex(tab.status_filter.findData("journal"))
+    tab.table.selectRow(0)
+    assert tab.selected_ids() == [] and len(tab.selected_entries()) == 1
+    w.close()
+
+
+def test_files_kept_line_stays_on_one_line(app, tmp_path):
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.common import OneLineLabel
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    labels = [x for x in w.findChildren(OneLineLabel)]
+    assert labels                                                   # the Invoices & Bills folder line
+    lbl = labels[0]
+    long = "📁 Files are kept in …/Accounting/AM Accounting/Invoices & Bills — sorted by status (open / paid), paid " \
+           "ones by year"
+    lbl.setText(long)
+    lbl.resize(300, 30)
+    inner = lbl._label
+    assert not inner.wordWrap() and "…" in inner.text() and long in inner.toolTip()
+    lbl.resize(2000, 30)
+    lbl.setText(long)                                               # (a hidden widget gets its resize when shown)
+    assert inner.text() == long
+    assert lbl.minimumSizeHint().width() < 200                      # never makes the page wider
+    w.close()

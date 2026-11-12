@@ -92,3 +92,59 @@ def confirm(parent: QWidget, title: str, message: str) -> bool:
 
 
 ALIGN_RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+
+class OneLineLabel(QWidget):
+    """A label kept on one line: cut with "…" when there isn't room (all of it in the tooltip)."""
+
+    def __init__(self, text: str = "", parent=None):
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy
+
+        super().__init__(parent)
+        self._text = ""
+        self._label = QLabel()
+        self._label.setProperty("one_line", True)
+        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._label)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(80)
+        self.setText(text)
+
+    def setObjectName(self, name):  # noqa: N802 — styles the label (e.g. "hint")
+        self._label.setObjectName(name)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._text = text
+        self._elide()
+
+    def text(self) -> str:
+        return self._text
+
+    def setToolTip(self, tip: str) -> None:  # noqa: N802
+        self._tip = tip
+        self._elide()
+
+    def _elide(self) -> None:
+        fm = self._label.fontMetrics()
+        w = max(self.width(), 80)
+        shown = fm.elidedText(self._text, Qt.TextElideMode.ElideMiddle, w)
+        self._label.setText(shown)
+        tip = getattr(self, "_tip", "")
+        self._label.setToolTip("\n".join(x for x in (self._text if shown != self._text else "", tip) if x))
+
+    def resizeEvent(self, e):  # noqa: N802
+        super().resizeEvent(e)
+        self._elide()
+
+    def minimumSizeHint(self):  # noqa: N802 — never asks for more room than a short line
+        from PySide6.QtCore import QSize
+
+        return QSize(80, self._label.sizeHint().height())
+
+    def sizeHint(self):  # noqa: N802
+        from PySide6.QtCore import QSize
+
+        return QSize(min(self._label.fontMetrics().horizontalAdvance(self._text) + 8, 600),
+                     self._label.sizeHint().height())
