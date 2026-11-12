@@ -219,6 +219,9 @@ def test_journal_entries_in_transactions(app, tmp_path):
     eid = b.add_journal_entry("2025-09-01", "Mortgage – Goldenbell Capital (matched to Assets Held)",
                               [(held, 2_600_000_00, 0), (kingsett, 0, 2_600_000_00)])
     tab = w.tx_tab
+    tab.refresh()
+    assert tab.status_filter.currentData() == "all"                     # the default: everything
+    assert any(isinstance(r, JournalRow) for r in tab.model.rows)
     tab.status_filter.setCurrentIndex(tab.status_filter.findData("journal"))
     assert [type(r) for r in tab.model.rows] == [JournalRow]
     j = tab.model.rows[0]

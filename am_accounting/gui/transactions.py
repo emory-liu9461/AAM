@@ -219,7 +219,7 @@ class TransactionsTab(QWidget):
                            ("Needs review", "unreviewed"), ("Reviewed", "reviewed"),
                            ("Journal entries (non-cash)", "journal")]:
             self.status_filter.addItem(label, key)
-        self.status_filter.setCurrentIndex(2)
+        self.status_filter.setCurrentIndex(0)    # all of them, journal entries (non-cash) included
         self.search = QLineEdit(placeholderText="Search description, category, name, amount…")
         self.search.setClearButtonEnabled(True)
         self.name_filter = QComboBox()
