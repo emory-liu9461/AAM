@@ -30,16 +30,19 @@ def _label(d: str) -> str:
 class TimeChart(QWidget):
     """Series over dates: lines (``stacked=False``) or stacked areas (``stacked=True``)."""
 
-    def __init__(self, title: str, *, stacked: bool = False, empty: str = ""):
+    def __init__(self, title: str, *, stacked: bool = False, empty: str = "", legend_total: bool = False):
         super().__init__()
-        self.title, self.stacked = title, stacked
+        self.title, self.stacked, self.legend_total = title, stacked, legend_total
         self.empty = empty or "Nothing recorded yet"
         self.dates: list[str] = []
         self.series: list[tuple[str, list[int]]] = []    # (name, a value per date)
         self.setMinimumHeight(190)
 
-    def set_data(self, dates: list[str], series: list[tuple[str, list[int]]]) -> None:
-        self.dates, self.series = dates, [(n, v) for n, v in series if any(v)] or series[:1]
+    def set_data(self, dates: list[str], series: list[tuple[str, list[int]]], labels: list[str] | None = None,
+                 *, keep_empty: bool = False) -> None:
+        """``dates`` as YYYY-MM-DD (or anything, with ``labels`` for the axis)."""
+        self.dates, self.labels = dates, labels
+        self.series = series if keep_empty else ([(n, v) for n, v in series if any(v)] or series[:1])
         self.update()
 
     def paintEvent(self, _e) -> None:  # noqa: N802
@@ -61,7 +64,7 @@ class TimeChart(QWidget):
         x = 4
         for i, (name, vals) in enumerate(self.series):
             c = QColor(COLOURS[i % len(COLOURS)])
-            label = f"{name} {_short(vals[-1])}"
+            label = f"{name} {_short(sum(vals) if self.legend_total else vals[-1])}"
             w = p.fontMetrics().horizontalAdvance(label) + 26
             if x + w > self.width() - 4:
                 break
@@ -100,7 +103,7 @@ class TimeChart(QWidget):
         step = max(1, n // max(1, int((right - left) // 90)))
         for k in range(0, n, step):
             lx = min(max(xs(k) - 45, 0), self.width() - 92)          # kept inside the chart
-            p.drawText(QRectF(lx, bottom + 4, 90, 16), int(Qt.AlignmentFlag.AlignHCenter), _label(self.dates[k]))
+            p.drawText(QRectF(lx, bottom + 4, 90, 16), int(Qt.AlignmentFlag.AlignHCenter), (self.labels[k] if getattr(self, 'labels', None) else _label(self.dates[k])))
         if self.stacked:
             base = [0] * n
             for i, (_name, vals) in enumerate(self.series):

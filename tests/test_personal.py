@@ -127,11 +127,13 @@ def test_button_beside_portfolio_summary(app, tmp_path):
     w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
     w.set_mode("assets")
     v = w.asset_view
-    assert v.net_worth_btn.text() == "Net Worth"
+    assert v.net_worth_btn.text() == "Personal Finance"
     v.show_summary()
     assert v.portfolio_bar.isVisibleTo(v)                       # As of, Viewing … with the portfolio
     v.show_net_worth()
-    assert v.tabs.currentWidget() is v.net_worth_page and v.net_worth_btn.isChecked()
+    assert v.tabs.currentWidget() is v.personal_page and v.net_worth_btn.isChecked()
+    assert v.personal_page.tabs.currentWidget() is v.net_worth_page
+    assert [v.personal_page.tabs.tabText(i) for i in range(3)] == ["Net Worth", "Budget", "Income from Businesses"]
     assert not v.summary_btn.isChecked() and not v.company_btn.isChecked()
     assert not v.tabs.tabBar().isVisibleTo(v) and not v.portfolio_bar.isVisibleTo(v)
     assert v._company_shown() is None
@@ -141,8 +143,8 @@ def test_button_beside_portfolio_summary(app, tmp_path):
     assert not v.portfolio_bar.isVisibleTo(v)
     v.show_summary()
     assert v.portfolio_bar.isVisibleTo(v)
-    v.show_net_worth()                                          # opened again: the same page, refreshed
-    assert v.tabs.currentWidget() is v.net_worth_page
+    v.show_personal("budget")                                   # opened again: the same page, refreshed
+    assert v.tabs.currentWidget() is v.personal_page and v.personal_page.tabs.currentWidget() is v.personal_page.budget
     w.close()
 
 

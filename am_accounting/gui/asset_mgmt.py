@@ -2080,12 +2080,12 @@ class AssetManagementView(QWidget):
                                     "Financing & Cap Table, Waterfall, Projections")
         self.company_btn.clicked.connect(self.show_company_pages)
         bar.addWidget(self.company_btn)
-        self.net_worth_btn = QPushButton("Net Worth")
+        self.net_worth_btn = QPushButton("Personal Finance")
         self.net_worth_btn.setCheckable(True)
         self.net_worth_btn.setObjectName("primary")
-        self.net_worth_btn.setToolTip("Your personal net worth: the portfolio's real estate at your share plus your "
-                                      "own assets and liabilities, and the statement to send a lender")
-        self.net_worth_btn.clicked.connect(lambda *_: self.show_net_worth())
+        self.net_worth_btn.setToolTip("Your own money: net worth (and the statement to send a lender), a monthly "
+                                      "budget, and the income you take from your businesses")
+        self.net_worth_btn.clicked.connect(lambda *_: self.show_personal())
         bar.addWidget(self.net_worth_btn)
         # the portfolio's own controls: only with the portfolio (not over a company's pages, deals or net worth)
         self.portfolio_bar = QWidget()
@@ -2508,18 +2508,25 @@ class AssetManagementView(QWidget):
         self.tabs.setCurrentWidget(self.deals_page)
         self._top_buttons()
 
-    def show_net_worth(self) -> None:
-        """Your personal net worth (beside Portfolio Summary; see personal.py)."""
-        if getattr(self, "net_worth_page", None) is None:
-            from .net_worth_page import NetWorthPage
+    def show_personal(self, tab: str | None = None) -> None:
+        """Personal Finance (beside Portfolio Summary): Net Worth, Budget, Income from Businesses."""
+        if getattr(self, "personal_page", None) is None:
+            from .personal_finance_page import PersonalFinancePage
 
-            self.net_worth_page = NetWorthPage(self.pf, as_of=self._as_of_date)
-            i = self.tabs.addTab(self.net_worth_page, "Net Worth")
+            self.personal_page = PersonalFinancePage(self.pf, as_of=self._as_of_date)
+            self.net_worth_page = self.personal_page.net_worth
+            i = self.tabs.addTab(self.personal_page, "Personal Finance")
             self.tabs.setTabVisible(i, False)          # opened with its button at the top
         else:
-            self.net_worth_page.refresh()
-        self.tabs.setCurrentWidget(self.net_worth_page)
+            self.personal_page.refresh()
+        if tab is not None:
+            pg = self.personal_page
+            pg.tabs.setCurrentWidget({"net_worth": pg.net_worth, "budget": pg.budget, "income": pg.income}[tab])
+        self.tabs.setCurrentWidget(self.personal_page)
         self._top_buttons()
+
+    def show_net_worth(self) -> None:
+        self.show_personal("net_worth")
 
     def show_company_pages(self) -> None:
         """Back to the company pages (the one open last, or the Dashboard)."""
@@ -2531,7 +2538,7 @@ class AssetManagementView(QWidget):
         page = self.tabs.currentWidget()
         portfolio = self.tabs.currentIndex() == 0
         deals = page is getattr(self, "deals_page", None)
-        worth = page is not None and page is getattr(self, "net_worth_page", None)
+        worth = page is not None and page is getattr(self, "personal_page", None)
         other = portfolio or deals or worth
         self.summary_btn.setChecked(portfolio)
         self.deals_btn.setChecked(deals)
@@ -3325,7 +3332,7 @@ class AssetManagementView(QWidget):
         """The holding the current company page shows (None on the portfolio / deal pipeline)."""
         w = self.tabs.currentWidget()
         if self.tabs.currentIndex() == 0 or w is getattr(self, "deals_page", None) or \
-                w is getattr(self, "net_worth_page", None):
+                w is getattr(self, "personal_page", None):
             return None
         pick = {getattr(self, "dash_page", None): getattr(getattr(self, "dash_page", None), "pick", None),
                 getattr(self, "ops_page", None): getattr(getattr(self, "ops_page", None), "pick", None),
