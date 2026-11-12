@@ -32,15 +32,17 @@ def test_folder_layout(tmp_path):
     f = tmp_path / "Personal"
     assert pers.create(f) > 0 and pers.create(f) == 0
     for p in ("Net Worth Statements/Archive", "Income Tax/T1 Returns", "Income Tax/T4 Slips",
-              "Income Tax/Notices of Assessment (NOA)", "Identification", "Credit Reports", "Résumé"):
+              "Income Tax/Notices of Assessment (NOA)", "Identification", "Credit Reports"):
         assert (f / p).is_dir()
+    for gone in ("Résumé", "Personal Guarantees"):
+        assert not (f / gone).exists()
 
 
 def test_net_worth(tmp_path):
     pf, h = _pf(tmp_path)
     s = pers.Saved("Pat Lee", [pers.Entry("Cash and bank accounts", "TD chequing", 50_000_00),
                                pers.Entry("TFSA", "", 0)],
-                   [pers.Entry("Credit cards", "Visa", 5_000_00)], guarantees="First National – 45 Elm St – $2.8M")
+                   [pers.Entry("Credit cards", "Visa", 5_000_00)])
     pers.save(pf, s)
     assert pers.load(pf) == s                                           # kept for next time
     props = pers.properties(pf, as_of=date(2026, 11, 1))
@@ -56,7 +58,7 @@ def test_net_worth(tmp_path):
     st = pers.statement(pf, s, date(2026, 11, 1))
     assert st.properties[0].my_equity == 562_500_00
     page = pers.html(st)
-    assert "Pat Lee" in page and "Schedule of Real Estate Owned" in page and "First National – 45 Elm St" in page
+    assert "Pat Lee" in page and "Schedule of Real Estate Owned" in page and "guarantee" not in page.lower()
     out = tmp_path / "nw.xlsx"
     pers.write_xlsx(st, out)
     from openpyxl import load_workbook

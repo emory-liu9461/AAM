@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+                               QLineEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
                                QTextBrowser, QVBoxLayout, QWidget)
 
 from .. import longpath as lpth
@@ -144,11 +144,6 @@ class NetWorthDialog(QDialog):
         ll.addWidget(self.assets, 2)
         self.liabs = _Entries("Liabilities", pers.LIABILITY_KINDS, self._preview)
         ll.addWidget(self.liabs, 2)
-        ll.addWidget(QLabel("<b>Contingent liabilities</b> (personal guarantees — lender, company, amount)"))
-        self.guar = QPlainTextEdit(self.saved.guarantees)
-        self.guar.setMaximumHeight(70)
-        self.guar.textChanged.connect(self._preview)
-        ll.addWidget(self.guar)
         split.addWidget(left)
         self.page = QTextBrowser()
         split.addWidget(self.page)
@@ -227,8 +222,7 @@ class NetWorthDialog(QDialog):
     # ---- the statement ----
     def current(self) -> pers.Saved:
         shares = {p.holding_id: p.share_pct for p in self.props}
-        return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares,
-                          self.guar.toPlainText().strip())
+        return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares)
 
     def statement(self) -> pers.Statement:
         return pers.statement(self.pf, self.current(), self.as_of, self.props)

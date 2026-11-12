@@ -75,10 +75,10 @@ CHECKLIST: list[Doc] = [
         f"{UW}/Legal and Admin/Shareholder Documents", f"{AM}/Legal and Admin/Investor Documents"),
         ("shareholder", "org chart", "organization chart", "lp agreement", "partnership agreement")),
     Doc("Borrower and Guarantor Information", "Net worth statements, schedule of real estate owned, credit consent, "
-                                             "ID, résumés", (),
+                                             "ID", (),
         ("net worth", "pnws", "real estate owned", "schedule of real estate", "reo schedule", "credit consent",
-         "guarantor", "resume", "résumé"),
-        ("Net Worth Statements", "Identification", "Credit Reports", "Résumé", "Real Estate Owned")),
+         "guarantor"),
+        ("Net Worth Statements", "Identification", "Credit Reports", "Real Estate Owned")),
     Doc("Personal Tax Returns and NOAs", "T1 returns, notices of assessment and T4s — usually the last 2–3 years",
         (), ("t1 general", "notice of assessment", "noa", "t4"), ("Income Tax",)),
     Doc("Leases and Tenant Forms", "", (f"{AM}/Property/Leasing/Leases",), ("lease",)),

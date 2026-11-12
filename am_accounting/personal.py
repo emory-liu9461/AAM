@@ -12,7 +12,6 @@ from it.
   own only part of the holding company);
 * your other assets (cash, investments, RRSP, TFSA, your home, vehicles …) and liabilities (your home's mortgage,
   lines of credit, credit cards …), entered by you and kept for next time;
-* contingent liabilities (personal guarantees), as a note.
 
 :func:`statement` works it out; the dialog saves it as a PDF and an Excel file in the personal folder's Net Worth
 Statements (the earlier ones move to its Archive).
@@ -39,8 +38,6 @@ LAYOUT: list[tuple[str, list[str], str]] = [
     ("Credit Reports", [], ""),
     ("Bank and Investment Statements", [], "Personal accounts, RRSP, TFSA"),
     ("Real Estate Owned", [], "Your own home and anything not in the portfolio"),
-    ("Résumé", [], "Your résumé / real estate experience"),
-    ("Personal Guarantees", [], "Guarantees you've signed for company loans"),
 ]
 
 ASSET_KINDS = ["Cash and bank accounts", "Investments (non-registered)", "RRSP / RRIF", "TFSA", "Principal residence",
@@ -236,9 +233,6 @@ def html(st: Statement) -> str:
                f"<b>{_m(st.total_liabilities)}</b></td></tr>")
     out.append(f"<tr><td style='{td};{tr_};padding-top:10px'><b>NET WORTH</b></td><td align='right' "
                f"style='{td};{tr_};padding-top:10px'><b>{_m(st.net_worth)}</b></td></tr></table>")
-    if st.guarantees.strip():
-        out.append("<p style='margin-top:14px'><b>Contingent liabilities (personal guarantees)</b><br>"
-                   + esc(st.guarantees).replace("\n", "<br>") + "</p>")
     if st.properties:
         cols = ["Property", "Location", "Value (100%)", "Debt (100%)", "Lender(s)", "Share", "Your equity"]
         out.append("<h3 style='margin-top:18px'>Schedule of Real Estate Owned</h3><table cellspacing='0' "
@@ -296,12 +290,6 @@ def write_xlsx(st: Statement, path: Path) -> None:
     put("Total liabilities", st.total_liabilities, b=True)
     ws.append([])
     put("NET WORTH", st.net_worth, b=True)
-    if st.guarantees.strip():
-        ws.append([])
-        ws.append(["Contingent liabilities (personal guarantees)"])
-        ws.cell(ws.max_row, 1).font = bold
-        for line in st.guarantees.strip().splitlines():
-            ws.append([line])
     ws.column_dimensions["A"].width = 60
     ws.column_dimensions["B"].width = 18
     if st.properties:
