@@ -1,5 +1,6 @@
 """Personal Finance (beside Portfolio Summary and Deal Pipeline): your own money in one place — Net Worth, a monthly
-Budget, Income from Businesses and Shareholder Loans (see personal.py, personal_finance.py, shareholder_loans.py)."""
+Budget, Statements, Income from Businesses and Shareholder Loans (see personal.py, personal_finance.py,
+personal_statements.py, shareholder_loans.py)."""
 
 from __future__ import annotations
 
@@ -120,8 +121,12 @@ class BudgetTab(QWidget):
                 t.setItem(i, 1, _cell(fmt_money(r.line.budget) if r.line.budget else "", right=True, editable=True))
                 for m in range(1, 13):
                     v = r.months.get(m, 0)
-                    t.setItem(i, 1 + m, _cell(fmt_money(v) if v else "", right=True, editable=not r.auto,
-                                              colour=MUTED if r.auto else None))
+                    c = _cell(fmt_money(v) if v else "", right=True, editable=not r.auto,
+                              colour=MUTED if r.auto else None)
+                    if r.statements.get(m):
+                        c.setToolTip(f"{fmt_money(r.statements[m])} from your statements"
+                                     + (f" + {fmt_money(v - r.statements[m])} typed" if v != r.statements[m] else ""))
+                    t.setItem(i, 1 + m, c)
                 to_date = r.budget_to(n)
                 var = (to_date - r.actual) if spend else (r.actual - to_date)
                 t.setItem(i, 14, _cell(fmt_money(r.actual), right=True, bold=True))
@@ -178,8 +183,9 @@ class BudgetTab(QWidget):
                 if ln.category == r.line.category and ln.group == r.line.group:
                     ln.budget = v
             pfi.save_budget_lines(self.pf, lines)
-        elif 2 <= it.column() <= 13 and not r.auto:
-            pfi.set_actual(self.pf, self.year.value(), r.line.category, it.column() - 1, v)
+        elif 2 <= it.column() <= 13 and not r.auto:   # what you type is the month's total; the statements are part
+            m = it.column() - 1
+            pfi.set_actual(self.pf, self.year.value(), r.line.category, m, v - r.statements.get(m, 0))
         self.fill()
 
     def add_category(self, name: str | None = None, group: str | None = None) -> None:
@@ -403,6 +409,9 @@ class PersonalFinancePage(QWidget):
         self.tabs.addTab(self.income, "Income from Businesses")
         self.tabs.addTab(self.loans, "Shareholder Loans")
         self.loans.on_change = self.net_worth.refresh
+        self.statements = StatementsTab(pf)
+        self.tabs.insertTab(2, self.statements, "Statements")
+        self.statements.on_change = self.budget.fill
         self.tabs.currentChanged.connect(lambda *_: self._shown())
         lay.addWidget(self.tabs)
 
@@ -410,6 +419,8 @@ class PersonalFinancePage(QWidget):
         w = self.tabs.currentWidget()
         if w is self.net_worth:
             self.net_worth.refresh()
+        elif w is self.statements:
+            self.statements.read_now()          # new statements in the folder are read when you open it
         else:
             w.fill()
 
@@ -669,3 +680,162 @@ def pers_name(pf) -> str:
     from .. import personal as pers
 
     return pers.load(pf).name
+
+
+class StatementsTab(QWidget):
+    """Your personal bank and credit card statements: a folder you pick, read into transactions sorted into your
+    budget's categories (see personal_statements.py)."""
+
+    def __init__(self, pf, parent=None):
+        super().__init__(parent)
+        from .asset_mgmt import Card
+
+        self.pf = pf
+        self.on_change = None                   # called when the budget's actuals may have changed
+        lay = QVBoxLayout(self)
+        fold = QHBoxLayout()
+        fold.addWidget(QLabel("Statements folder:"))
+        self.folder_label = QLabel()
+        self.folder_label.setWordWrap(True)
+        fold.addWidget(self.folder_label, 1)
+        for text, slot, tip in (("Choose…", self.choose, "The folder you put your personal statements in"),
+                                ("Open", self.open_folder, "Open it (drop new statements in)"),
+                                ("Read New Statements", self.read_now, "Read the statements not read yet")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            if text.startswith("Read"):
+                b.setObjectName("primary")
+            b.clicked.connect(lambda *_, f=slot: f())
+            fold.addWidget(b)
+        lay.addLayout(fold)
+        cards = QHBoxLayout()
+        self.cards = {k: Card(t, small=True) for k, t in (("in", "Money in"), ("out", "Money out"),
+                                                           ("unsorted", "Not sorted yet"), ("files", "Statements read"))}
+        for c in self.cards.values():
+            cards.addWidget(c)
+        lay.addLayout(cards)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Year:"))
+        self.year = _year_box(self.fill)
+        row.addWidget(self.year)
+        self.show_which = QComboBox()
+        self.show_which.addItems(["All transactions", "Not sorted yet"])
+        self.show_which.currentIndexChanged.connect(lambda *_: self.fill())
+        row.addWidget(self.show_which)
+        row.addStretch(1)
+        self.result = QLabel()
+        self.result.setObjectName("hint")
+        row.addWidget(self.result)
+        lay.addLayout(row)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Category", "Statement"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        lay.addWidget(self.table, 1)
+        hint = QLabel("Put your bank and credit card statements (PDF, CSV, Excel or OFX) in the folder — they're read "
+                      "when you open this tab. Sort a transaction and the others from the same place follow. Money "
+                      "out counts in its expense category on the Budget, money in in its income category; transfers "
+                      "between your accounts, card payments and money from your own companies aren't counted.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.txs: list = []
+        self._show_folder()
+        self.fill()
+
+    def _show_folder(self) -> None:
+        from .. import personal_statements as pst
+
+        f = pst.folder(self.pf)
+        self.folder_label.setText(f"<b>{f}</b>" if f else "<span style='color:#b3261e'>Not chosen yet</span> — pick "
+                                  "the folder you'll put your statements in")
+
+    def choose(self, path: str | None = None):
+        from PySide6.QtWidgets import QFileDialog
+
+        from .. import longpath as lpth
+        from .. import personal_statements as pst
+
+        if path is None:
+            path = QFileDialog.getExistingDirectory(self, "Folder for your personal statements",
+                                                    str(pst.folder(self.pf) or ""))
+        if not path:
+            return None
+        lpth.mkdir(path)
+        pst.set_folder(self.pf, path)
+        self._show_folder()
+        self.read_now()
+        return path
+
+    def open_folder(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from .. import longpath as lpth
+        from .. import personal_statements as pst
+
+        f = pst.folder(self.pf)
+        if f is not None:
+            lpth.mkdir(f)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f)))
+
+    def read_now(self):
+        from .. import personal_statements as pst
+
+        res = pst.scan(self.pf)
+        bits = [f"{res.added} new transaction(s) from {res.files} statement(s)" if res.files else
+                "No new statements"]
+        if res.duplicates:
+            bits.append(f"{res.duplicates} already read from another statement")
+        if res.errors:
+            bits.append(f"{len(res.errors)} couldn't be read: " + "; ".join(res.errors[:3]))
+        self.result.setText(" · ".join(bits))
+        self.result.setToolTip("\n".join(res.errors))
+        self.fill()
+        if res.added and self.on_change:
+            self.on_change()
+        return res
+
+    def fill(self) -> None:
+        from .. import personal_statements as pst
+
+        yr = self.year.value()
+        unsorted = self.show_which.currentIndex() == 1
+        self.txs = pst.transactions(self.pf, yr, unsorted_only=unsorted)
+        allyr = pst.transactions(self.pf, yr)
+        counted = [x for x in allyr if x.category not in ("", pst.TRANSFER)]
+        self.cards["in"].set(fmt_money(sum(x.amount for x in counted if x.amount > 0)), f"in {yr}, not transfers")
+        self.cards["out"].set(fmt_money(-sum(x.amount for x in counted if x.amount < 0)), f"in {yr}, not transfers")
+        n_un = sum(1 for x in allyr if not x.category)
+        self.cards["unsorted"].set(str(n_un), "to sort below" if n_un else "all sorted",
+                                   NEGATIVE if n_un else POSITIVE)
+        self.cards["files"].set(str(len(pst.files(self.pf))), "in the folder")
+        t = self.table
+        t.setRowCount(len(self.txs))
+        cats = [""] + pst.categories()
+        for r, x in enumerate(self.txs):
+            t.setItem(r, 0, _cell(x.date))
+            t.setItem(r, 1, _cell(x.description))
+            t.setItem(r, 2, _cell(fmt_money(x.amount), right=True, colour=POSITIVE if x.amount > 0 else None))
+            box = QComboBox()
+            for c in cats:
+                box.addItem(c or "— not sorted —", c)
+            box.setCurrentIndex(max(0, box.findData(x.category)))
+            box.activated.connect(lambda _i, tid=x.id, b=box: self.sort(tid, b.currentData()))
+            t.setCellWidget(r, 3, box)
+            t.setItem(r, 4, _cell(x.source, colour=MUTED))
+        t.resizeColumnToContents(0)
+        t.setColumnWidth(2, 120)
+        t.setColumnWidth(3, 240)
+        t.setColumnWidth(4, 220)
+
+    def sort(self, tx_id: int, category: str) -> int:
+        from .. import personal_statements as pst
+
+        n = pst.set_category(self.pf, tx_id, category)
+        self.fill()
+        if self.on_change:
+            self.on_change()
+        return n

@@ -8,8 +8,8 @@
 * anything else you take from them, entered by hand: salary, management fees, bonuses, consulting …
 
 **The budget** is a monthly amount per category (income and expenses), against what actually came in and went out
-each month — entered by hand, except *Business income*, which is the income from your businesses above (budgeted
-too, if you like).
+each month — from your statements (see personal_statements.py) plus what you type, except *Business income*, which is
+the income from your businesses above (budgeted too, if you like).
 """
 
 from __future__ import annotations
@@ -187,8 +187,9 @@ def set_actual(pf, year: int, category: str, month: int, cents: int | None) -> N
 @dataclass
 class BudgetRow:
     line: Line
-    months: dict[int, int]        # actual by month
+    months: dict[int, int]        # actual by month (statements + typed)
     auto: bool = False            # Business income: from the businesses
+    statements: dict[int, int] = field(default_factory=dict)   # the part from your statements
 
     @property
     def actual(self) -> int:
@@ -216,15 +217,20 @@ class Budget:
 
 
 def budget(pf, year: int) -> Budget:
+    from . import personal_statements as pst
+
     lines = budget_lines(pf)
     acts = actuals(pf, year)
+    stm = pst.monthly(pf, year)
     biz = business_income(pf, year).by_month()
     rows = []
     for ln in lines:
         if ln.category == BUSINESS:
             rows.append(BudgetRow(ln, {m: v for m, v in biz.items() if v}, auto=True))
         else:
-            rows.append(BudgetRow(ln, acts.get(ln.category, {})))
+            typed, st = acts.get(ln.category, {}), stm.get(ln.category, {})
+            both = {m: typed.get(m, 0) + st.get(m, 0) for m in set(typed) | set(st)}
+            rows.append(BudgetRow(ln, {m: v for m, v in both.items() if v}, statements=st))
     today = date.today()
     through = 12 if year < today.year else (today.month if year == today.year else 0)
     return Budget(year, rows, through)

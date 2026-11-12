@@ -133,7 +133,8 @@ def test_button_beside_portfolio_summary(app, tmp_path):
     v.show_net_worth()
     assert v.tabs.currentWidget() is v.personal_page and v.net_worth_btn.isChecked()
     assert v.personal_page.tabs.currentWidget() is v.net_worth_page
-    assert [v.personal_page.tabs.tabText(i) for i in range(3)] == ["Net Worth", "Budget", "Income from Businesses"]
+    assert [v.personal_page.tabs.tabText(i) for i in range(5)] == ["Net Worth", "Budget", "Statements",
+                                                                   "Income from Businesses", "Shareholder Loans"]
     assert not v.summary_btn.isChecked() and not v.company_btn.isChecked()
     assert not v.tabs.tabBar().isVisibleTo(v) and not v.portfolio_bar.isVisibleTo(v)
     assert v._company_shown() is None
