@@ -2083,6 +2083,7 @@ class Shareholder:
     worked_out: bool = False     # not entered: from the holding's ownership %
     funded_cents: int | None = None  # paid in so far (None = the whole amount)
     funded_date: str | None = None   # when it was paid in (for the cash flow)
+    link: str = ""               # who it is to you: 'me', 'holdco' (your holding company) or '' (someone else)
 
     @property
     def funded(self) -> int:
@@ -2107,7 +2108,8 @@ class StackRow:
 def _cap_ready(pf: Portfolio) -> None:
     pf.conn.executescript(CAP_SCHEMA)
     cols = {c[1] for c in pf.conn.execute("PRAGMA table_info(shareholders)")}
-    for col, decl in (("company", "TEXT NOT NULL DEFAULT ''"), ("funded_cents", "INTEGER"), ("funded_date", "TEXT")):
+    for col, decl in (("company", "TEXT NOT NULL DEFAULT ''"), ("funded_cents", "INTEGER"), ("funded_date", "TEXT"),
+                      ("link", "TEXT NOT NULL DEFAULT ''")):
         if col not in cols:
             pf.conn.execute(f"ALTER TABLE shareholders ADD COLUMN {col} {decl}")
     pf.conn.commit()
@@ -2124,15 +2126,16 @@ def save_shareholder(pf: Portfolio, holding_id: int, sh: Shareholder) -> int:
     if sh.funded_date:
         date.fromisoformat(sh.funded_date)
     vals = (holding_id, sh.name.strip(), sh.company.strip(), sh.share_class.strip() or "Common",
-            sh.amount_cents / 100, sh.amount_cents, sh.note.strip(), sh.funded_cents, sh.funded_date)
+            sh.amount_cents / 100, sh.amount_cents, sh.note.strip(), sh.funded_cents, sh.funded_date, sh.link or "")
     with pf.conn:
         if sh.id is None:
             sh.id = pf.conn.execute("INSERT INTO shareholders(holding_id, name, company, share_class, shares, "
-                                    "invested_cents, note, funded_cents, funded_date) VALUES (?,?,?,?,?,?,?,?,?)",
-                                    vals).lastrowid
+                                    "invested_cents, note, funded_cents, funded_date, link) VALUES "
+                                    "(?,?,?,?,?,?,?,?,?,?)", vals).lastrowid
         else:
             pf.conn.execute("UPDATE shareholders SET holding_id=?, name=?, company=?, share_class=?, shares=?, "
-                            "invested_cents=?, note=?, funded_cents=?, funded_date=? WHERE id=?", vals + (sh.id,))
+                            "invested_cents=?, note=?, funded_cents=?, funded_date=?, link=? WHERE id=?",
+                            vals + (sh.id,))
     return sh.id
 
 
@@ -2142,20 +2145,26 @@ def delete_shareholder(pf: Portfolio, shareholder_id: int) -> None:
         pf.conn.execute("DELETE FROM shareholders WHERE id=?", (shareholder_id,))
 
 
+def entered_shareholders(pf: Portfolio, holding_id: int) -> list[Shareholder]:
+    """The owners entered on a holding's cap table (each one's % = their amount ÷ the total)."""
+    _cap_ready(pf)
+    rows = [Shareholder(r["name"], r["company"], r["invested_cents"], r["note"], r["id"], r["share_class"],
+                        funded_cents=r["funded_cents"], funded_date=r["funded_date"], link=r["link"] or "")
+            for r in pf.conn.execute("SELECT * FROM shareholders WHERE holding_id=? ORDER BY share_class, id",
+                                     (holding_id,))]
+    total = sum(x.amount_cents for x in rows)
+    for x in rows:
+        x.pct = x.amount_cents / total if total else 0.0
+    return rows
+
+
 def cap_table(pf: Portfolio, p: "Performance", owner_name: str = "") -> list[Shareholder]:
     """The owners as entered (each one's % = their amount ÷ the total); without any, worked out from the holding:
     us at the ownership % (with the capital we put in) and 'Other owners' for the rest."""
     _cap_ready(pf)
     h = p.holding
-    rows = [Shareholder(r["name"], r["company"], r["invested_cents"], r["note"], r["id"], r["share_class"],
-                        funded_cents=r["funded_cents"], funded_date=r["funded_date"])
-            for r in pf.conn.execute("SELECT * FROM shareholders WHERE holding_id=? ORDER BY share_class, id",
-                                     (h.id,))]
-    if rows:
-        total = sum(x.amount_cents for x in rows)
-        for x in rows:
-            x.pct = x.amount_cents / total if total else 0.0
-    else:
+    rows = entered_shareholders(pf, h.id)
+    if not rows:
         us = Shareholder("Us", owner_name, p.invested, worked_out=True, pct=h.ownership_pct / 100)
         rows = [us]
         if h.ownership_pct < 100:

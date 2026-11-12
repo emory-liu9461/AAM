@@ -702,6 +702,19 @@ class ShareholderDialog(QDialog):
         self.note = QLineEdit(src.note)
         self.note.setPlaceholderText("Note (optional)")
         form.addRow("Note:", self.note)
+        from .. import personal as pers
+
+        saved = pers.load(pf)
+        self.link = QComboBox()
+        self.link.addItem("Someone else", "")
+        self.link.addItem(f"Me{' (' + saved.name + ')' if saved.name else ''}", "me")
+        hc = pers.holdco_name(saved)
+        self.link.addItem(f"My holding company{' (' + hc + ')' if hc else ' — pick it under Personal'}", "holdco")
+        guess = src.link or (pers.guess_link(src, saved) if src.id is None or src.worked_out else "")
+        self.link.setCurrentIndex(max(0, self.link.findData(guess)))
+        self.link.setToolTip("Owners that are you or your holding company make up your ownership of this company "
+                             "(shown across the app and used on your net worth)")
+        form.addRow("This owner is:", self.link)
         hint = QLabel("Each owner's % is their amount ÷ the total of all owners. Once you enter owners, the cap "
                       "table shows exactly these instead of working it out from the holding's ownership %.")
         hint.setObjectName("hint")
@@ -720,6 +733,7 @@ class ShareholderDialog(QDialog):
         x.share_class = self.share_class.currentText()
         x.funded_cents = round(self.funded.value() * 100)
         x.funded_date = _iso(self.funded_date.date())
+        x.link = self.link.currentData() or ""
         try:
             pfm.save_shareholder(self.pf, self.holding.id, x)
         except ValueError as e:
@@ -2025,7 +2039,7 @@ SUM_ROWS = ["Type", "Held by", "",
             "MOIC", "IRR", "Cash on cash return", "",
             "Lender(s)", "Principal", "Balance outstanding", "Interest rate", "Annual interest", "Maturity"]
 
-HOLD_COLS = ["Holding", "Type", "Own %", "Invested", "Returned", "Value (100%)", "Value date / method",
+HOLD_COLS = ["Holding", "Type", "Own %", "Yours %", "Invested", "Returned", "Value (100%)", "Value date / method",
              "Our value (NAV)", "Gain", "MOIC", "IRR", "Revenue LTM", "Net income LTM", "Linked books"]
 
 
@@ -2647,25 +2661,31 @@ class AssetManagementView(QWidget):
     def _fill_holdings(self, t: QTableWidget, s: pfm.Summary) -> None:
         perfs = s.performances
         t.setRowCount(len(perfs) + (1 if perfs else 0))
-        money = {3, 4, 5, 7, 8, 9, 10, 11, 12}
+        money = {4, 5, 6, 8, 9, 10, 11, 12, 13}
+        from .. import personal as pers
+
+        saved = pers.load(self.pf)
         for r, p in enumerate(perfs):
             h, f = p.holding, p.financials
             val = "" if p.value_100 is None else fmt_money(p.value_100)
             linked = (f.company if f and not f.error else ("⚠ " + f.error if f else "")) if h.company_path else ""
+            mine = pers.my_ownership(self.pf, h, saved)
             _set_row(t, r, [h.name + (" (exited)" if h.status == "exited" else ""), h.type, f"{h.ownership_pct:g}%",
+                            f"{mine.pct:.2f}%".replace(".00%", "%") if mine.pct else "—",
                             fmt_money(p.invested), fmt_money(p.returned), val,
                             f"{p.value_date} · {p.value_method}" if p.value_date else "No valuation yet",
                             fmt_money(p.nav), fmt_money(p.gain), _multiple(p.moic), _pct(p.irr),
                             fmt_money(f.revenue_ltm) if f and not f.error else "",
                             fmt_money(f.net_income_ltm) if f and not f.error else "", linked],
-                     money, colour_col=8, colour_value=p.gain)
+                     money, colour_col=9, colour_value=p.gain)
+            t.item(r, 3).setToolTip(f"Your ownership — {mine.how}")
             if h.status == "exited":
                 t.item(r, 0).setForeground(MUTED)
         if perfs:
-            _set_row(t, len(perfs), ["Portfolio", "", "", fmt_money(s.invested), fmt_money(s.returned), "", "",
+            _set_row(t, len(perfs), ["Portfolio", "", "", "", fmt_money(s.invested), fmt_money(s.returned), "", "",
                                      fmt_money(s.nav), fmt_money(s.gain), _multiple(s.moic), _pct(s.irr), "", "", ""],
                      money, bold=True)
-        for c, w in enumerate([220, 130, 60, 115, 115, 120, 190, 125, 110, 60, 65, 115, 120]):
+        for c, w in enumerate([220, 130, 60, 70, 115, 115, 120, 190, 125, 110, 60, 65, 115, 120]):
             t.setColumnWidth(c, w)
 
     # -- waterfall ----------------------------------------------------------------
@@ -3620,6 +3640,10 @@ class AssetManagementView(QWidget):
         self.fin_holders.doubleClicked.connect(lambda *_: self._fin_edit_holder())
         self._fin_holder_rows: list[pfm.Shareholder] = []
         cl.addWidget(self.fin_holders, 1)
+        self.fin_mine = QLabel()               # your ownership, from the owners linked to you (★)
+        self.fin_mine.setWordWrap(True)
+        self.fin_mine.setToolTip("★ marks the owners that are you or your holding company (Edit an owner to set it)")
+        cl.addWidget(self.fin_mine)
         bottom.addWidget(cw)
         bottom.setSizes([520, 620])
         split.addWidget(bottom)
@@ -3745,6 +3769,15 @@ class AssetManagementView(QWidget):
         names = {pth: n for n, pth, _r in self._companies()}
         holders = pfm.cap_table(self.pf, p, names.get(self.pf.owner_of(p.holding), ""))
         classes = pfm.class_totals(holders)
+        from .. import personal as pers
+
+        saved = pers.load(self.pf)
+        mine = pers.my_ownership(self.pf, p.holding, saved)
+        self.fin_mine.setText(f"<b>Your ownership: {mine.pct:.2f}%</b> — {mine.how}"
+                              + ("" if mine.from_cap_table else " (enter the owners to work it out from the cap "
+                                                                 "table)")
+                              + ("" if saved.holdco or saved.name else " · set your name and holding company under "
+                                                                       "Personal → Your Name & Folders"))
         t = self.fin_holders
         t.clearSpans()
         t.setRowCount(0)
@@ -3762,7 +3795,9 @@ class AssetManagementView(QWidget):
         for cls, (amt, fund, share) in classes.items():
             members = [x for x in holders if (x.share_class or "Common") == cls]
             for x in members:
-                add([x.name, x.company or "—", cls, fmt_money(x.amount_cents) if x.amount_cents else "—",
+                link = x.link or (pers.guess_link(x, saved) if not x.worked_out else "")
+                mark = {"me": "★ ", "holdco": "★ "}.get(link, "")
+                add([mark + x.name, x.company or "—", cls, fmt_money(x.amount_cents) if x.amount_cents else "—",
                      f"{x.pct * 100:.2f}%", fmt_money(x.funded) if x.funded else "—", x.funded_date or "",
                      fmt_money(x.value) if x.value is not None else "—",
                      "worked out from the ownership % — Edit to enter" if x.worked_out else x.note],

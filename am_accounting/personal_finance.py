@@ -79,7 +79,7 @@ def from_portfolio(pf, year: int) -> list[FromHolding]:
     end = min(date(year, 12, 31), date.today()) if year >= date.today().year else date(year, 12, 31)
     out = []
     for h in pf.holdings():
-        share = saved.shares.get(h.id, h.ownership_pct)
+        share = saved.shares.get(h.id) or pers.my_ownership(pf, h, saved).pct     # from its cap table
         factor = share / h.ownership_pct if h.ownership_pct else 0
         row = FromHolding(h.id, h.name, share, factor)
         try:

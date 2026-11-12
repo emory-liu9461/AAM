@@ -159,3 +159,62 @@ def test_holding_company_in_net_worth(app, tmp_path):
     assert any(r[0] == "Your holding company" for r in page.assets.auto_rows())
     assert pers.load(pf).shares == {}                                      # not changed by hand: not kept
     pf.close()
+
+
+def test_my_ownership_from_cap_tables(app, tmp_path):
+    pf, hold, op, loan = _setup(tmp_path)
+    h = pf.holdings()[0]
+    s = pers.load(pf)
+    s.holdco, s.holdco_pct = str(hold), 50.0
+    pers.save(pf, s)
+    # no owners entered: the holding's ownership × your share of your holding company (it holds it)
+    o = pers.my_ownership(pf, h)
+    assert o.pct == 50.0 and not o.from_cap_table
+    # the cap table: your holding company 40%, you 10% directly, someone else 50%
+    pfm.save_shareholder(pf, h.id, pfm.Shareholder("Pat", "Maple Holdings Inc", 400_000_00))       # found by name
+    pfm.save_shareholder(pf, h.id, pfm.Shareholder("Pat Lee", "", 100_000_00, link="me"))
+    pfm.save_shareholder(pf, h.id, pfm.Shareholder("Sam Roe", "", 500_000_00))
+    o = pers.my_ownership(pf, h)
+    assert o.from_cap_table and o.pct == 40 * 0.5 + 10                  # 30%
+    assert "× your 50%" in o.how
+    assert pers.properties(pf)[0].default_pct == 30.0                 # your net worth follows
+    rows = {x.name: x for x in pfm.entered_shareholders(pf, h.id)}
+    assert rows["Pat Lee"].link == "me" and rows["Pat"].link == ""
+    assert pers.guess_link(rows["Pat"], pers.load(pf)) == "holdco"
+    sam = rows["Sam Roe"]
+    sam.link = "me"                                                   # linked by hand
+    pfm.save_shareholder(pf, h.id, sam)
+    assert pers.my_ownership(pf, h).pct == 80.0
+    pf.close()
+
+
+def test_ownership_shown_in_the_app(app, tmp_path):
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui import asset_mgmt as am
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    w.set_mode("assets")
+    v = w.asset_view
+    h = v.pf.holdings()[0]
+    s = pers.load(v.pf)
+    s.name = "Pat Lee"
+    pers.save(v.pf, s)
+    dlg = am.ShareholderDialog(v.pf, h)
+    dlg.name.setText("Pat Lee")
+    dlg.amount.setValue(60_000)
+    dlg.link.setCurrentIndex(dlg.link.findData("me"))
+    dlg.save()
+    pfm.save_shareholder(v.pf, h.id, pfm.Shareholder("Sam Roe", "", 40_000_00))
+    v.refresh()
+    assert am.HOLD_COLS[3] == "Yours %"
+    r = next(i for i in range(v.table.rowCount()) if v.table.item(i, 0).text().startswith(h.name))
+    assert v.table.item(r, 3).text() == "60%"
+    v._fill_financing()
+    assert "Your ownership: 60.00%" in v.fin_mine.text()
+    assert any(v.fin_holders.item(i, 0).text() == "★ Pat Lee" for i in range(v.fin_holders.rowCount()))
+    v.dash_page.fill()
+    assert ["Your ownership", "60%"] in v.dash_page.data["property"]
+    w.close()

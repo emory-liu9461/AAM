@@ -36,6 +36,16 @@ def _cell(text: str, *, right=False, bold=False, colour=None, editable=False) ->
     return it
 
 
+def _group(title: str, parent_layout, stretch: int = 1):
+    """A framed box with its title on the frame (a major part of a tab). Returns the box's own layout."""
+    from PySide6.QtWidgets import QGroupBox
+
+    box = QGroupBox(title)
+    v = QVBoxLayout(box)
+    parent_layout.addWidget(box, stretch)
+    return v
+
+
 def _year_box(on_change) -> QSpinBox:
     y = QSpinBox()
     y.setRange(2000, 2100)
@@ -244,8 +254,8 @@ class IncomeTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
-        lay.addWidget(QLabel("<b>From the portfolio</b> — distributions recorded on each holding, at your share (set "
-                             "your share on the Net Worth tab)"))
+        box = _group("From your companies — distributions recorded on each holding, at your ownership (from their "
+                     "cap tables)", lay, 2)
         self.port = QTableWidget(0, 5)
         self.port.setHorizontalHeaderLabels(["Company", "Your share", "Distributions to you", "Capital returned",
                                              "Months paid"])
@@ -253,23 +263,24 @@ class IncomeTab(QWidget):
         self.port.verticalHeader().hide()
         self.port.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.port.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        lay.addWidget(self.port, 2)
+        box.addWidget(self.port)
+        box = _group("Other income from your businesses — salary, management fees, bonuses …", lay, 2)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Other income from your businesses</b> — salary, management fees, bonuses …"))
         head.addStretch(1)
         for text, slot in (("Add", self.add), ("Remove", self.remove)):
             b = QPushButton(text)
             b.clicked.connect(lambda *_, s=slot: s())
             head.addWidget(b)
-        lay.addLayout(head)
+        box.addLayout(head)
         self.mine = QTableWidget(0, 5)
         self.mine.setHorizontalHeaderLabels(["Date", "Company", "Kind", "Amount", "Note"])
         self.mine.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.mine.verticalHeader().hide()
         self.mine.itemChanged.connect(lambda *_: self._save())
-        lay.addWidget(self.mine, 2)
+        box.addWidget(self.mine)
+        box = _group("By month", lay, 2)
         self.chart = TimeChart("Income from businesses by month (total for the year)", legend_total=True)
-        lay.addWidget(self.chart, 2)
+        box.addWidget(self.chart)
         self._loading = False
         self.fill()
 
@@ -577,9 +588,9 @@ class LoansTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
+        box = _group("Your companies — the account in each company's books for money between it and you; its balance "
+                     "counts in your net worth", lay, 2)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Your companies</b> — the account in each company's books for money between it and "
-                              "you; its balance counts in your net worth"))
         head.addStretch(1)
         find = QPushButton("Find Accounts")
         find.setToolTip("Link each company to its shareholder loan account, found by its name (or yours)")
@@ -590,7 +601,7 @@ class LoansTab(QWidget):
         rec.setToolTip("Money between you and a company — posted in the company's books")
         rec.clicked.connect(lambda *_: self.record())
         head.addWidget(rec)
-        lay.addLayout(head)
+        box.addLayout(head)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Company", "Shareholder loan account", "Owed to you"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -598,9 +609,10 @@ class LoansTab(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.currentCellChanged.connect(lambda *_: self._history())
-        lay.addWidget(self.table, 2)
-        self.hist_label = QLabel("<b>Entries</b>")
-        lay.addWidget(self.hist_label)
+        box.addWidget(self.table)
+        hist_box = _group("Entries", lay, 2)
+        self.hist_label = QLabel()
+        hist_box.addWidget(self.hist_label)
         self.hist = QTableWidget(0, 3)
         self.hist.setHorizontalHeaderLabels(["Date", "Entry", "Change"])
         self.hist.horizontalHeaderItem(2).setToolTip("+ the company owes you more, − less")
@@ -608,7 +620,7 @@ class LoansTab(QWidget):
         self.hist.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.hist.verticalHeader().hide()
         self.hist.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        lay.addWidget(self.hist, 2)
+        hist_box.addWidget(self.hist)
         hint = QLabel("A credit balance in the company's account (it owes you) is an asset on your net worth; a debit "
                       "balance (you owe it) is a liability. Entries from the bank statements categorized to the "
                       "account count too.")
@@ -671,7 +683,7 @@ class LoansTab(QWidget):
         if not 0 <= r < len(self.positions):
             return
         p = self.positions[r]
-        self.hist_label.setText(f"<b>Entries</b> — {p.company}" + (f", {p.account}" if p.account else ""))
+        self.hist_label.setText(f"<b>{p.company}</b>" + (f" — {p.account}" if p.account else ""))
         if p.account_id is None:
             return
         rows = shl.history(p.path, p.account_id)
@@ -896,9 +908,9 @@ class BankAccountsTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
+        box = _group("Your accounts — type each balance (for a card or a line of credit, what you owe); they count in "
+                     "your net worth", lay, 1)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Your accounts</b> — type each balance (for a card or a line of credit, what you "
-                              "owe); they count in your net worth"))
         head.addStretch(1)
         for text, slot in (("Add Account", self.add), ("Remove", self.remove)):
             b = QPushButton(text)
@@ -906,13 +918,13 @@ class BankAccountsTab(QWidget):
                 b.setObjectName("primary")
             b.clicked.connect(lambda *_, f=slot: f())
             head.addWidget(b)
-        lay.addLayout(head)
+        box.addLayout(head)
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().hide()
         self.table.itemChanged.connect(lambda *_: self._save())
-        lay.addWidget(self.table, 1)
+        box.addWidget(self.table)
         self.accts = None
         self._loading = False
         self.fill()
@@ -1033,8 +1045,8 @@ class InvestmentsTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
+        box = _group("Your investment accounts", lay, 2)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Your investment accounts</b>"))
         head.addStretch(1)
         for text, slot in (("Add Account", self.add_account), ("Remove Account", self.remove_account)):
             b = QPushButton(text)
@@ -1042,7 +1054,7 @@ class InvestmentsTab(QWidget):
                 b.setObjectName("primary")
             b.clicked.connect(lambda *_, f=slot: f())
             head.addWidget(b)
-        lay.addLayout(head)
+        box.addLayout(head)
         self.accounts = QTableWidget(0, 6)
         self.accounts.setHorizontalHeaderLabels(["Account", "Institution", "Type", "Cash in it", "Market value",
                                                  "Gain"])
@@ -1050,22 +1062,23 @@ class InvestmentsTab(QWidget):
         self.accounts.verticalHeader().hide()
         self.accounts.itemChanged.connect(lambda *_: self._save_accounts())
         self.accounts.currentCellChanged.connect(lambda r, *_: self._show_holdings(r))
-        lay.addWidget(self.accounts, 2)
+        box.addWidget(self.accounts)
+        hbox = _group("Holdings", lay, 3)
         hh = QHBoxLayout()
-        self.hold_label = QLabel("<b>Holdings</b>")
+        self.hold_label = QLabel()
         hh.addWidget(self.hold_label)
         hh.addStretch(1)
         for text, slot in (("Add Holding", self.add_holding), ("Remove Holding", self.remove_holding)):
             b = QPushButton(text)
             b.clicked.connect(lambda *_, f=slot: f())
             hh.addWidget(b)
-        lay.addLayout(hh)
+        hbox.addLayout(hh)
         self.holdings = QTableWidget(0, len(self.HCOLS))
         self.holdings.setHorizontalHeaderLabels(self.HCOLS)
         self.holdings.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.holdings.verticalHeader().hide()
         self.holdings.itemChanged.connect(lambda *_: self._save_holdings())
-        lay.addWidget(self.holdings, 3)
+        hbox.addWidget(self.holdings)
         hint = QLabel("Type each holding's quantity, price and book cost (prices aren't looked up online). An "
                       "account's market value is its cash plus its holdings; it counts in your net worth by type.")
         hint.setObjectName("hint")
@@ -1118,7 +1131,7 @@ class InvestmentsTab(QWidget):
         h = self.holdings
         h.blockSignals(True)
         h.setRowCount(0)
-        self.hold_label.setText(f"<b>Holdings</b> — {a.name}" if a else "<b>Holdings</b>")
+        self.hold_label.setText(f"In <b>{a.name}</b>" if a else "Pick an account above")
         for x in (a.holdings if a else []):
             i = h.rowCount()
             h.insertRow(i)

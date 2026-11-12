@@ -239,6 +239,63 @@ def holdco_part(pf, saved: Saved | None = None, as_of: date | None = None) -> Ho
     return hc
 
 
+# ---- your ownership of each company, from its cap table ----
+
+def _norm(s: str) -> str:
+    from .intercompany import norm
+
+    return norm(s or "")
+
+
+def holdco_name(saved: Saved) -> str:
+    from .companies import _read_name
+
+    return (_read_name(saved.holdco) or Path(saved.holdco).stem) if saved.holdco else ""
+
+
+def guess_link(sh, saved: Saved) -> str:
+    """Who a cap-table owner is to you, by name: 'holdco' (your holding company), 'me', or ''."""
+    hc = _norm(holdco_name(saved))
+    me = _norm(saved.name)
+    if hc and (_norm(sh.company) == hc or _norm(sh.name) == hc):
+        return "holdco"
+    if me and _norm(sh.name) == me and not sh.company.strip():
+        return "me"
+    return ""
+
+
+@dataclass
+class Ownership:
+    pct: float                        # of the company, %
+    how: str                          # how it's worked out, in words
+    from_cap_table: bool = False
+    parts: list = field(default_factory=list)   # (owner label, % of the company, your factor)
+
+
+def my_ownership(pf, h, saved: Saved | None = None) -> Ownership:
+    """Your share of a holding: from its cap table (the owners linked to you — you at 100%, your holding company at
+    your share of it), else the holding's ownership % (times your share of your holding company when it holds it)."""
+    from . import portfolio as pfm
+
+    saved = saved or load(pf)
+    rows = pfm.entered_shareholders(pf, h.id)
+    if rows:
+        parts = []
+        for x in rows:
+            link = x.link or guess_link(x, saved)
+            if link == "holdco":
+                parts.append((x.label, x.pct * 100, saved.holdco_pct / 100))
+            elif link == "me":
+                parts.append((x.label, x.pct * 100, 1.0))
+        pct = sum(p * f for _l, p, f in parts)
+        how = " + ".join(f"{lbl} {p:.2f}%" + (f" × your {f * 100:g}%" if f != 1 else "") for lbl, p, f in parts)
+        return Ownership(round(pct, 4), how or "no owner on its cap table is you or your holding company", True, parts)
+    via = _same(pf.owner_of(h), saved.holdco)
+    pct = h.ownership_pct * (saved.holdco_pct / 100 if via else 1)
+    how = f"held {h.ownership_pct:g}%" + (f" × your {saved.holdco_pct:g}% of your holding company" if via else "")
+    return Ownership(round(pct, 4), how)
+
+
 def properties(pf, saved: Saved | None = None, as_of: date | None = None) -> list[Property]:
     """The portfolio's active holdings as real estate owned: market value and debt (100%), and your share."""
     from . import portfolio as pfm
@@ -249,9 +306,8 @@ def properties(pf, saved: Saved | None = None, as_of: date | None = None) -> lis
     for h in pf.holdings():
         if h.status != "active":
             continue
-        # your share to start with: the holding's ownership — times your share of your holding company when it's
-        # the one that holds it
-        default = h.ownership_pct * (saved.holdco_pct / 100 if _same(pf.owner_of(h), saved.holdco) else 1)
+        # your share to start with: from its cap table (the owners linked to you), else the holding's ownership
+        default = my_ownership(pf, h, saved).pct
         p = pfm.performance(pf, h, as_of, with_financials=True)
         loans = [ln for ln in pfm.loans(pf, h, as_of) if not (ln.start_date and ln.start_date > as_of.isoformat())]
         debt = sum(ln.balance or 0 for ln in loans) if loans else (p.debt or 0)

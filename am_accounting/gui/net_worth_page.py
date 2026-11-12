@@ -21,17 +21,15 @@ from .common import ALIGN_RIGHT, NEGATIVE, error, info
 ROLE = Qt.ItemDataRole.UserRole
 
 
-class _Entries(QWidget):
-    """Rows of kind / description / amount, added and removed by hand."""
+class _Entries(QGroupBox):
+    """Rows of kind / description / amount, added and removed by hand (a framed box with its title on the frame)."""
 
     def __init__(self, title: str, kinds: list[str], on_change, parent=None, *, on_auto=None):
-        super().__init__(parent)
+        super().__init__(title, parent)
         self.kinds, self.on_change, self.on_auto = kinds, on_change, on_auto
         self.n_auto = 0                       # rows at the top filled in from the portfolio and the books
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
-        head.addWidget(QLabel(f"<b>{title}</b>"))
         head.addStretch(1)
         for text, slot in (("Add", self.add), ("Remove", self.remove)):
             b = QPushButton(text)

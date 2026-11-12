@@ -1837,6 +1837,14 @@ class DashboardPage(_CompanyPage):
         d["property"] = [["Property", h.name], ["Address", info_.address or h.location or "—"], ["Type", h.type],
                          ["Units", str(s.units) if s.units else "—"],
                          ["Occupancy", f"{s.occupancy * 100:.1f}%" if s.occupancy is not None else "—"]]
+        from .. import personal as pers
+
+        try:
+            mine = pers.my_ownership(self.pf, h)
+            if mine.pct:
+                d["property"].append(["Your ownership", f"{mine.pct:.2f}%".replace(".00%", "%")])
+        except Exception:  # noqa: BLE001
+            pass
         ms = op.milestones(self.pf, h)
         d["timeline"] = [[m.name, m.original or "", m.current or ""] for m in ms]
         d["value"] = [["Current value", fmt_money(p.company_value) if p.company_value is not None else "—"],
