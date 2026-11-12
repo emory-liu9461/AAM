@@ -3,7 +3,8 @@ copied out of the deal folder into one folder you can send.
 
 The package goes in **Underwriting → Financing → Lender Submission Package**, a folder per submission (e.g.
 "2026-11-11 Lender Submission"), with a numbered folder per document ("05 Property Tax Bill") and a checklist
-(``00 Document Checklist.xlsx``) of what's in it and what's still missing.
+(``00 Document Checklist.xlsx``) of what's in it and what's still missing. Your own documents (net worth
+statement, T1s and notices of assessment …) come from your personal folder (see personal.py).
 
 For each document on the checklist, :func:`candidates` finds the files that could go in it: the files in the deal
 folder's own place for it (e.g. Consultant Reports → Appraisal for the appraisal) — picked to start with — and files
@@ -32,6 +33,7 @@ class Doc:
     note: str = ""
     folders: tuple[str, ...] = ()       # the deal folder's own places for it (relative paths)
     words: tuple[str, ...] = ()         # words in a file name that suggest it
+    personal: tuple[str, ...] = ()      # places for it in your personal folder (see personal.py)
 
 
 AM = "Asset Management"
@@ -75,7 +77,10 @@ CHECKLIST: list[Doc] = [
     Doc("Borrower and Guarantor Information", "Net worth statements, schedule of real estate owned, credit consent, "
                                              "ID, résumés", (),
         ("net worth", "pnws", "real estate owned", "schedule of real estate", "reo schedule", "credit consent",
-         "guarantor", "resume", "résumé")),
+         "guarantor", "resume", "résumé"),
+        ("Net Worth Statements", "Identification", "Credit Reports", "Résumé", "Real Estate Owned")),
+    Doc("Personal Tax Returns and NOAs", "T1 returns, notices of assessment and T4s — usually the last 2–3 years",
+        (), ("t1 general", "notice of assessment", "noa", "t4"), ("Income Tax",)),
     Doc("Leases and Tenant Forms", "", (f"{AM}/Property/Leasing/Leases",), ("lease",)),
     Doc("Survey and Title", "", (f"{AM}/Legal and Admin/Closing Documents",), ("survey", "title", "parcel register")),
     Doc("Existing Financing", "Current mortgage commitment and statements", (f"{AM}/Accounting/Financing Documents",),
@@ -124,8 +129,26 @@ def _modified(p: Path) -> datetime | None:
         return None
 
 
-def candidates(folder: Path) -> list[Pick]:
-    """For each document on the checklist, the files in the deal folder that could go in it."""
+def _personal(personal: Path | None, d: Doc) -> list[Candidate]:
+    """The document's files in your personal folder (not the archived ones): picked to start with."""
+    if personal is None or not d.personal or not lpth.is_dir(personal):
+        return []
+    out = []
+    for sub in d.personal:
+        base = Path(personal) / sub
+        if not lpth.is_dir(base):
+            continue
+        for p in sorted(lpth.walk_files(base)):
+            rel = p.relative_to(personal)
+            if _skipped(rel.parts[:-1]) or p.name.startswith(("~$", ".")) or p.name.lower() == "desktop.ini":
+                continue
+            out.append(Candidate(p, f"Personal/{rel.as_posix()}", True, "personal folder", _modified(p)))
+    return out
+
+
+def candidates(folder: Path, personal: Path | None = None) -> list[Pick]:
+    """For each document on the checklist, the files in the deal folder (and, for your own documents, your
+    personal folder) that could go in it."""
     folder = Path(folder)
     files = []
     if lpth.is_dir(folder):
@@ -148,7 +171,7 @@ def candidates(folder: Path) -> list[Pick]:
                 for p, rel in files if own_place.get(p) == d.name]
         named = [Candidate(p, rel.as_posix(), not mine, "by its name", _modified(p))
                  for p, rel in files if p not in own_place and _matches(p.stem, d.words)]
-        out.append(Pick(d, mine + named))
+        out.append(Pick(d, mine + _personal(personal, d) + named))
     return out
 
 

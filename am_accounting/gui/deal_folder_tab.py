@@ -457,7 +457,9 @@ class DealFolderTab(QWidget):
         if f is None:
             info(self, "No folder yet", "Choose a folder for this deal first.")
             return None
-        dlg = LenderPackageDialog(f, self)
+        from .. import personal as pers
+
+        dlg = LenderPackageDialog(f, self, personal=pers.folder(self.pf))
         if not (run(dlg) if run is not None else dlg.exec()) or dlg.package is None:
             return None
         self.fill()

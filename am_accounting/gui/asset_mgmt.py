@@ -2080,6 +2080,11 @@ class AssetManagementView(QWidget):
                                     "Financing & Cap Table, Waterfall, Projections")
         self.company_btn.clicked.connect(self.show_company_pages)
         bar.addWidget(self.company_btn)
+        self.net_worth_btn = QPushButton("Net Worth Statement")
+        self.net_worth_btn.setToolTip("Your personal net worth statement: the portfolio's real estate at your share "
+                                      "plus your own assets and liabilities, saved to your personal folder")
+        self.net_worth_btn.clicked.connect(lambda *_: self.net_worth())
+        bar.addWidget(self.net_worth_btn)
         bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
@@ -2493,6 +2498,14 @@ class AssetManagementView(QWidget):
         self.deals_page.refresh()
         self.tabs.setCurrentWidget(self.deals_page)
         self._top_buttons()
+
+    def net_worth(self, *, run=None):
+        """Your personal net worth statement (see personal.py). ``run`` (for tests) takes the dialog instead of
+        showing it."""
+        from .net_worth_dialog import NetWorthDialog
+
+        dlg = NetWorthDialog(self.pf, self, as_of=self._as_of_date())
+        return run(dlg) if run is not None else dlg.exec()
 
     def show_company_pages(self) -> None:
         """Back to the company pages (the one open last, or the Dashboard)."""
