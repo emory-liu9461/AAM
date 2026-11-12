@@ -78,7 +78,7 @@ def test_tabs(app, tmp_path):
     r = bt.table.rowCount() - 1
     bt.table.item(r, 3).setText("5000")
     assert bt.table.item(r, 3).text() == "$5,000.00" and bt.table.item(r, 4).text() == date.today().isoformat()
-    assert pacc.load(pf).banks[-1].balance == 5_000_00
+    assert next(b for b in pacc.load(pf).banks if b.name == "Savings").balance == 5_000_00
     assert ("Cash and bank accounts", "Savings", "$5,000.00") in nw.assets.auto_rows()      # into net worth
     inv = page.investments
     inv.accounts.setCurrentCell(0, 0)
@@ -208,4 +208,50 @@ def test_plan_headings_right_aligned_in_a_box(app, tmp_path):
         assert page.plan.horizontalHeaderItem(c).textAlignment() & Qt.AlignmentFlag.AlignRight
     box = page.plan.parent()
     assert isinstance(box, QGroupBox) and "Projected" in box.title()
+    pf.close()
+
+
+def test_statement_side_by_side(tmp_path):
+    pf = _pf(tmp_path)
+    pacc.move_typed_lines(pf)
+    s = pers.load(pf)
+    s.assets.append(pers.Entry("Principal residence", "12 Oak St", 900_000_00))
+    s.liabilities.append(pers.Entry("Mortgage on principal residence", "RBC", 450_000_00))
+    pers.save(pf, s)
+    st = pers.statement(pf, as_of=date(2026, 6, 30))
+    sec = dict(pers.statement_sections(st))
+    assert list(sec)[0] == "Cash" and sec["Cash"] == [("Cash and bank accounts — TD chequing", 12_000_00, "", None)]
+    assert sec["Investments"][0][:2] == ("TFSA — Questrade", 40_000_00)
+    assert sec["Real estate"] == [("Principal residence — 12 Oak St", 900_000_00,
+                                   "Mortgage on principal residence — RBC", 450_000_00)]
+    assert sec["Vehicles and other assets"] == [("Vehicles — Car", 20_000_00, "Car loans and leases", 8_000_00)]
+    assert sec["Credit cards and other debt"] == [("", None, "Credit cards — Visa", 1_500_00)]
+    page = pers.html(st)
+    assert page.index("Cash") < page.index("Investments") < page.index("Real estate") < page.index("Credit cards")
+    pf.close()
+
+
+def test_debt_box_on_bank_accounts(app, tmp_path):
+    from am_accounting.gui.personal_finance_page import PersonalFinancePage
+
+    pf = _pf(tmp_path)
+    page = PersonalFinancePage(pf)
+    bt = page.banks
+    assert bt.table.rowCount() == 1 and bt.debt_table.rowCount() == 1        # chequing / the Visa
+    assert bt.debt_table.item(0, 0).text() == "Visa"
+    bt.add(kind="Line of credit")
+    r = bt.debt_table.rowCount() - 1
+    bt.debt_table.item(r, 3).setText("15000")
+    bt.add("Honda", "Car loan")
+    r = bt.debt_table.rowCount() - 1
+    bt.debt_table.item(r, 3).setText("9000")
+    assert bt.cards["owed"].value.text() == "$25,500.00"
+    st = page.net_worth.statement()
+    sec = dict(pers.statement_sections(st))
+    assert ("Vehicles — Car", 20_000_00, "Car loans and leases — Honda", 9_000_00) in sec["Vehicles and other assets"]
+    debts = [x[2] for x in sec["Credit cards and other debt"]]
+    assert "Credit cards — Visa" in debts and "Lines of credit — New line of credit" in debts
+    bt.debt_table.setCurrentCell(0, 0)
+    bt.remove()
+    assert [b.name for b in pacc.load(pf).banks if b.owed] == ["New line of credit", "Honda"]
     pf.close()

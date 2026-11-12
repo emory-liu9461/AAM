@@ -890,68 +890,80 @@ def _money_cell(cents: int, *, editable=True, colour=None) -> QTableWidgetItem:
 
 
 class BankAccountsTab(QWidget):
-    """Your bank accounts, cash, credit cards and lines of credit, with their balances — into your net worth."""
+    """Your bank accounts and cash, and your credit cards, lines of credit and other personal debt — each with its
+    balance (what you owe, for a debt) — into your net worth."""
 
     COLS = ["Account", "Institution", "Type", "Balance", "As of", "Note"]
+    DEBT_COLS = ["Account", "Lender", "Type", "Owed", "As of", "Note"]
 
     def __init__(self, pf, parent=None):
         super().__init__(parent)
         from .asset_mgmt import Card
+
+        from .. import personal_accounts as pacc
 
         self.pf = pf
         self.on_change = None
         lay = QVBoxLayout(self)
         cards = QHBoxLayout()
         self.cards = {k: Card(t, small=True) for k, t in (("cash", "Cash in your accounts"),
-                                                           ("owed", "Owed on cards and lines of credit"),
+                                                           ("owed", "Owed on cards, lines of credit and loans"),
                                                            ("net", "Net"))}
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
-        box = _group("Your accounts — type each balance (for a card or a line of credit, what you owe); they count in "
-                     "your net worth", lay, 1)
+        self.table = self._box(lay, "Bank accounts and cash — type each balance", self.COLS, pacc.CASH_TYPES,
+                               "Add Account", "Chequing")
+        self.debt_table = self._box(lay, "Credit cards, lines of credit and other debt — type what you owe on each",
+                                    self.DEBT_COLS, pacc.DEBT_TYPES, "Add Card / Debt", "Credit card")
+        self._last = self.table
+        self.accts = None
+        self._loading = False
+        self.fill()
+
+    def _box(self, lay, title: str, cols: list[str], types: list[str], add_text: str, kind: str) -> QTableWidget:
+        box = _group(title, lay, 1)
         head = QHBoxLayout()
         head.addStretch(1)
-        for text, slot in (("Add Account", self.add), ("Remove", self.remove)):
+        t = QTableWidget(0, len(cols))
+        t.setProperty("types", types)
+        for text, slot in ((add_text, lambda: self.add(kind=kind)), ("Remove", lambda tb=t: self.remove(tb))):
             b = QPushButton(text)
             if text.startswith("Add"):
                 b.setObjectName("primary")
             b.clicked.connect(lambda *_, f=slot: f())
             head.addWidget(b)
         box.addLayout(head)
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().hide()
-        self.table.itemChanged.connect(lambda *_: self._save())
-        box.addWidget(self.table)
-        self.accts = None
-        self._loading = False
-        self.fill()
+        t.setHorizontalHeaderLabels(cols)
+        t.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        t.verticalHeader().hide()
+        t.itemChanged.connect(lambda *_: self._save())
+        t.currentCellChanged.connect(lambda *_, tb=t: setattr(self, "_last", tb))
+        box.addWidget(t)
+        return t
+
+    def _table_for(self, b) -> QTableWidget:
+        return self.debt_table if b.owed else self.table
 
     def fill(self) -> None:
         from .. import personal_accounts as pacc
 
         self._loading = True
         self.accts = pacc.load(self.pf)
-        t = self.table
-        t.blockSignals(True)
-        t.setRowCount(0)
+        for t in (self.table, self.debt_table):
+            t.blockSignals(True)
+            t.setRowCount(0)
         for b in self.accts.banks:
             self._row(b)
-        t.blockSignals(False)
-        t.setColumnWidth(0, 200)
-        t.setColumnWidth(1, 160)
-        t.setColumnWidth(2, 140)
-        t.setColumnWidth(3, 130)
-        t.setColumnWidth(4, 110)
+        for t in (self.table, self.debt_table):
+            t.blockSignals(False)
+            for c, w in enumerate((200, 160, 140, 130, 110)):
+                t.setColumnWidth(c, w)
         self._loading = False
         self._totals()
 
     def _row(self, b) -> None:
-        from .. import personal_accounts as pacc
-
-        t = self.table
+        t = self._table_for(b)
         r = t.rowCount()
         t.insertRow(r)
         name = _cell(b.name, editable=True)
@@ -959,21 +971,18 @@ class BankAccountsTab(QWidget):
         t.setItem(r, 0, name)
         t.setItem(r, 1, _cell(b.institution, editable=True))
         kind = QComboBox()
-        kind.addItems(pacc.BANK_TYPES)
+        kind.addItems(t.property("types"))
         kind.setCurrentText(b.type)
         kind.currentTextChanged.connect(lambda *_: self._save())
         t.setCellWidget(r, 2, kind)
-        t.setItem(r, 3, _money_cell(b.balance))
+        t.setItem(r, 3, _money_cell(b.balance, colour=NEGATIVE if b.owed and b.balance else None))
         t.setItem(r, 4, _cell(b.as_of, editable=True))
         t.setItem(r, 5, _cell(b.note, editable=True))
 
-    def _save(self) -> None:
+    def _rows(self, t: QTableWidget) -> list:
         from .. import personal_accounts as pacc
 
-        if self._loading:
-            return
-        t = self.table
-        banks = []
+        out = []
         t.blockSignals(True)
         for r in range(t.rowCount()):
             raw = t.item(r, 3).text() if t.item(r, 3) else ""
@@ -983,18 +992,24 @@ class BankAccountsTab(QWidget):
                 v = 0
             elif raw.strip():
                 t.item(r, 3).setText(fmt_money(v))
-                t.item(r, 3).setForeground(self.palette().text().color())
             as_of = (t.item(r, 4).text() if t.item(r, 4) else "").strip()
             old = next((b for b in self.accts.banks if b.id == t.item(r, 0).data(ROLE)), None)
             if old is not None and v != old.balance and as_of == old.as_of:
                 as_of = date.today().isoformat()            # a new balance: as of today unless you say otherwise
                 t.item(r, 4).setText(as_of)
-            banks.append(pacc.BankAccount(t.item(r, 0).text().strip(), t.cellWidget(r, 2).currentText(),
-                                          (t.item(r, 1).text() if t.item(r, 1) else "").strip(), v, as_of,
-                                          (t.item(r, 5).text() if t.item(r, 5) else "").strip(),
-                                          t.item(r, 0).data(ROLE)))
+            out.append(pacc.BankAccount(t.item(r, 0).text().strip(), t.cellWidget(r, 2).currentText(),
+                                        (t.item(r, 1).text() if t.item(r, 1) else "").strip(), v, as_of,
+                                        (t.item(r, 5).text() if t.item(r, 5) else "").strip(),
+                                        t.item(r, 0).data(ROLE)))
         t.blockSignals(False)
-        self.accts.banks = banks
+        return out
+
+    def _save(self) -> None:
+        from .. import personal_accounts as pacc
+
+        if self._loading:
+            return
+        self.accts.banks = self._rows(self.table) + self._rows(self.debt_table)
         pacc.save(self.pf, self.accts)
         self._totals()
         if self.on_change:
@@ -1005,25 +1020,28 @@ class BankAccountsTab(QWidget):
         cash = sum(b.balance for b in banks if not b.owed)
         owed = sum(b.balance for b in banks if b.owed)
         self.cards["cash"].set(fmt_money(cash), f"{sum(1 for b in banks if not b.owed)} account(s)")
-        self.cards["owed"].set(fmt_money(owed), f"{sum(1 for b in banks if b.owed)} account(s)",
+        self.cards["owed"].set(fmt_money(owed), f"{sum(1 for b in banks if b.owed)} card(s) / loan(s)",
                                NEGATIVE if owed else None)
         self.cards["net"].set(fmt_money(cash - owed), "", NEGATIVE if cash < owed else None)
 
-    def add(self, name: str = "New account", kind: str = "Chequing", balance: int = 0) -> None:
+    def add(self, name: str = "", kind: str = "Chequing", balance: int = 0) -> None:
         from .. import personal_accounts as pacc
 
-        b = pacc.BankAccount(name, kind, balance=balance, as_of=date.today().isoformat(), id=self.accts.new_id())
+        b = pacc.BankAccount(name or ("New account" if kind in pacc.CASH_TYPES else f"New {kind.lower()}"), kind,
+                             balance=balance, as_of=date.today().isoformat(), id=self.accts.new_id())
         self.accts.banks.append(b)
         pacc.save(self.pf, self.accts)
         self.fill()
-        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
+        t = self._table_for(b)
+        t.setCurrentCell(t.rowCount() - 1, 0)
         if self.on_change:
             self.on_change()
 
-    def remove(self) -> None:
-        r = self.table.currentRow()
+    def remove(self, table: QTableWidget | None = None) -> None:
+        t = table or self._last
+        r = t.currentRow()
         if r >= 0:
-            self.table.removeRow(r)
+            t.removeRow(r)
             self._save()
 
 

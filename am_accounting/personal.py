@@ -437,6 +437,65 @@ def _m(cents: int) -> str:
     return fmt_money(cents)
 
 
+# ---- the statement: assets and liabilities side by side, each debt beside what it's against ----
+
+# a typed asset and the debt that goes with it
+PAIRS = {"Principal residence": "Mortgage on principal residence", "Other real estate (not in the portfolio)":
+         "Other mortgages", "Vehicles": "Car loans and leases"}
+INVEST_KINDS_PREFIX = ("RRSP", "TFSA", "FHSA", "RESP", "Investments")
+
+
+def _label(e) -> str:
+    return e.kind + (f" — {e.description}" if e.description else "")
+
+
+def statement_sections(st: Statement) -> list[tuple[str, list[tuple[str, int | None, str, int | None]]]]:
+    """[(section, [(asset, amount, liability, amount)])]: cash, investments, real estate (each property beside its
+    mortgage), your holding company, shareholder loans, vehicles and other assets, and other debt (cards, lines of
+    credit, loans). Empty sections are left out."""
+    secs: dict[str, list] = {k: [] for k in ("Cash", "Investments", "Real estate", "Your holding company",
+                                             "Shareholder loans", "Vehicles and other assets",
+                                             "Credit cards and other debt")}
+    liabs = list(st.liabilities)
+
+    def take(kind):
+        e = next((x for x in liabs if x.kind == kind), None)
+        if e is not None:
+            liabs.remove(e)
+        return e
+
+    for e in st.assets:
+        if e.kind in CASH_KINDS:
+            secs["Cash"].append((_label(e), e.amount, "", None))
+    for e in st.assets:
+        if e.kind.startswith(INVEST_KINDS_PREFIX):
+            secs["Investments"].append((_label(e), e.amount, "", None))
+    for p in st.properties:
+        secs["Real estate"].append((f"{p.name} (your {p.share_pct:g}%)", p.my_value,
+                                    (f"Mortgage — {p.lenders}" if p.lenders else "Mortgage") if p.my_debt else "",
+                                    p.my_debt or None))
+    for e in st.assets:
+        if e.kind in CASH_KINDS or e.kind.startswith(INVEST_KINDS_PREFIX):
+            continue
+        debt = take(PAIRS[e.kind]) if e.kind in PAIRS else None
+        sec = "Real estate" if "real estate" in e.kind.lower() or e.kind == "Principal residence" else \
+            "Vehicles and other assets"
+        secs[sec].append((_label(e), e.amount, _label(debt) if debt else "", debt.amount if debt else None))
+    if st.holdco and (st.holdco.my_assets or st.holdco.my_liabilities):
+        hc = st.holdco
+        secs["Your holding company"].append((f"{hc.name} — cash and other assets (your {hc.share_pct:g}%)",
+                                             hc.my_assets, "Its liabilities" if hc.my_liabilities else "",
+                                             hc.my_liabilities or None))
+    for p in st.loans:
+        if p.owed_to_you > 0:
+            secs["Shareholder loans"].append((f"Owed to you by {p.company}", p.owed_to_you, "", None))
+        elif p.owed_to_you < 0:
+            secs["Shareholder loans"].append(("", None, f"Owed to {p.company}", -p.owed_to_you))
+    for e in liabs:                                   # the debts not against an asset above
+        secs["Credit cards and other debt"].append(("", None, _label(e), e.amount))
+    return [(k, v) for k, v in secs.items() if v]
+
+
 def html(st: Statement) -> str:
     """The statement as a printable page."""
     import html as h
@@ -452,39 +511,30 @@ def html(st: Statement) -> str:
     out = [f"<h2 style='margin-bottom:0'>Personal Net Worth Statement</h2>",
            f"<p style='margin-top:4px'><b>{esc(st.name or '')}</b><br>As of {st.as_of:%B} {st.as_of.day}, {st.as_of.year}</p>",
            "<table cellspacing='0' width='100%'>",
-           "<tr><td colspan='2' style='padding-top:10px'><b>ASSETS</b></td></tr>"]
-    for e in st.assets:                       # cash first
-        if e.kind in CASH_KINDS:
-            out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
-    for p in st.loans:
-        if p.owed_to_you > 0:
-            out.append(row(f"Shareholder loan to {p.company}", p.owed_to_you, indent=8))
-    if st.holdco and st.holdco.my_assets:
-        out.append(row(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)",
-                       st.holdco.my_assets, indent=8))
-    for p in st.properties:
-        out.append(row(f"Real estate — {p.name} (your {p.share_pct:g}% of market value)", p.my_value, indent=8))
-    for e in st.assets:
-        if e.kind not in CASH_KINDS:
-            out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
-    out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
-               f"<b style='white-space:nowrap'>{_m(st.total_assets)}</b></td></tr>")
-    out.append("<tr><td colspan='2' style='padding-top:14px'><b>LIABILITIES</b></td></tr>")
-    for p in st.loans:
-        if p.owed_to_you < 0:
-            out.append(row(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you, indent=8))
-    if st.holdco and st.holdco.my_liabilities:
-        out.append(row(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities,
-                       indent=8))
-    for p in st.properties:
-        if p.my_debt:
-            out.append(row(f"Mortgage — {p.name} (your {p.share_pct:g}%)", p.my_debt, indent=8))
-    for e in st.liabilities:
-        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
-    out.append(f"<tr><td style='{td};{tr_}'><b>Total liabilities</b></td><td align='right' style='{td};{tr_}'>"
-               f"<b style='white-space:nowrap'>{_m(st.total_liabilities)}</b></td></tr>")
-    out.append(f"<tr><td style='{td};{tr_};padding-top:10px'><b>NET WORTH</b></td><td align='right' "
-               f"style='{td};{tr_};padding-top:10px;white-space:nowrap'><b>{_m(st.net_worth)}</b></td></tr></table>")
+           f"<tr><td width='34%' style='{td};border-bottom:1px solid #999'><b>ASSETS</b></td>"
+           f"<td width='16%' align='right' style='{td};border-bottom:1px solid #999'><b>Amount</b></td>"
+           f"<td width='34%' style='{td};border-bottom:1px solid #999;padding-left:18px'><b>LIABILITIES</b></td>"
+           f"<td width='16%' align='right' style='{td};border-bottom:1px solid #999'><b>Amount</b></td></tr>"]
+
+    def cell(v, *, right=False, bold=False, left_pad=False):
+        st_ = f"{td};{'font-weight:bold;' if bold else ''}{'white-space:nowrap;' if right else ''}" \
+              f"{'padding-left:18px;' if left_pad else ''}"
+        return f"<td{' align=right' if right else ''} style='{st_}'>{v}</td>"
+
+    for title, rows in statement_sections(st):
+        out.append(f"<tr><td colspan='4' style='{td};padding-top:10px;color:#555'><b>{esc(title)}</b></td></tr>")
+        for al, aa, ll, la in rows:
+            out.append("<tr>" + cell("&nbsp;&nbsp;" + esc(al) if al else "") +
+                       cell(_m(aa) if aa is not None else "", right=True) +
+                       cell(esc(ll) if ll else "", left_pad=True) +
+                       cell(_m(la) if la is not None else "", right=True) + "</tr>")
+    out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_};"
+               f"white-space:nowrap'><b>{_m(st.total_assets)}</b></td><td style='{td};{tr_};padding-left:18px'>"
+               f"<b>Total liabilities</b></td><td align='right' style='{td};{tr_};white-space:nowrap'>"
+               f"<b>{_m(st.total_liabilities)}</b></td></tr>")
+    out.append(f"<tr><td colspan='3' style='{td};{tr_};padding-top:10px'><b>NET WORTH</b> (assets − liabilities)</td>"
+               f"<td align='right' style='{td};{tr_};padding-top:10px;white-space:nowrap'><b>{_m(st.net_worth)}</b>"
+               f"</td></tr></table>")
     if st.properties:
         cols = ["Property", "Location", "Value (100%)", "Debt (100%)", "Lender(s)", "Share", "Your equity"]
         out.append("<h3 style='margin-top:18px'>Schedule of Real Estate Owned</h3><table cellspacing='0' "
@@ -527,34 +577,26 @@ def write_xlsx(st: Statement, path: Path) -> None:
             ws.cell(r, 2).font = bold
         ws.cell(r, 2).number_format = money
 
-    put("ASSETS", b=True)
-    for p in st.loans:
-        if p.owed_to_you > 0:
-            put(f"Shareholder loan to {p.company}", p.owed_to_you)
-    if st.holdco and st.holdco.my_assets:
-        put(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)", st.holdco.my_assets)
-    for p in st.properties:
-        put(f"Real estate — {p.name} (your {p.share_pct:g}% of market value)", p.my_value)
-    for e in st.assets:
-        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
-    put("Total assets", st.total_assets, b=True)
+    ws.append(["ASSETS", "Amount", "LIABILITIES", "Amount"])
+    for c in ws[ws.max_row]:
+        c.font = bold
+    for title, rows in statement_sections(st):
+        ws.append([title])
+        ws.cell(ws.max_row, 1).font = bold
+        for al, aa, ll, la in rows:
+            ws.append([al, None if aa is None else aa / 100, ll, None if la is None else la / 100])
+            ws.cell(ws.max_row, 2).number_format = money
+            ws.cell(ws.max_row, 4).number_format = money
     ws.append([])
-    put("LIABILITIES", b=True)
-    for p in st.loans:
-        if p.owed_to_you < 0:
-            put(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you)
-    if st.holdco and st.holdco.my_liabilities:
-        put(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities)
-    for p in st.properties:
-        if p.my_debt:
-            put(f"Mortgage — {p.name} (your {p.share_pct:g}%)", p.my_debt)
-    for e in st.liabilities:
-        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
-    put("Total liabilities", st.total_liabilities, b=True)
+    ws.append(["Total assets", st.total_assets / 100, "Total liabilities", st.total_liabilities / 100])
+    for c in ws[ws.max_row]:
+        c.font = bold
+    ws.cell(ws.max_row, 2).number_format = money
+    ws.cell(ws.max_row, 4).number_format = money
     ws.append([])
     put("NET WORTH", st.net_worth, b=True)
-    ws.column_dimensions["A"].width = 60
-    ws.column_dimensions["B"].width = 18
+    for col, w in zip("ABCD", (48, 18, 44, 18)):
+        ws.column_dimensions[col].width = w
     if st.properties:
         s = wb.create_sheet("Real Estate Owned")
         s.append(["Property", "Location", "Type", "Market value (100%)", "Mortgages (100%)", "Lender(s)",

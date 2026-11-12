@@ -20,11 +20,14 @@ from datetime import date
 
 from . import personal as pers
 
-BANK_TYPES = ["Chequing", "Savings", "Cash", "Credit card", "Line of credit"]
-OWED_TYPES = {"Credit card", "Line of credit"}            # a balance you owe: a liability
+CASH_TYPES = ["Chequing", "Savings", "Cash"]
+DEBT_TYPES = ["Credit card", "Line of credit", "Personal loan", "Car loan", "Student loan", "Other debt"]
+BANK_TYPES = CASH_TYPES + DEBT_TYPES
+OWED_TYPES = set(DEBT_TYPES)                              # a balance you owe: a liability
 INVEST_TYPES = ["RRSP / RRIF", "TFSA", "FHSA", "RESP", "Non-registered", "Other"]
 # the Net Worth line each type becomes
-BANK_KIND = {"Credit card": "Credit cards", "Line of credit": "Lines of credit"}
+BANK_KIND = {"Credit card": "Credit cards", "Line of credit": "Lines of credit", "Personal loan": "Other loans",
+             "Car loan": "Car loans and leases", "Student loan": "Student loans", "Other debt": "Other loans"}
 INVEST_KIND = {"RRSP / RRIF": "RRSP / RRIF", "TFSA": "TFSA", "Non-registered": "Investments (non-registered)"}
 # typed Net Worth lines these replace (moved here once)
 MOVED_ASSETS = {"Cash and bank accounts": None, "RRSP / RRIF": "RRSP / RRIF", "TFSA": "TFSA",

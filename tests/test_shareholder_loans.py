@@ -46,7 +46,7 @@ def test_link_and_net_worth(tmp_path):
     assert pos[str(hold)].owed_to_you == 25_000_00 and pos[str(op)].owed_to_you == 0
     st = pers.statement(pf, as_of=date(2026, 6, 30))
     assert st.loans_to_companies == 25_000_00 and st.total_assets == 35_000_00
-    assert "Shareholder loan to" in pers.html(st)
+    assert "Owed to you by Maple Holdings Inc." in pers.html(st)
     assert pers.snapshot(st).by_kind[pers.LOANS_TO] == 25_000_00
     pf.close()
 

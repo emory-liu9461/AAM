@@ -102,7 +102,9 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     dlg.assets.remove()                                                # the property's line stays
     assert dlg.assets.n_auto == 1 and dlg.assets.auto_rows()[0][0] == "Real estate"
     page_html = pers.html(dlg.statement())
-    assert "Real estate — 45 Elm St (your 25% of market value)" in page_html and "Mortgage — 45 Elm St" in page_html
+    assert "45 Elm St (your 25%)" in page_html and "Mortgage — First National" in page_html
+    sec = dict(pers.statement_sections(dlg.statement()))
+    assert sec["Real estate"][0][1] == 1_250_000_00 and sec["Real estate"][0][3] == 687_500_00   # side by side
     old = f / "Net Worth Statements/2025-01-01 Net Worth Statement - Pat Lee.pdf"
     old.write_text("x")
     made = dlg.generate(quiet=True)
