@@ -58,7 +58,9 @@ def test_cross_entries(tmp_path):
     shl.record(str(hold), loan, shl.PAID_YOU, 5_000_00, date(2026, 3, 1), other_account=bank, memo="partial")
     shl.adjust_cash(pf, shl.PAID_YOU, 5_000_00)
     assert {p.path: p for p in shl.positions(pf)}[str(hold)].owed_to_you == 20_000_00
-    assert pers.load(pf).assets[0].amount == 15_000_00
+    from am_accounting import personal_accounts as pacc
+
+    assert [(b.name, b.balance) for b in pacc.load(pf).banks] == [("Cash", 5_000_00)]   # your cash account
     hist = shl.history(str(hold), loan)
     assert hist[0].amount == -5_000_00 and "partial" in hist[0].memo and hist[1].amount == 25_000_00
     exp = shl.expense_accounts(str(hold))[0][0]
@@ -85,7 +87,7 @@ def test_tab(app, tmp_path):
     pf, hold, op, loan = _setup(tmp_path)
     page = PersonalFinancePage(pf)
     tab = page.loans
-    assert page.tabs.tabText(4) == "Shareholder Loans"
+    assert page.tabs.tabText(5) == "Shareholder Loans"
     assert tab.cards["to_you"].value.text() == "$25,000.00"
     r = next(i for i, p in enumerate(tab.positions) if p.path == str(hold))
     tab.table.setCurrentCell(r, 0)
@@ -99,7 +101,10 @@ def test_tab(app, tmp_path):
 
     assert tab.record(run=run)
     assert tab.cards["to_you"].value.text() == "$27,500.00"
-    assert pers.load(pf).assets[0].amount == 7_500_00                  # your cash went down
+    from am_accounting import personal_accounts as pacc
+
+    assert pacc.load(pf).banks[0].balance == 7_500_00                  # your cash went down (moved to an account)
+    assert not [e for e in pers.load(pf).assets if e.amount]           # (the typed cash line moved to Bank Accounts)
     page.tabs.setCurrentWidget(page.net_worth)
     assert page.net_worth.statement().loans_to_companies == 27_500_00
     pf.close()
@@ -138,11 +143,19 @@ def test_holding_company_in_net_worth(app, tmp_path):
     s.holdco = ""
     pers.save(pf, s)
     page = NetWorthPage(pf, as_of=date(2026, 6, 30))
-    assert page.holdco_box.currentData() == "" and page.statement().holdco is None
-    page._holdco_picked(str(hold))
-    assert pers.load(pf).holdco == str(hold) and page.holdco_box.currentData() == str(hold)
-    page.holdco_pct.setValue(100)
+    assert not hasattr(page, "holdco_box") and page.statement().holdco is None   # picked in Personal Settings
+
+    def pick(sd):
+        assert sd.holdco_box.currentData() == ""
+        sd.pick_holdco(str(hold))
+        assert sd.holdco_box.currentData() == str(hold) and sd.holdco_pct.isEnabled()
+        sd.holdco_pct.setValue(100)
+        assert "your 100%" in sd.holdco_label.text() and "$15,000.00 invested" in sd.holdco_label.text()
+        return sd.save()
+
+    page.settings(run=pick)
+    assert pers.load(pf).holdco == str(hold) and pers.load(pf).holdco_pct == 100
     assert page.props[0].share_pct == 100 and page.statement().holdco.my_assets == 10_000_00
-    assert "your 100%" in page.holdco_label.text() and "$15,000.00 invested" in page.holdco_label.text()
+    assert any(r[0] == "Your holding company" for r in page.assets.auto_rows())
     assert pers.load(pf).shares == {}                                      # not changed by hand: not kept
     pf.close()

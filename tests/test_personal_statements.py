@@ -97,7 +97,8 @@ def test_tab(app, tmp_path):
     st = page.statements
     st.year.setValue(YEAR)
     page.budget.year.setValue(YEAR)
-    page.tabs.setCurrentWidget(st)                                          # read when opened
+    page.tabs.setCurrentWidget(page.bank_tab)                               # read when Bank Accounts opens
+    assert page.bank_tab.widget(1) is st and page.tabs.tabText(1) == "Bank Accounts"
     assert st.table.rowCount() == 8 and st.cards["unsorted"].value.text() == "2"
     st.sort(next(x.id for x in st.txs if "J SMITH" in x.description), "Other")
     r = next(i for i, x in enumerate(st.txs) if x.description == "MYSTERY SHOP 77")

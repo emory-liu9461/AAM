@@ -43,6 +43,11 @@ LAYOUT: list[tuple[str, list[str], str]] = [
 ASSET_KINDS = ["Cash and bank accounts", "Investments (non-registered)", "RRSP / RRIF", "TFSA", "Principal residence",
                "Other real estate (not in the portfolio)", "Business interests (not in the portfolio)", "Vehicles",
                "Other assets"]
+# what's typed on the Net Worth page (cash, investments, cards and lines of credit come from their own tabs)
+TYPED_ASSET_KINDS = ["Principal residence", "Other real estate (not in the portfolio)",
+                     "Business interests (not in the portfolio)", "Vehicles", "Other assets"]
+TYPED_LIABILITY_KINDS = ["Mortgage on principal residence", "Other mortgages", "Car loans and leases", "Other loans",
+                         "Taxes owing"]
 LIABILITY_KINDS = ["Mortgage on principal residence", "Other mortgages", "Lines of credit", "Credit cards",
                    "Car loans and leases", "Other loans", "Taxes owing"]
 
@@ -312,13 +317,16 @@ def statement(pf, saved: Saved | None = None, as_of: date | None = None,
             loans = [p for p in shl.positions(pf, as_of) if p.owed_to_you]
         except Exception:  # noqa: BLE001 — a company file that can't be read: left out
             loans = []
+    from . import personal_accounts as pacc
+
+    acct_assets, acct_liabs = pacc.entries(pf)       # your bank and investment accounts (their own tabs)
     if holdco is ...:
         holdco = holdco_part(pf, saved, as_of)
     elif holdco is not None:
         holdco.share_pct = saved.holdco_pct
     return Statement(saved.name, as_of, props if props is not None else properties(pf, saved, as_of),
-                     [e for e in saved.assets if e.amount], [e for e in saved.liabilities if e.amount],
-                     saved.guarantees, loans, holdco)
+                     acct_assets + [e for e in saved.assets if e.amount],
+                     acct_liabs + [e for e in saved.liabilities if e.amount], saved.guarantees, loans, holdco)
 
 
 # ---- history: a snapshot per day you update it ----

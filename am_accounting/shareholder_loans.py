@@ -281,15 +281,16 @@ def record(path: str, loan_account: int, direction: str, amount: int, on: date, 
 
 
 def adjust_cash(pf, direction: str, amount: int) -> None:
-    """Your cash on the Net Worth page moves the other way: less when you lend or pay, more when the company pays
-    you (the first "Cash and bank accounts" line, made if there isn't one)."""
-    s = pers.load(pf)
+    """Your cash moves the other way: less when you lend or pay, more when the company pays you (your first
+    chequing / savings / cash account on Bank Accounts, made if there isn't one)."""
+    from datetime import date as _date
+
+    from . import personal_accounts as pacc
+
     change = -amount if direction in (LEND, PAID_EXPENSE) else (amount if direction == PAID_YOU else 0)
     if not change:
         return
-    cash = next((e for e in s.assets if e.kind in pers.CASH_KINDS), None)
-    if cash is None:
-        cash = pers.Entry("Cash and bank accounts")
-        s.assets.insert(0, cash)
-    cash.amount += change
-    pers.save(pf, s)
+    a, acct = pacc.first_cash_account(pf)
+    acct.balance += change
+    acct.as_of = _date.today().isoformat()
+    pacc.save(pf, a)

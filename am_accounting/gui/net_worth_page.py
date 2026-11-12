@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
                                QTextBrowser, QVBoxLayout, QWidget)
 
@@ -173,79 +173,22 @@ class NetWorthPage(QWidget):
         lay.addLayout(head)
         cards = QHBoxLayout()
         self.cards = {k: Card(t) for k, t in (("assets", "Total assets"), ("liabs", "Total liabilities"),
-                                              ("worth", "Net worth"), ("re", "Real estate equity"))}
+                                              ("worth", "Net worth"), ("cash", "Cash balance"),
+                                              ("income", "Income this month"), ("spent", "Spent this month"))}
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Your name:"))
-        self.name = QLineEdit(self.saved.name)
-        self.name.setPlaceholderText("As it should appear on the statement")
-        self.name.textChanged.connect(lambda *_: self._preview())
-        top.addWidget(self.name, 1)
-        lay.addLayout(top)
-        # the personal folder
-        fbox = QGroupBox("Personal folder")
-        fl = QHBoxLayout(fbox)
-        self.folder_label = QLabel()
-        self.folder_label.setWordWrap(True)
-        fl.addWidget(self.folder_label, 1)
-        for text, slot, tip in (("Choose…", self.choose_folder, "The folder for your own documents: net worth "
-                                                                  "statements, T1s, T4s, notices of assessment …"),
-                                ("Set Up Folders", self.setup_folder, "Make its folders that aren't there yet"),
-                                ("Open", self.open_folder, "Open it")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            fl.addWidget(b)
-        sl = QHBoxLayout()
-        sl.addWidget(QLabel("Statements saved to:"))
-        self.out_label = QLabel()
-        self.out_label.setWordWrap(True)
-        sl.addWidget(self.out_label, 1)
-        for text, slot, tip in (("Change…", self.choose_output, "Pick the folder the net worth statements go in"),
-                                ("Use Personal Folder", self.reset_output,
-                                 "Save them in the personal folder's Net Worth Statements")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(lambda *_, s_=slot: s_())
-            sl.addWidget(b)
-        lay.addWidget(fbox)
-        lay.addLayout(sl)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
-        hrow = QHBoxLayout()
-        hrow.addWidget(QLabel("<b>Your holding company:</b>"))
-        self.holdco_box = QComboBox()
-        self.holdco_box.setMinimumWidth(260)
-        self.holdco_box.setToolTip("The company you own your properties through: its own cash, other assets and "
-                                   "liabilities count at your share (its investments in the properties are in the "
-                                   "real estate below, at market value)")
-        self.holdco_box.activated.connect(lambda *_: self._holdco_picked())
-        hrow.addWidget(self.holdco_box, 1)
-        hrow.addWidget(QLabel("Your share:"))
-        from PySide6.QtWidgets import QDoubleSpinBox
-
-        self.holdco_pct = QDoubleSpinBox()
-        self.holdco_pct.setRange(0.01, 100)
-        self.holdco_pct.setDecimals(2)
-        self.holdco_pct.setSuffix(" %")
-        self.holdco_pct.setValue(self.saved.holdco_pct)
-        self.holdco_pct.valueChanged.connect(lambda *_: self._holdco_share())
-        hrow.addWidget(self.holdco_pct)
-        ll.addLayout(hrow)
-        self.holdco_label = QLabel()
-        self.holdco_label.setObjectName("hint")
-        self.holdco_label.setWordWrap(True)
-        ll.addWidget(self.holdco_label)
-        self.assets = _Entries("Assets", pers.ASSET_KINDS, self._preview, on_auto=self._auto_clicked)
+        self.assets = _Entries("Assets", pers.TYPED_ASSET_KINDS, self._preview, on_auto=self._auto_clicked)
         ll.addWidget(self.assets, 3)
-        self.liabs = _Entries("Liabilities", pers.LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked)
+        self.liabs = _Entries("Liabilities", pers.TYPED_LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked)
         ll.addWidget(self.liabs, 2)
-        auto_hint = QLabel("<b>Bold</b> lines come from the portfolio and your companies' books — double-click a "
-                           "property to change your share of it. Add your own lines below them.")
+        auto_hint = QLabel("<b>Bold</b> lines come from the Bank Accounts and Investments tabs, the portfolio and your "
+                           "companies' books — double-click a property to change your share of it. Add anything else "
+                           "(your home, vehicles …) below them.")
         auto_hint.setObjectName("hint")
         auto_hint.setWordWrap(True)
         ll.addWidget(auto_hint)
@@ -284,7 +227,6 @@ class NetWorthPage(QWidget):
         lay.addWidget(hint)
         self.props = pers.properties(pf, self.saved, self.as_of)
         self.loans = self._loans()
-        self._fill_holdco_box()
         self.holdco = pers.holdco_part(pf, self.saved, self.as_of)
         self._fill_auto()
         for e in self.saved.assets:
@@ -292,11 +234,9 @@ class NetWorthPage(QWidget):
         for e in self.saved.liabilities:
             self.liabs.add(e)
         if not self.saved.assets:
-            for k in ("Cash and bank accounts", "RRSP / RRIF", "TFSA", "Principal residence"):
-                self.assets.add(pers.Entry(k))
+            self.assets.add(pers.Entry("Principal residence"))
         if not self.saved.liabilities:
-            for k in ("Mortgage on principal residence", "Lines of credit", "Credit cards"):
-                self.liabs.add(pers.Entry(k))
+            self.liabs.add(pers.Entry("Mortgage on principal residence"))
         self._show_folder()
         self._loading = False
         self._preview()
@@ -305,6 +245,7 @@ class NetWorthPage(QWidget):
         """Re-read the portfolio (values, loans, holdings) for the date at the top, and your entries as saved (they
         may have changed elsewhere — e.g. cash moved by a shareholder loan recorded on Shareholder Loans)."""
         self._loading = True
+        self._month_cache = None
         self.as_of = self._as_of()
         self.saved = pers.load(self.pf)
         for box, rows in ((self.assets, self.saved.assets), (self.liabs, self.saved.liabilities)):
@@ -313,61 +254,16 @@ class NetWorthPage(QWidget):
                 box.add(e)
         self.props = pers.properties(self.pf, self.saved, self.as_of)
         self.loans = self._loans()
-        self._fill_holdco_box()
-        self.holdco_pct.blockSignals(True)
-        self.holdco_pct.setValue(self.saved.holdco_pct)
-        self.holdco_pct.blockSignals(False)
         self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
         self._fill_auto()
         self._show_folder()
         self._loading = False
         self._preview()
 
-    # ---- your holding company ----
-    def _fill_holdco_box(self) -> None:
-        from .. import shareholder_loans as shl
-
-        b = self.holdco_box
-        b.blockSignals(True)
-        b.clear()
-        b.addItem("— none —", "")
-        try:
-            comps = shl.companies(self.pf)
-        except Exception:  # noqa: BLE001
-            comps = []
-        owners = {self.pf.owner_of(h) for h in self.pf.holdings()}
-        for name, path in sorted(comps, key=lambda c: (not any(pers._same(c[1], o) for o in owners), c[0].lower())):
-            b.addItem(name, path)
-        if self.saved.holdco and b.findData(self.saved.holdco) < 0:
-            from ..companies import _read_name
-
-            b.addItem(_read_name(self.saved.holdco) or Path(self.saved.holdco).stem, self.saved.holdco)
-        b.addItem("Another company file…", "other")
-        b.setCurrentIndex(max(0, b.findData(self.saved.holdco)))
-        b.blockSignals(False)
-        self.holdco_pct.setEnabled(bool(self.saved.holdco))
-
-    def _holdco_picked(self, path: str | None = None) -> None:
-        """Pick your holding company (``path`` for tests)."""
-        data = path if path is not None else self.holdco_box.currentData()
-        if data == "other":
-            data, _ = QFileDialog.getOpenFileName(self, "Your holding company's file", "",
-                                                  "Company files (*.amdb);;All files (*)")
-            if not data:
-                self._fill_holdco_box()
-                return
-        self.saved = self.current()
-        self.saved.holdco = data or ""
-        pers.save(self.pf, self.saved)
-        self._fill_holdco_box()
-        self._recompute()
-
-    def _holdco_share(self) -> None:
-        if getattr(self, "_loading", True):
-            return
-        self.saved = self.current()
-        pers.save(self.pf, self.saved)
-        self._recompute()
+    # ---- your holding company (picked in Personal → Your Name & Folders) ----
+    def _holdco_setting(self) -> tuple[str, float]:
+        s = pers.load(self.pf)
+        return s.holdco, s.holdco_pct
 
     def _recompute(self) -> None:
         """Your shares of the properties follow your share of your holding company (unless you changed them)."""
@@ -376,24 +272,17 @@ class NetWorthPage(QWidget):
         self._fill_auto()
         self._preview()
 
-    def _show_holdco(self, st) -> None:
-        hc = st.holdco
-        if hc is None:
-            self.holdco_label.setText("Pick the company you own your properties through, and its own money counts "
-                                      "too.")
-        elif hc.error:
-            self.holdco_label.setText(f"<span style='color:#b3261e'>{hc.name}: {hc.error}</span>")
-        else:
-            self.holdco_label.setText(
-                f"{hc.name}: cash {fmt_money(hc.cash)} · other assets {fmt_money(hc.other_assets)} · liabilities "
-                f"{fmt_money(hc.liabilities)} → your {hc.share_pct:g}%: <b>{fmt_money(hc.my_net)}</b>"
-                + (f" (its {fmt_money(hc.left_out)} invested in the properties is in the real estate below)"
-                   if hc.left_out else ""))
-
     # ---- the lines filled in for you ----
     def _fill_auto(self) -> None:
         """Your properties, your holding company and your shareholder loans, as lines in Assets and Liabilities."""
+        from .. import personal_accounts as pacc
+
         a_rows, l_rows = [], []
+        acct_a, acct_l = pacc.entries(self.pf)            # Bank Accounts and Investments tabs
+        for e in acct_a:
+            a_rows.append((e.kind, e.description, e.amount, "From the Bank Accounts / Investments tab", None))
+        for e in acct_l:
+            l_rows.append((e.kind, e.description, e.amount, "From the Bank Accounts tab", None))
         for p in self.props:
             tip = (f"{p.name}: market value {fmt_money(p.value)} (100%), your share {p.share_pct:g}% — double-click "
                    "to change your share")
@@ -445,8 +334,8 @@ class NetWorthPage(QWidget):
     # ---- the statement ----
     def current(self) -> pers.Saved:
         shares = {p.holding_id: p.share_pct for p in self.props if abs(p.share_pct - p.default_pct) > 1e-9}
-        return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares, "",
-                          self.saved.holdco, self.holdco_pct.value())
+        return pers.Saved(pers.load(self.pf).name, self.assets.entries(), self.liabs.entries(), shares, "",
+                          *self._holdco_setting())
 
     def _loans(self) -> list:
         """Shareholder loans with your companies, from their books (read when the page opens, not as you type)."""
@@ -465,22 +354,42 @@ class NetWorthPage(QWidget):
         if getattr(self, "_loading", True) or not hasattr(self, "props"):
             return
         st = self.statement()
-        self._show_holdco(st)
         self.page.setHtml(pers.html(st))
         self.when.setText(f"  as of {self.as_of:%b} {self.as_of.day}, {self.as_of.year}")
-        n_other = len(st.assets)
-        self.cards["assets"].set(fmt_money(st.total_assets), f"real estate {fmt_money(st.real_estate)} · "
-                                                             f"{n_other} other")
-        self.cards["liabs"].set(fmt_money(st.total_liabilities), f"mortgages {fmt_money(st.real_estate_debt)} · "
-                                                                f"{len(st.liabilities)} other")
+        self.cards["assets"].set(fmt_money(st.total_assets), f"real estate {fmt_money(st.real_estate)}")
+        self.cards["liabs"].set(fmt_money(st.total_liabilities), f"mortgages {fmt_money(st.real_estate_debt)}")
         self.cards["worth"].set(fmt_money(st.net_worth), "assets − liabilities",
                                 NEGATIVE if st.net_worth < 0 else None)
-        self.cards["re"].set(fmt_money(st.real_estate - st.real_estate_debt),
-                             f"{len(st.properties)} propert{'y' if len(st.properties) == 1 else 'ies'} at your share")
+        cash = [e for e in st.assets if e.kind in pers.CASH_KINDS]
+        self.cards["cash"].set(fmt_money(sum(e.amount for e in cash)),
+                               f"{len(cash)} account(s) — Bank Accounts tab")
+        self._show_budget()
         self.save()                         # kept as you type
         if self.as_of == date.today():      # today's figures: one snapshot a day
             pers.record(self.pf, st)
         self._fill_charts()
+
+    def _month(self):
+        """This month's income and spending from the personal budget (read when the page opens or refreshes)."""
+        from .. import personal_finance as pfi
+
+        if getattr(self, "_month_cache", None) is None:
+            today = date.today()
+            try:
+                b = pfi.budget(self.pf, today.year)
+                m = today.month
+                self._month_cache = (b.total(pfi.INCOME, m), b.total(pfi.EXPENSE, m), b.budget_total(pfi.INCOME),
+                                     b.budget_total(pfi.EXPENSE), b.total(pfi.INCOME), b.total(pfi.EXPENSE))
+            except Exception:  # noqa: BLE001
+                self._month_cache = (0, 0, 0, 0, 0, 0)
+        return self._month_cache
+
+    def _show_budget(self) -> None:
+        inc, out, binc, bout, inc_y, out_y = self._month()
+        self.cards["income"].set(fmt_money(inc), (f"budget {fmt_money(binc)} · " if binc else "")
+                                 + f"year {fmt_money(inc_y)}")
+        self.cards["spent"].set(fmt_money(out), (f"budget {fmt_money(bout)} · " if bout else "")
+                                + f"year {fmt_money(out_y)}", NEGATIVE if bout and out > bout else None)
 
     def _fill_charts(self) -> None:
         hist = pers.history(self.pf)
@@ -496,64 +405,27 @@ class NetWorthPage(QWidget):
         self.saved = self.current()
         pers.save(self.pf, self.saved)
 
-    # ---- the personal folder ----
+    # ---- your settings (name and folders) ----
     def _show_folder(self) -> None:
-        f = pers.folder(self.pf)
-        self.folder_label.setText(f"<b>{f}</b>" if f else "<span style='color:#b3261e'>Not chosen yet</span> — pick "
-                                  "a folder for your own documents (net worth statements, T1s, T4s, notices of "
-                                  "assessment …)")
-        out = pers.statements_folder(self.pf)
-        self.out_label.setText(f"<b>{out}</b>" if out else "<span style='color:#b3261e'>Not chosen yet</span> — "
-                               "you'll be asked when you generate")
+        """(the folders are shown in Personal Settings)"""
 
-    def choose_output(self, path: str | None = None) -> Path | None:
-        if path is None:
-            path = QFileDialog.getExistingDirectory(self, "Folder for net worth statements",
-                                                    str(pers.statements_folder(self.pf) or ""))
-        if not path:
-            return None
-        pers.set_statements_folder(self.pf, path)
-        self._show_folder()
-        return Path(path)
-
-    def reset_output(self) -> None:
-        pers.set_statements_folder(self.pf, None)
-        self._show_folder()
-
-    def choose_folder(self, path: str | None = None) -> Path | None:
-        if path is None:
-            path = QFileDialog.getExistingDirectory(self, "Your personal folder", str(pers.folder(self.pf) or ""))
-        if not path:
-            return None
-        pers.set_folder(self.pf, path)
-        try:
-            pers.create(Path(path))
-        except OSError as e:
-            error(self, "Couldn't make the folders", str(e))
-        self._show_folder()
-        return Path(path)
-
-    def setup_folder(self) -> None:
-        f = pers.folder(self.pf) or self.choose_folder()
-        if f is None:
-            return
-        try:
-            n = pers.create(f)
-        except OSError as e:
-            error(self, "Couldn't make the folders", str(e))
-            return
-        info(self, "Personal folder", f"{n} folder(s) made." if n else "All its folders are there.")
-
-    def open_folder(self) -> None:
-        f = pers.folder(self.pf)
-        if f is not None:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f)))
+    def settings(self, *, run=None):
+        """Personal Settings: your name and the folders. ``run`` (for tests) takes the dialog instead of showing it."""
+        dlg = PersonalSettingsDialog(self.pf, self)
+        ok = run(dlg) if run is not None else dlg.exec()
+        self.refresh()
+        return ok
 
     def generate(self, *, quiet: bool = False) -> list[Path]:
         from .reports_tab import write_pdf
 
         self.save()
-        out = pers.statements_folder(self.pf) or (None if quiet else self.choose_output())
+        out = pers.statements_folder(self.pf)
+        if out is None and not quiet:
+            p = QFileDialog.getExistingDirectory(self, "Folder for net worth statements", "")
+            if p:
+                pers.set_statements_folder(self.pf, p)
+                out = Path(p)
         if out is None:
             return []
         st = self.statement()
@@ -580,3 +452,218 @@ class NetWorthPage(QWidget):
         if out is not None:
             lpth.mkdir(out)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
+
+
+class PersonalSettingsDialog(QDialog):
+    """Your name (as it goes on the statement), your personal folder and where net worth statements are saved."""
+
+    def __init__(self, pf, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QFormLayout
+
+        self.pf = pf
+        self.setWindowTitle("Personal Settings — Your Name, Holding Company and Folders")
+        self.resize(720, 0)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name = QLineEdit(pers.load(pf).name)
+        self.name.setPlaceholderText("Your full name, as it should appear on your net worth statement")
+        form.addRow("Your name:", self.name)
+        lay.addLayout(form)
+        fbox = QGroupBox("Personal folder — for your own documents: net worth statements, T1s, T4s, notices of "
+                         "assessment, ID …")
+        fv = QVBoxLayout(fbox)
+        self.folder_label = QLabel()
+        self.folder_label.setWordWrap(True)
+        fv.addWidget(self.folder_label)
+        fb = QHBoxLayout()
+        for text, slot, tip in (("Change Folder…", self.choose_folder, "Pick a different folder to use as your "
+                                                                         "personal folder"),
+                                ("Create Its Subfolders", self.setup_folder, "Make Net Worth Statements, Income Tax "
+                                                                             "(T1, T4, NOA) … inside it, where "
+                                                                             "they aren't there yet"),
+                                ("Open in Explorer", self.open_folder, "Open the folder")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda *_, f=slot: f())
+            fb.addWidget(b)
+        fb.addStretch(1)
+        fv.addLayout(fb)
+        lay.addWidget(fbox)
+        hbox = QGroupBox("Your holding company — the company you own your properties through; its own cash, other "
+                         "assets and liabilities count in your net worth at your share")
+        hv = QVBoxLayout(hbox)
+        hr = QHBoxLayout()
+        self.holdco_box = QComboBox()
+        self.holdco_box.setMinimumWidth(300)
+        self.holdco_box.activated.connect(lambda *_: self.pick_holdco())
+        hr.addWidget(self.holdco_box, 1)
+        hr.addWidget(QLabel("Your share:"))
+        from PySide6.QtWidgets import QDoubleSpinBox
+
+        saved = pers.load(pf)
+        self.holdco = saved.holdco
+        self.holdco_pct = QDoubleSpinBox()
+        self.holdco_pct.setRange(0.01, 100)
+        self.holdco_pct.setDecimals(2)
+        self.holdco_pct.setSuffix(" %")
+        self.holdco_pct.setValue(saved.holdco_pct)
+        self.holdco_pct.valueChanged.connect(lambda *_: self._show_holdco())
+        hr.addWidget(self.holdco_pct)
+        hv.addLayout(hr)
+        self.holdco_label = QLabel()
+        self.holdco_label.setObjectName("hint")
+        self.holdco_label.setWordWrap(True)
+        hv.addWidget(self.holdco_label)
+        lay.addWidget(hbox)
+        obox = QGroupBox("Net worth statements are saved to")
+        ov = QVBoxLayout(obox)
+        self.out_label = QLabel()
+        self.out_label.setWordWrap(True)
+        ov.addWidget(self.out_label)
+        ob = QHBoxLayout()
+        for text, slot, tip in (("Change Folder…", self.choose_output, "Pick the folder the statements go in"),
+                                ("Use the Personal Folder", self.reset_output,
+                                 "Save them in the personal folder's Net Worth Statements")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda *_, f=slot: f())
+            ob.addWidget(b)
+        ob.addStretch(1)
+        ov.addLayout(ob)
+        lay.addWidget(obox)
+        self.note = QLabel()
+        self.note.setObjectName("hint")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        ok = QPushButton("Save")
+        ok.setObjectName("primary")
+        ok.clicked.connect(lambda *_: self.save())
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        lay.addLayout(btns)
+        self._show()
+        self._fill_holdco_box()
+
+    # ---- your holding company ----
+    def _fill_holdco_box(self) -> None:
+        from .. import shareholder_loans as shl
+
+        b = self.holdco_box
+        b.blockSignals(True)
+        b.clear()
+        b.addItem("— none —", "")
+        try:
+            comps = shl.companies(self.pf)
+        except Exception:  # noqa: BLE001
+            comps = []
+        owners = {self.pf.owner_of(h) for h in self.pf.holdings()}
+        for name, path in sorted(comps, key=lambda c: (not any(pers._same(c[1], o) for o in owners), c[0].lower())):
+            b.addItem(name, path)
+        if self.holdco and b.findData(self.holdco) < 0:
+            from ..companies import _read_name
+
+            b.addItem(_read_name(self.holdco) or Path(self.holdco).stem, self.holdco)
+        b.addItem("Another company file…", "other")
+        b.setCurrentIndex(max(0, b.findData(self.holdco)))
+        b.blockSignals(False)
+        self.holdco_pct.setEnabled(bool(self.holdco))
+        self._show_holdco()
+
+    def pick_holdco(self, path: str | None = None) -> None:
+        """Pick your holding company (``path`` for tests; '' for none)."""
+        data = path if path is not None else self.holdco_box.currentData()
+        if data == "other":
+            data, _ = QFileDialog.getOpenFileName(self, "Your holding company's file", "",
+                                                  "Company files (*.amdb);;All files (*)")
+            if not data:
+                self._fill_holdco_box()
+                return
+        self.holdco = data or ""
+        self._fill_holdco_box()
+
+    def _show_holdco(self) -> None:
+        if not self.holdco:
+            self.holdco_label.setText("None picked.")
+            return
+        s = pers.load(self.pf)
+        s.holdco, s.holdco_pct = self.holdco, self.holdco_pct.value()
+        hc = pers.holdco_part(self.pf, s)
+        if hc.error:
+            self.holdco_label.setText(f"<span style='color:#b3261e'>{hc.name}: {hc.error}</span>")
+            return
+        self.holdco_label.setText(
+            f"{hc.name}: cash {fmt_money(hc.cash)} · other assets {fmt_money(hc.other_assets)} · liabilities "
+            f"{fmt_money(hc.liabilities)} → your {hc.share_pct:g}%: <b>{fmt_money(hc.my_net)}</b>"
+            + (f" (its {fmt_money(hc.left_out)} invested in the properties counts in your real estate instead)"
+               if hc.left_out else ""))
+
+    def _show(self) -> None:
+        f = pers.folder(self.pf)
+        self.folder_label.setText(f"<b>{f}</b>" if f else "<span style='color:#b3261e'>Not chosen yet</span> — "
+                                  "click Change Folder… to pick one")
+        out = pers.statements_folder(self.pf)
+        self.out_label.setText(f"<b>{out}</b>" if out else "<span style='color:#b3261e'>Not chosen yet</span> — "
+                               "pick a personal folder, or a folder for them")
+
+    def choose_folder(self, path: str | None = None) -> Path | None:
+        if path is None:
+            path = QFileDialog.getExistingDirectory(self, "Pick your personal folder", str(pers.folder(self.pf) or ""))
+        if not path:
+            return None
+        pers.set_folder(self.pf, path)
+        try:
+            n = pers.create(Path(path))
+        except OSError as e:
+            error(self, "Couldn't make the folders", str(e))
+            n = 0
+        self._show()
+        self.note.setText(f"Personal folder set to {path}" + (f" — {n} subfolder(s) made in it." if n else "."))
+        return Path(path)
+
+    def setup_folder(self) -> int:
+        f = pers.folder(self.pf) or self.choose_folder()
+        if f is None:
+            return 0
+        try:
+            n = pers.create(f)
+        except OSError as e:
+            error(self, "Couldn't make the folders", str(e))
+            return 0
+        self.note.setText(f"{n} subfolder(s) made in {f}." if n else f"All its subfolders are already in {f}.")
+        return n
+
+    def open_folder(self) -> None:
+        f = pers.folder(self.pf)
+        if f is not None:
+            lpth.mkdir(f)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f)))
+
+    def choose_output(self, path: str | None = None) -> Path | None:
+        if path is None:
+            path = QFileDialog.getExistingDirectory(self, "Folder for net worth statements",
+                                                    str(pers.statements_folder(self.pf) or ""))
+        if not path:
+            return None
+        pers.set_statements_folder(self.pf, path)
+        self._show()
+        self.note.setText(f"Net worth statements will be saved to {path}.")
+        return Path(path)
+
+    def reset_output(self) -> None:
+        pers.set_statements_folder(self.pf, None)
+        self._show()
+
+    def save(self) -> bool:
+        s = pers.load(self.pf)
+        s.name = self.name.text().strip()
+        if (s.holdco, s.holdco_pct) != (self.holdco, self.holdco_pct.value()):
+            s.holdco, s.holdco_pct = self.holdco, self.holdco_pct.value()
+            s.shares = {}               # your shares of its properties follow your share of it again
+        pers.save(self.pf, s)
+        self.accept()
+        return True

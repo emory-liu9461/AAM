@@ -80,9 +80,17 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     assert dlg.liabs.auto_rows() == [("Mortgage", "45 Elm St — your 50% of $2,750,000.00 (First National)",
                                       "$1,375,000.00")]
     n = dlg.assets.n_auto
-    dlg.choose_folder(str(f))
-    assert pers.folder(pf) == f and (f / "Income Tax/T1 Returns").is_dir()
-    dlg.name.setText("Pat Lee")
+    assert not hasattr(dlg, "name")                                    # your name is a setting, not on the page
+
+    def setup(sd):                                                     # Personal Settings
+        sd.name.setText("Pat Lee")
+        sd.choose_folder(str(f))
+        assert "Personal folder set to" in sd.note.text() and "subfolder" in sd.note.text()
+        assert sd.setup_folder() == 0 and "already" in sd.note.text()
+        return sd.save()
+
+    assert dlg.settings(run=setup)
+    assert pers.folder(pf) == f and (f / "Income Tax/T1 Returns").is_dir() and pers.load(pf).name == "Pat Lee"
     dlg.assets.table.item(n, 2).setText("50000")                       # cash, below the property
     assert dlg.assets.table.item(n, 2).text() == "$50,000.00"
     dlg.assets.table.item(0, 2).setText("1")                           # the property's line isn't typed over
@@ -115,17 +123,22 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     assert all(c.picked for c in picks["Borrower and Guarantor Information"].files)
     # statements saved to a folder of your choosing
     own = tmp_path / "Bank Stuff" / "NW"
-    assert dlg.out_label.text().endswith("Net Worth Statements</b>")
-    dlg.choose_output(str(own))
-    assert pers.statements_folder(pf) == own and str(own) in dlg.out_label.text()
-    dlg.name.setText("Pat Lee")
+
+    def move(sd):
+        assert sd.out_label.text().endswith("Net Worth Statements</b>")
+        sd.choose_output(str(own))
+        assert str(own) in sd.out_label.text()
+        return sd.save()
+
+    dlg.settings(run=move)
+    assert pers.statements_folder(pf) == own
     made2 = dlg.generate(quiet=True)
     assert [p.parent for p in made2] == [own, own] and all(p.exists() for p in made2)
     picks = {pk.doc.name: pk for pk in lpk.candidates(deal, f, pers.statements_folder(pf))}
     assert made2[0].name in [c.path.name for c in picks["Borrower and Guarantor Information"].files]
     assert any(str(own) in str(c.path) for c in picks["Borrower and Guarantor Information"].files)
-    dlg.reset_output()
-    assert pers.statements_folder(pf) == f / pers.NET_WORTH
+    dlg.settings(run=lambda sd: sd.reset_output() or sd.save())
+    assert pers.statements_folder(pf) == f / pers.NET_WORTH and pers.load(pf).name == "Pat Lee"
     pf.close()
 
 
@@ -142,10 +155,21 @@ def test_button_beside_portfolio_summary(app, tmp_path):
     v.show_summary()
     assert v.portfolio_bar.isVisibleTo(v)                       # As of, Viewing … with the portfolio
     v.show_net_worth()
+    first = v._first_settings                                   # no name yet: Personal Settings opens by itself
+    assert first.isVisible() and "first" in first.windowTitle()
+    first.name.setText("Pat Lee")
+    first.save()
+    assert pers.load(v.pf).name == "Pat Lee"
+    assert v.personal_page.tabs.cornerWidget() is None                 # the folders are under Personal in the menus
+    menus = [a.text() for a in w.menuBar().actions()]
+    assert menus.index("&View") < menus.index("&Personal") < menus.index("&Summary")
+    f = tmp_path / "Mine"
+    assert w.personal_settings(run=lambda sd: sd.choose_folder(str(f)) and sd.save())
+    assert pers.folder(v.pf) == f and (f / "Net Worth Statements").is_dir() and pers.load(v.pf).name == "Pat Lee"
     assert v.tabs.currentWidget() is v.personal_page and v.net_worth_btn.isChecked()
     assert v.personal_page.tabs.currentWidget() is v.net_worth_page
-    assert [v.personal_page.tabs.tabText(i) for i in range(5)] == ["Net Worth", "Budget", "Statements",
-                                                                   "Income from Businesses", "Shareholder Loans"]
+    assert [v.personal_page.tabs.tabText(i) for i in range(6)] == [
+        "Net Worth", "Bank Accounts", "Investments", "Budget", "Income from Businesses", "Shareholder Loans"]
     assert not v.summary_btn.isChecked() and not v.company_btn.isChecked()
     assert not v.tabs.tabBar().isVisibleTo(v) and not v.portfolio_bar.isVisibleTo(v)
     assert v._company_shown() is None
@@ -167,13 +191,21 @@ def test_history_and_charts(app, tmp_path):
     old = pers.statement(pf, pers.Saved("Pat", [pers.Entry("Cash and bank accounts", "", 10_000_00)]),
                          date(2026, 1, 31))
     pers.record(pf, old)
-    page = NetWorthPage(pf)                                       # today: recorded as you type
-    page.assets.table.item(page.assets.n_auto, 2).setText("25000")   # cash
+    from am_accounting import personal_accounts as pacc
+
+    page = NetWorthPage(pf)                                       # today: recorded as it changes
+    a = pacc.load(pf)
+    a.banks.append(pacc.BankAccount("Chequing", balance=25_000_00, id=a.new_id()))   # Bank Accounts tab
+    pacc.save(pf, a)
+    page.refresh()
+    assert ("Cash and bank accounts", "Chequing", "$25,000.00") in page.assets.auto_rows()
     hist = pers.history(pf)
     assert [x.date for x in hist] == ["2026-01-31", date.today().isoformat()]
     assert hist[0].cash == 10_000_00 and hist[-1].cash == 25_000_00
     assert hist[-1].by_kind[pers.REAL_ESTATE] == 2_500_000_00 and hist[-1].net_worth == page.statement().net_worth
-    page.assets.table.item(page.assets.n_auto, 2).setText("30000")   # same day: replaced, not added
+    a.banks[0].balance = 30_000_00                                # same day: replaced, not added
+    pacc.save(pf, a)
+    page.refresh()
     assert len(pers.history(pf)) == 2 and pers.history(pf)[-1].cash == 30_000_00
     assert page.chart_cash.dates == [x.date for x in pers.history(pf)]
     assert page.chart_cash.series[0][1] == [10_000_00, 30_000_00]

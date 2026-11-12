@@ -147,3 +147,57 @@ def test_click_a_selected_line_again_to_unselect(app, tmp_path):
     assert [i.row() for i in t.selectionModel().selectedRows()] == [2]
     t.close()
     w.close()
+
+
+def test_click_a_selected_cell_again_in_a_typed_table(app, tmp_path):
+    """Net Worth's Assets: cells you type into (double-click) unselect on a second click too."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from am_accounting import personal as pers
+    from am_accounting import portfolio as pfm
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)    # (installs the click filter)
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    pers.save(pf, pers.Saved("Pat", [pers.Entry("Vehicles", "Car", 20_000_00)]))
+    page = NetWorthPage(pf)
+    page.resize(1300, 800)
+    page.show()
+    QApplication.processEvents()
+    t = page.assets.table
+    at = t.visualItemRect(t.item(page.assets.n_auto, 1)).center()
+
+    def wait():
+        QTest.qWait(QApplication.doubleClickInterval() + 80)
+
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)
+    wait()
+    assert len(t.selectionModel().selectedIndexes()) == 1
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=at)     # again: the blue goes
+    wait()
+    assert t.selectionModel().selectedIndexes() == []
+    page.close()
+    pf.close()
+    w.close()
+
+
+def test_top_bar_never_scrolls_off(app, tmp_path):
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    w.resize(1000, 420)                                          # shorter than the pages
+    w.show()
+    QApplication.processEvents()
+    bar = w.outer_scroll.verticalScrollBar()
+    bar.setValue(50)                                             # e.g. a field lower down getting the focus
+    QApplication.processEvents()
+    assert bar.value() == 0
+    w.close()

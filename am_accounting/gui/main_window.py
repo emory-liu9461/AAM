@@ -178,6 +178,12 @@ class MainWindow(QMainWindow):
         outer.setWidget(central)
         outer.setWidgetResizable(True)
         outer.setFrameShape(QScrollArea.Shape.NoFrame)
+        # only sideways: scrolling up and down (e.g. to show a field lower on a tall page) would push the Company bar
+        # and the menus' row off the top — each page scrolls inside itself instead
+        outer.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        vbar = outer.verticalScrollBar()
+        vbar.valueChanged.connect(lambda v: vbar.setValue(0) if v else None)
+        self.outer_scroll = outer
         self.setCentralWidget(outer)
         relax_widths(central)
 
@@ -313,6 +319,9 @@ class MainWindow(QMainWindow):
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._system_scheme_changed)
         except AttributeError:
             pass
+
+        personal_menu = self.menuBar().addMenu("&Personal")
+        self._action(personal_menu, "Your &Name && Folders…", self.personal_settings)
 
         summary_menu = self.menuBar().addMenu("&Summary")
         self._action(summary_menu, "&Morning Email Summary…", self.morning_summary)
@@ -923,6 +932,25 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     # -- Accounting / Asset Management ---------------------------------------------
+
+    def personal_settings(self, *, run=None):
+        """Personal → Your Name & Folders… : your name (for the net worth statement), your personal folder and where
+        net worth statements are saved."""
+        from .. import portfolio as pfm
+        from .net_worth_page import PersonalSettingsDialog
+
+        own = self.asset_view is None
+        pf = pfm.Portfolio(self.portfolio_path()) if own else self.asset_view.pf
+        try:
+            dlg = PersonalSettingsDialog(pf, self)
+            ok = run(dlg) if run is not None else dlg.exec()
+        finally:
+            if own:
+                pf.close()
+        page = getattr(self.asset_view, "personal_page", None) if self.asset_view is not None else None
+        if ok and page is not None:
+            page.refresh()
+        return ok
 
     def morning_summary(self, *, preview: bool = False, run=None):
         """Summary → Morning Email Summary… (see morning_summary.py). ``run`` (for tests) takes the dialog."""

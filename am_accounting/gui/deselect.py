@@ -1,7 +1,8 @@
 """Click a selected line again to unselect it (the highlight goes off), in every list and table of the app.
 
 A double-click still opens the line: the unselect waits the double-click interval and is cancelled by a double-click.
-Grids you type into (where clicking a selected cell starts editing) and Ctrl/Shift clicks are left as they are.
+Tables where clicking a selected cell starts editing, and Ctrl/Shift clicks, are left as they are; in tables you type
+into by double-clicking (like Net Worth's Assets), clicking the selected cell again unselects it too.
 """
 
 from __future__ import annotations
@@ -9,8 +10,8 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 
-_EDIT = (QAbstractItemView.EditTrigger.SelectedClicked | QAbstractItemView.EditTrigger.CurrentChanged
-         | QAbstractItemView.EditTrigger.AnyKeyPressed | QAbstractItemView.EditTrigger.EditKeyPressed)
+# a click that starts editing (a selected cell clicked again) is left alone; double-click / typing to edit is fine
+_EDIT = QAbstractItemView.EditTrigger.SelectedClicked | QAbstractItemView.EditTrigger.CurrentChanged
 
 
 def unselect(view: QAbstractItemView) -> None:
@@ -50,14 +51,18 @@ class ClickToUnselect(QObject):
         if ev.button() != Qt.MouseButton.LeftButton or ev.modifiers() & (
                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
             return False
-        if view.selectionBehavior() != QAbstractItemView.SelectionBehavior.SelectRows or view.editTriggers() & _EDIT:
+        if view.editTriggers() & _EDIT:
             return False
         sm = view.selectionModel()
         idx = view.indexAt(ev.position().toPoint())
-        if sm is None or not idx.isValid() or not sm.isRowSelected(idx.row(), idx.parent()):
+        if sm is None or not idx.isValid():
             return False
-        if len({(i.row(), i.parent()) for i in sm.selectedIndexes()}) != 1:
-            return False                  # several lines selected: a click picks just this one (as usual)
+        if view.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectRows:
+            if not sm.isRowSelected(idx.row(), idx.parent()) or \
+                    len({(i.row(), i.parent()) for i in sm.selectedIndexes()}) != 1:
+                return False              # several lines selected: a click picks just this one (as usual)
+        elif not sm.isSelected(idx) or len(sm.selectedIndexes()) != 1:
+            return False                  # (cells: the one selected cell, clicked again)
         self._view = view
         self._timer.start(QApplication.doubleClickInterval() + 20)
         return False

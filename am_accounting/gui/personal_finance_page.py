@@ -400,6 +400,12 @@ class PersonalFinancePage(QWidget):
                 shl.auto_link(pf)
         except Exception:  # noqa: BLE001
             pass
+        from .. import personal_accounts as pacc
+
+        try:                                   # cash, investments and cards typed on Net Worth: to their own tabs
+            pacc.move_typed_lines(pf)
+        except Exception:  # noqa: BLE001
+            pass
         self.net_worth = NetWorthPage(pf, as_of=as_of)
         self.budget = BudgetTab(pf)
         self.income = IncomeTab(pf)
@@ -410,8 +416,18 @@ class PersonalFinancePage(QWidget):
         self.tabs.addTab(self.loans, "Shareholder Loans")
         self.loans.on_change = self.net_worth.refresh
         self.statements = StatementsTab(pf)
-        self.tabs.insertTab(2, self.statements, "Statements")
-        self.statements.on_change = self.budget.fill
+        self.statements.on_change = lambda: (self.budget.fill(), self.net_worth.refresh())
+        self.banks = BankAccountsTab(pf)
+        self.investments = InvestmentsTab(pf)
+        # Bank Accounts: your accounts and balances, with their statements' transactions below
+        self.bank_tab = QSplitter(Qt.Orientation.Vertical)
+        self.bank_tab.addWidget(self.banks)
+        self.bank_tab.addWidget(self.statements)
+        self.bank_tab.setSizes([300, 520])
+        self.tabs.insertTab(1, self.bank_tab, "Bank Accounts")
+        self.tabs.insertTab(2, self.investments, "Investments")
+        self.banks.on_change = self.net_worth.refresh
+        self.investments.on_change = self.net_worth.refresh
         self.tabs.currentChanged.connect(lambda *_: self._shown())
         lay.addWidget(self.tabs)
 
@@ -419,13 +435,28 @@ class PersonalFinancePage(QWidget):
         w = self.tabs.currentWidget()
         if w is self.net_worth:
             self.net_worth.refresh()
-        elif w is self.statements:
+        elif w is self.bank_tab:
+            self.banks.fill()
             self.statements.read_now()          # new statements in the folder are read when you open it
         else:
             w.fill()
 
     def refresh(self) -> None:
         self._shown()
+
+    def settings(self, *, run=None, first: bool = False):
+        """Personal Settings (your name and folders). ``first``: opened by itself the first time (doesn't wait)."""
+        from .net_worth_page import PersonalSettingsDialog
+
+        dlg = PersonalSettingsDialog(self.net_worth.pf, self)
+        if first:
+            dlg.setWindowTitle("Personal Settings — first, a few details")
+            dlg.finished.connect(lambda *_: self.refresh())
+            dlg.open()
+            return dlg
+        ok = run(dlg) if run is not None else dlg.exec()
+        self.refresh()
+        return ok
 
 
 class RecordLoanDialog(QDialog):
@@ -698,8 +729,9 @@ class StatementsTab(QWidget):
         self.folder_label = QLabel()
         self.folder_label.setWordWrap(True)
         fold.addWidget(self.folder_label, 1)
-        for text, slot, tip in (("Choose…", self.choose, "The folder you put your personal statements in"),
-                                ("Open", self.open_folder, "Open it (drop new statements in)"),
+        for text, slot, tip in (("Change Folder…", self.choose, "Pick a different folder to put your personal "
+                                                                "statements in"),
+                                ("Open in Explorer", self.open_folder, "Open the folder (drop new statements in)"),
                                 ("Read New Statements", self.read_now, "Read the statements not read yet")):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -839,3 +871,371 @@ class StatementsTab(QWidget):
         if self.on_change:
             self.on_change()
         return n
+
+
+def _money_cell(cents: int, *, editable=True, colour=None) -> QTableWidgetItem:
+    return _cell(fmt_money(cents) if cents else "", right=True, editable=editable, colour=colour)
+
+
+class BankAccountsTab(QWidget):
+    """Your bank accounts, cash, credit cards and lines of credit, with their balances — into your net worth."""
+
+    COLS = ["Account", "Institution", "Type", "Balance", "As of", "Note"]
+
+    def __init__(self, pf, parent=None):
+        super().__init__(parent)
+        from .asset_mgmt import Card
+
+        self.pf = pf
+        self.on_change = None
+        lay = QVBoxLayout(self)
+        cards = QHBoxLayout()
+        self.cards = {k: Card(t, small=True) for k, t in (("cash", "Cash in your accounts"),
+                                                           ("owed", "Owed on cards and lines of credit"),
+                                                           ("net", "Net"))}
+        for c in self.cards.values():
+            cards.addWidget(c)
+        lay.addLayout(cards)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Your accounts</b> — type each balance (for a card or a line of credit, what you "
+                              "owe); they count in your net worth"))
+        head.addStretch(1)
+        for text, slot in (("Add Account", self.add), ("Remove", self.remove)):
+            b = QPushButton(text)
+            if text.startswith("Add"):
+                b.setObjectName("primary")
+            b.clicked.connect(lambda *_, f=slot: f())
+            head.addWidget(b)
+        lay.addLayout(head)
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        self.table.itemChanged.connect(lambda *_: self._save())
+        lay.addWidget(self.table, 1)
+        self.accts = None
+        self._loading = False
+        self.fill()
+
+    def fill(self) -> None:
+        from .. import personal_accounts as pacc
+
+        self._loading = True
+        self.accts = pacc.load(self.pf)
+        t = self.table
+        t.blockSignals(True)
+        t.setRowCount(0)
+        for b in self.accts.banks:
+            self._row(b)
+        t.blockSignals(False)
+        t.setColumnWidth(0, 200)
+        t.setColumnWidth(1, 160)
+        t.setColumnWidth(2, 140)
+        t.setColumnWidth(3, 130)
+        t.setColumnWidth(4, 110)
+        self._loading = False
+        self._totals()
+
+    def _row(self, b) -> None:
+        from .. import personal_accounts as pacc
+
+        t = self.table
+        r = t.rowCount()
+        t.insertRow(r)
+        name = _cell(b.name, editable=True)
+        name.setData(ROLE, b.id)
+        t.setItem(r, 0, name)
+        t.setItem(r, 1, _cell(b.institution, editable=True))
+        kind = QComboBox()
+        kind.addItems(pacc.BANK_TYPES)
+        kind.setCurrentText(b.type)
+        kind.currentTextChanged.connect(lambda *_: self._save())
+        t.setCellWidget(r, 2, kind)
+        t.setItem(r, 3, _money_cell(b.balance))
+        t.setItem(r, 4, _cell(b.as_of, editable=True))
+        t.setItem(r, 5, _cell(b.note, editable=True))
+
+    def _save(self) -> None:
+        from .. import personal_accounts as pacc
+
+        if self._loading:
+            return
+        t = self.table
+        banks = []
+        t.blockSignals(True)
+        for r in range(t.rowCount()):
+            raw = t.item(r, 3).text() if t.item(r, 3) else ""
+            v = parse_money(raw) if raw.strip() else 0
+            if v is None:
+                t.item(r, 3).setForeground(NEGATIVE)
+                v = 0
+            elif raw.strip():
+                t.item(r, 3).setText(fmt_money(v))
+                t.item(r, 3).setForeground(self.palette().text().color())
+            as_of = (t.item(r, 4).text() if t.item(r, 4) else "").strip()
+            old = next((b for b in self.accts.banks if b.id == t.item(r, 0).data(ROLE)), None)
+            if old is not None and v != old.balance and as_of == old.as_of:
+                as_of = date.today().isoformat()            # a new balance: as of today unless you say otherwise
+                t.item(r, 4).setText(as_of)
+            banks.append(pacc.BankAccount(t.item(r, 0).text().strip(), t.cellWidget(r, 2).currentText(),
+                                          (t.item(r, 1).text() if t.item(r, 1) else "").strip(), v, as_of,
+                                          (t.item(r, 5).text() if t.item(r, 5) else "").strip(),
+                                          t.item(r, 0).data(ROLE)))
+        t.blockSignals(False)
+        self.accts.banks = banks
+        pacc.save(self.pf, self.accts)
+        self._totals()
+        if self.on_change:
+            self.on_change()
+
+    def _totals(self) -> None:
+        banks = self.accts.banks if self.accts else []
+        cash = sum(b.balance for b in banks if not b.owed)
+        owed = sum(b.balance for b in banks if b.owed)
+        self.cards["cash"].set(fmt_money(cash), f"{sum(1 for b in banks if not b.owed)} account(s)")
+        self.cards["owed"].set(fmt_money(owed), f"{sum(1 for b in banks if b.owed)} account(s)",
+                               NEGATIVE if owed else None)
+        self.cards["net"].set(fmt_money(cash - owed), "", NEGATIVE if cash < owed else None)
+
+    def add(self, name: str = "New account", kind: str = "Chequing", balance: int = 0) -> None:
+        from .. import personal_accounts as pacc
+
+        b = pacc.BankAccount(name, kind, balance=balance, as_of=date.today().isoformat(), id=self.accts.new_id())
+        self.accts.banks.append(b)
+        pacc.save(self.pf, self.accts)
+        self.fill()
+        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
+        if self.on_change:
+            self.on_change()
+
+    def remove(self) -> None:
+        r = self.table.currentRow()
+        if r >= 0:
+            self.table.removeRow(r)
+            self._save()
+
+
+class InvestmentsTab(QWidget):
+    """Your investment accounts (RRSP, TFSA …) and what's in them — into your net worth."""
+
+    HCOLS = ["Symbol", "Name", "Quantity", "Price", "Market value", "Book cost", "Gain"]
+
+    def __init__(self, pf, parent=None):
+        super().__init__(parent)
+        from .asset_mgmt import Card
+
+        self.pf = pf
+        self.on_change = None
+        lay = QVBoxLayout(self)
+        cards = QHBoxLayout()
+        self.cards = {k: Card(t, small=True) for k, t in (("value", "Market value"), ("cost", "Book cost"),
+                                                           ("gain", "Gain"), ("by", "By account type"))}
+        for c in self.cards.values():
+            cards.addWidget(c)
+        lay.addLayout(cards)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Your investment accounts</b>"))
+        head.addStretch(1)
+        for text, slot in (("Add Account", self.add_account), ("Remove Account", self.remove_account)):
+            b = QPushButton(text)
+            if text.startswith("Add"):
+                b.setObjectName("primary")
+            b.clicked.connect(lambda *_, f=slot: f())
+            head.addWidget(b)
+        lay.addLayout(head)
+        self.accounts = QTableWidget(0, 6)
+        self.accounts.setHorizontalHeaderLabels(["Account", "Institution", "Type", "Cash in it", "Market value",
+                                                 "Gain"])
+        self.accounts.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.accounts.verticalHeader().hide()
+        self.accounts.itemChanged.connect(lambda *_: self._save_accounts())
+        self.accounts.currentCellChanged.connect(lambda r, *_: self._show_holdings(r))
+        lay.addWidget(self.accounts, 2)
+        hh = QHBoxLayout()
+        self.hold_label = QLabel("<b>Holdings</b>")
+        hh.addWidget(self.hold_label)
+        hh.addStretch(1)
+        for text, slot in (("Add Holding", self.add_holding), ("Remove Holding", self.remove_holding)):
+            b = QPushButton(text)
+            b.clicked.connect(lambda *_, f=slot: f())
+            hh.addWidget(b)
+        lay.addLayout(hh)
+        self.holdings = QTableWidget(0, len(self.HCOLS))
+        self.holdings.setHorizontalHeaderLabels(self.HCOLS)
+        self.holdings.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.holdings.verticalHeader().hide()
+        self.holdings.itemChanged.connect(lambda *_: self._save_holdings())
+        lay.addWidget(self.holdings, 3)
+        hint = QLabel("Type each holding's quantity, price and book cost (prices aren't looked up online). An "
+                      "account's market value is its cash plus its holdings; it counts in your net worth by type.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.accts = None
+        self._loading = False
+        self.fill()
+
+    def _cur(self):
+        r = self.accounts.currentRow()
+        return self.accts.investments[r] if self.accts and 0 <= r < len(self.accts.investments) else None
+
+    def fill(self, keep: int | None = None) -> None:
+        from .. import personal_accounts as pacc
+
+        self._loading = True
+        cur = self._cur()
+        keep = keep if keep is not None else (cur.id if cur else None)
+        self.accts = pacc.load(self.pf)
+        t = self.accounts
+        t.blockSignals(True)
+        t.setRowCount(len(self.accts.investments))
+        for r, a in enumerate(self.accts.investments):
+            name = _cell(a.name, editable=True)
+            name.setData(ROLE, a.id)
+            t.setItem(r, 0, name)
+            t.setItem(r, 1, _cell(a.institution, editable=True))
+            kind = QComboBox()
+            kind.addItems(pacc.INVEST_TYPES)
+            kind.setCurrentText(a.type)
+            kind.currentTextChanged.connect(lambda *_: self._save_accounts())
+            t.setCellWidget(r, 2, kind)
+            t.setItem(r, 3, _money_cell(a.cash))
+            t.setItem(r, 4, _cell(fmt_money(a.market_value), right=True, bold=True))
+            t.setItem(r, 5, _cell(fmt_money(a.gain), right=True, colour=NEGATIVE if a.gain < 0 else POSITIVE))
+        t.blockSignals(False)
+        for c, w in enumerate((200, 0, 150, 120, 130, 120)):
+            if w:
+                t.setColumnWidth(c, w)
+        row = next((r for r, a in enumerate(self.accts.investments) if a.id == keep), 0)
+        self._loading = False
+        if self.accts.investments:
+            t.setCurrentCell(row, 0)
+        self._show_holdings(t.currentRow())
+        self._totals()
+
+    def _show_holdings(self, r: int) -> None:
+        a = self.accts.investments[r] if self.accts and 0 <= r < len(self.accts.investments) else None
+        h = self.holdings
+        h.blockSignals(True)
+        h.setRowCount(0)
+        self.hold_label.setText(f"<b>Holdings</b> — {a.name}" if a else "<b>Holdings</b>")
+        for x in (a.holdings if a else []):
+            i = h.rowCount()
+            h.insertRow(i)
+            h.setItem(i, 0, _cell(x.symbol, editable=True))
+            h.setItem(i, 1, _cell(x.name, editable=True))
+            h.setItem(i, 2, _cell(f"{x.quantity:g}" if x.quantity else "", right=True, editable=True))
+            h.setItem(i, 3, _money_cell(x.price))
+            h.setItem(i, 4, _cell(fmt_money(x.market_value), right=True, bold=True))
+            h.setItem(i, 5, _money_cell(x.book_cost))
+            g = x.market_value - x.book_cost
+            h.setItem(i, 6, _cell(fmt_money(g) if x.book_cost else "", right=True,
+                                  colour=NEGATIVE if g < 0 else POSITIVE))
+        for c, w in enumerate((90, 0, 90, 110, 130, 120, 110)):
+            if w:
+                h.setColumnWidth(c, w)
+        h.blockSignals(False)
+
+    def _save_accounts(self) -> None:
+        from .. import personal_accounts as pacc
+
+        if self._loading:
+            return
+        t = self.accounts
+        for r, a in enumerate(self.accts.investments):
+            if r >= t.rowCount():
+                break
+            a.name = t.item(r, 0).text().strip()
+            a.institution = (t.item(r, 1).text() if t.item(r, 1) else "").strip()
+            a.type = t.cellWidget(r, 2).currentText()
+            raw = t.item(r, 3).text() if t.item(r, 3) else ""
+            a.cash = (parse_money(raw) or 0) if raw.strip() else 0
+        pacc.save(self.pf, self.accts)
+        self.fill()
+        if self.on_change:
+            self.on_change()
+
+    def _save_holdings(self) -> None:
+        from .. import personal_accounts as pacc
+
+        a = self._cur()
+        if a is None or self._loading:
+            return
+        h = self.holdings
+        out = []
+        for i in range(h.rowCount()):
+            def txt(c):
+                return (h.item(i, c).text() if h.item(i, c) else "").strip()
+            try:
+                qty = float(txt(2).replace(",", "")) if txt(2) else 0.0
+            except ValueError:
+                qty = 0.0
+            out.append(pacc.Holding(txt(0).upper(), txt(1), qty, (parse_money(txt(3)) or 0) if txt(3) else 0,
+                                    (parse_money(txt(5)) or 0) if txt(5) else 0))
+        a.holdings = out
+        a.as_of = date.today().isoformat()
+        pacc.save(self.pf, self.accts)
+        self.fill(keep=a.id)
+        if self.on_change:
+            self.on_change()
+
+    def _totals(self) -> None:
+        inv = self.accts.investments if self.accts else []
+        value = sum(a.market_value for a in inv)
+        cost = sum(a.book_cost for a in inv)
+        self.cards["value"].set(fmt_money(value), f"{len(inv)} account(s)")
+        self.cards["cost"].set(fmt_money(cost), "")
+        self.cards["gain"].set(fmt_money(value - cost), f"{(value - cost) / cost * 100:.1f}%" if cost else "",
+                               NEGATIVE if value < cost else POSITIVE)
+        by: dict[str, int] = {}
+        for a in inv:
+            by[a.type] = by.get(a.type, 0) + a.market_value
+        top = sorted(by.items(), key=lambda kv: -kv[1])
+        self.cards["by"].set(top[0][0] if top else "—", " · ".join(f"{k} {fmt_money(v)}" for k, v in top[:3]))
+
+    def add_account(self, name: str = "New account", kind: str = "TFSA") -> None:
+        from .. import personal_accounts as pacc
+
+        a = pacc.InvestmentAccount(name, kind, as_of=date.today().isoformat(), id=self.accts.new_id())
+        self.accts.investments.append(a)
+        pacc.save(self.pf, self.accts)
+        self.fill(keep=a.id)
+        if self.on_change:
+            self.on_change()
+
+    def remove_account(self) -> None:
+        from .. import personal_accounts as pacc
+
+        a = self._cur()
+        if a is None:
+            return
+        self.accts.investments = [x for x in self.accts.investments if x.id != a.id]
+        pacc.save(self.pf, self.accts)
+        self.fill()
+        if self.on_change:
+            self.on_change()
+
+    def add_holding(self, symbol: str = "", quantity: float = 0.0, price: int = 0, book_cost: int = 0) -> None:
+        from .. import personal_accounts as pacc
+
+        a = self._cur()
+        if a is None:
+            self.add_account()
+            a = self._cur()
+        a.holdings.append(pacc.Holding(symbol.upper(), "", quantity, price, book_cost))
+        pacc.save(self.pf, self.accts)
+        self.fill(keep=a.id)
+        if self.on_change:
+            self.on_change()
+
+    def remove_holding(self) -> None:
+        a, r = self._cur(), self.holdings.currentRow()
+        if a is None or not 0 <= r < len(a.holdings):
+            return
+        from .. import personal_accounts as pacc
+
+        del a.holdings[r]
+        pacc.save(self.pf, self.accts)
+        self.fill(keep=a.id)
+        if self.on_change:
+            self.on_change()

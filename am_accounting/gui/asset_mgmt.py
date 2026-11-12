@@ -2517,6 +2517,10 @@ class AssetManagementView(QWidget):
             self.net_worth_page = self.personal_page.net_worth
             i = self.tabs.addTab(self.personal_page, "Personal Finance")
             self.tabs.setTabVisible(i, False)          # opened with its button at the top
+            from .. import personal as pers
+
+            if not pers.load(self.pf).name:            # the first time: your name and folders
+                self._first_settings = self.personal_page.settings(first=True)
         else:
             self.personal_page.refresh()
         if tab is not None:
