@@ -91,7 +91,8 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
 
     assert dlg.settings(run=setup)
     assert pers.folder(pf) == f and (f / "Income Tax/T1 Returns").is_dir() and pers.load(pf).name == "Pat Lee"
-    dlg.assets.table.item(n, 2).setText("50000")                       # cash, below the property
+    dlg.assets.add(pers.Entry("Vehicles", "Car"))                      # your own line, below the property
+    dlg.assets.table.item(n, 2).setText("50000")
     assert dlg.assets.table.item(n, 2).text() == "$50,000.00"
     dlg.assets.table.item(0, 2).setText("1")                           # the property's line isn't typed over
     assert pers.load(pf).assets[0].amount == 50_000_00
@@ -216,6 +217,7 @@ def test_history_and_charts(app, tmp_path):
     page.show()
     page.grab()                                                   # draws without errors
     past = NetWorthPage(pf, as_of=date(2025, 6, 30))              # a past date isn't recorded
+    past.assets.add(pers.Entry("Vehicles", "Car"))
     past.assets.table.item(past.assets.n_auto, 2).setText("1")
     assert "2025-06-30" not in [x.date for x in pers.history(pf)]
     pf.close()

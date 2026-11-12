@@ -273,3 +273,31 @@ def test_files_kept_line_stays_on_one_line(app, tmp_path):
     assert inner.text() == long
     assert lbl.minimumSizeHint().width() < 200                      # never makes the page wider
     w.close()
+
+
+def test_company_box_only_with_company_pages(app, tmp_path):
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    w.show()
+    w.set_mode("assets")
+    v = w.asset_view
+    v.show_company_pages()
+    assert w.switcher.isVisible() and w.type_btn.isVisible()
+    for show in (v.show_summary, v.show_deals, v.show_personal):
+        show()
+        assert not w.switcher.isVisible() and not w.company_label.isVisible() and not w.type_btn.isVisible()
+        assert w.mode_tabs.isVisible()                               # Asset Management / Accounting stay
+    v.show_company_pages()
+    assert w.switcher.isVisible()
+    v.show_summary()
+    w.set_mode("accounting")                                         # always with Accounting
+    assert w.switcher.isVisible()
+    w.set_mode("assets")                                             # back: the company's pages (as before)
+    assert w.switcher.isVisible() == (v.company_btn.isChecked())
+    v.show_personal()
+    assert not w.switcher.isVisible()
+    w.close()

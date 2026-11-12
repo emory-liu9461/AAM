@@ -122,3 +122,75 @@ def test_cash_and_month_on_net_worth(app, tmp_path):
     nw.refresh()
     assert nw.cards["spent"].value.text() == "$1,000.00"
     pf.close()
+
+
+def test_single_add_for_assets_and_liabilities(app, tmp_path):
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    page = NetWorthPage(pf)
+    assert page.assets.table.rowCount() == page.assets.n_auto           # nothing pre-filled
+    assert page.liabs.table.rowCount() == page.liabs.n_auto
+
+    def home(dlg):
+        assert dlg.kind.currentText() == "Principal residence"
+        dlg.desc.setText("12 Oak St")
+        dlg.amount.setText("900,000")
+        dlg._ok()
+        return dlg.result()
+
+    def mortgage(dlg):
+        dlg.group.setCurrentIndex(dlg.group.findData("liability"))
+        assert dlg.kind.currentText() == "Mortgage on principal residence"
+        dlg.desc.setText("RBC")
+        dlg.amount.setText("450000")
+        dlg._ok()
+        return dlg.result()
+
+    assert page.add_item(run=home) and page.add_item(run=mortgage)
+    s = pers.load(pf)
+    assert [(e.kind, e.description, e.amount) for e in s.assets] == [("Principal residence", "12 Oak St", 900_000_00)]
+    assert [(e.kind, e.amount) for e in s.liabilities] == [("Mortgage on principal residence", 450_000_00)]
+    assert page.statement().net_worth == 450_000_00
+    page.liabs.table.setCurrentCell(page.liabs.n_auto, 1)
+    page.liabs.table.setFocus()
+    assert page.remove_item()
+    assert pers.load(pf).liabilities == [] and len(pers.load(pf).assets) == 1
+    pf.close()
+
+
+def test_projected_vs_actual(app, tmp_path):
+    from datetime import timedelta
+
+    from am_accounting import personal_finance as pfi
+    from am_accounting import personal_statements as pst
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf = _pf(tmp_path)
+    pacc.move_typed_lines(pf)
+    today = date(2026, 11, 12)                                   # a Thursday
+    lines = pfi.budget_lines(pf)
+    for ln in lines:
+        ln.budget = {"Groceries": 520_00, "Salary / employment": 5_200_00}.get(ln.category, 0)
+    pfi.save_budget_lines(pf, lines)
+    pfi.set_actual(pf, 2026, "Groceries", 11, 300_00)
+    pfi.set_actual(pf, 2026, "Groceries", 3, 100_00)
+    pst.ready(pf)
+    with pf.conn:                                                # a statement line this week
+        pf.conn.execute("INSERT INTO personal_tx(date, description, amount, category, source, dupkey) VALUES "
+                        "('2026-11-10', 'LOBLAWS', -8000, 'Groceries', 'x.csv', 'k')")
+    pers.record(pf, pers.Statement("Pat", date(2026, 11, 1), [], [pers.Entry("Cash and bank accounts", "", 9_000_00)],
+                                   []))
+    week, month, year = pfi.periods(pf, today)
+    assert week.start == today - timedelta(days=3) and week.spend == 80_00 and week.spend_proj == 120_00
+    assert month.income_proj == 5_200_00 and month.spend == 380_00 and month.spend_proj == 520_00
+    assert year.spend_proj == 520_00 * 12 and year.spend == 480_00
+    assert month.cash_start == 9_000_00 and month.cash_now == 12_000_00
+    assert month.cash_proj == 9_000_00 + 5_200_00 - 520_00
+    assert week.cash_start == 9_000_00 and year.cash_start is None
+    page = NetWorthPage(pf)
+    assert list(page.cards)[0] == "cash"                          # cash first
+    assert page.plan.item(0, 0).text() == "Cash" and page.plan.horizontalHeaderItem(3).text() == "Month — projected"
+    html = pers.html(page.statement())
+    assert html.index("Cash and bank accounts") < html.index("TFSA")
+    pf.close()

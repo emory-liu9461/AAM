@@ -2053,6 +2053,7 @@ class AssetManagementView(QWidget):
     open_loans = Signal(str)     # … and open its Loans window (record loan payments)
     open_unnamed = Signal(str)   # … Transactions with no customer / vendor (to assign vendors)
     open_review = Signal(str)    # … Transactions to categorize / review
+    company_pages = Signal(bool)  # a company's pages shown (True) or the portfolio / deals / personal finance (False)
 
     def __init__(self, portfolio_path: str | Path, companies_fn, create_company=None, *, refresh: bool = True):
         super().__init__()
@@ -2567,6 +2568,7 @@ class AssetManagementView(QWidget):
         self.tabs.tabBar().setVisible(not other)
         # As of, Viewing, New Holding … only with the portfolio
         self.portfolio_bar.setVisible(portfolio)
+        self.company_pages.emit(not other)        # the Company box at the very top: only with a company's pages
         if not other:
             self._last_company_page = page
 

@@ -234,3 +234,68 @@ def budget(pf, year: int) -> Budget:
     today = date.today()
     through = 12 if year < today.year else (today.month if year == today.year else 0)
     return Budget(year, rows, through)
+
+
+# ---- projected (the budget) against actual, for this week, month and year ----
+
+@dataclass
+class Period:
+    name: str                     # This week / This month / This year
+    start: date
+    end: date
+    income_proj: int = 0
+    income: int = 0
+    spend_proj: int = 0
+    spend: int = 0
+    cash_start: int | None = None  # cash at the start (the snapshot at or before it)
+    cash_now: int = 0
+
+    @property
+    def saved_proj(self) -> int:
+        return self.income_proj - self.spend_proj
+
+    @property
+    def saved(self) -> int:
+        return self.income - self.spend
+
+    @property
+    def cash_proj(self) -> int | None:
+        """Where cash should end up: the start, plus what the budget says you'd save."""
+        return None if self.cash_start is None else self.cash_start + self.saved_proj
+
+
+def periods(pf, today: date | None = None) -> list[Period]:
+    """This week (Monday on), this month and this year: the budget (a week is 12/52 of a month; the year is the
+    whole year's budget) against what's come in and gone out so far, and your cash."""
+    from datetime import timedelta
+
+    from . import personal as pers
+    from . import personal_accounts as pacc
+    from . import personal_statements as pst
+
+    today = today or date.today()
+    b = budget(pf, today.year)
+    inc_m, exp_m = b.budget_total(INCOME), b.budget_total(EXPENSE)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    year_start = today.replace(month=1, day=1)
+    out = [Period("This week", week_start, today, round(inc_m * 12 / 52), 0, round(exp_m * 12 / 52)),
+           Period("This month", month_start, today, inc_m, b.total(INCOME, today.month), exp_m,
+                  b.total(EXPENSE, today.month)),
+           Period("This year", year_start, today, inc_m * 12, b.total(INCOME), exp_m * 12, b.total(EXPENSE))]
+    # the week: from your statements (typed actuals are by month) and what you entered from your businesses
+    income_cats = set(INCOME_CATS)
+    for t in pst.transactions(pf, today.year):
+        if week_start.isoformat() <= t.date <= today.isoformat() and t.category not in ("", pst.TRANSFER):
+            if t.category in income_cats:
+                out[0].income += t.amount
+            else:
+                out[0].spend += -t.amount
+    out[0].income += sum(r.amount for r in received(pf) if week_start.isoformat() <= r.date <= today.isoformat())
+    cash_now = sum(e.amount for e in pacc.entries(pf)[0] if e.kind in pers.CASH_KINDS)
+    hist = pers.history(pf)
+    for p in out:
+        p.cash_now = cash_now
+        before = [h for h in hist if h.date <= p.start.isoformat()]
+        p.cash_start = before[-1].cash if before else None
+    return out

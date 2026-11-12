@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
         self.company_role.setObjectName("hint")
         hl.addSpacing(12)
         hl.addWidget(self.company_role)
-        type_btn = QPushButton("Change Type…")
+        type_btn = self.type_btn = QPushButton("Change Type…")
         type_btn.setToolTip("Change this company's type: operating company, holding company or asset manager")
         type_btn.clicked.connect(self.change_company_type)
         hl.addWidget(type_btn, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -971,6 +971,12 @@ class MainWindow(QMainWindow):
     def portfolio_path(self) -> Path:
         return Path(self.registry.registry_file).parent / "portfolio.ampf"
 
+    def _show_company_box(self, show: bool) -> None:
+        """The Company box (and its type) at the very top: with Accounting and a company's pages; not over the
+        portfolio, the deal pipeline or personal finance."""
+        for wdg in (self.company_label, self.switcher, self.company_role, self.type_btn):
+            wdg.setVisible(show)
+
     def set_mode(self, mode: str) -> None:
         if mode == "assets":
             if self.asset_view is None:
@@ -983,6 +989,7 @@ class MainWindow(QMainWindow):
                 self.asset_view.open_loans.connect(self.open_company_loans)
                 self.asset_view.open_unnamed.connect(self.open_company_unnamed)
                 self.asset_view.open_review.connect(self.open_company_review)
+                self.asset_view.company_pages.connect(self._show_company_box)
                 self.stack.addWidget(self.asset_view)
                 relax_widths(self.asset_view)
             self._dock_was_visible = self.review_dock.isVisible()
@@ -995,6 +1002,10 @@ class MainWindow(QMainWindow):
             if getattr(self, "_dock_was_visible", False):
                 self.review_dock.show()
         self.mode = mode
+        if mode == "assets":
+            self.asset_view._top_buttons()        # (shows or hides the Company box for the page it's on)
+        else:
+            self._show_company_box(True)
         self.mode_tabs.blockSignals(True)
         self.mode_tabs.setCurrentIndex(0 if mode == "assets" else 1)
         self.mode_tabs.blockSignals(False)

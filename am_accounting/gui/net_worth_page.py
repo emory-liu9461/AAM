@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGroupBox, QHBox
 from .. import longpath as lpth
 from .. import personal as pers
 from ..money import fmt_money, parse_money
-from .common import ALIGN_RIGHT, NEGATIVE, error, info
+from .common import ALIGN_RIGHT, NEGATIVE, POSITIVE, error, info
 
 ROLE = Qt.ItemDataRole.UserRole
 
@@ -24,18 +24,19 @@ ROLE = Qt.ItemDataRole.UserRole
 class _Entries(QGroupBox):
     """Rows of kind / description / amount, added and removed by hand (a framed box with its title on the frame)."""
 
-    def __init__(self, title: str, kinds: list[str], on_change, parent=None, *, on_auto=None):
+    def __init__(self, title: str, kinds: list[str], on_change, parent=None, *, on_auto=None, buttons: bool = True):
         super().__init__(title, parent)
         self.kinds, self.on_change, self.on_auto = kinds, on_change, on_auto
         self.n_auto = 0                       # rows at the top filled in from the portfolio and the books
         lay = QVBoxLayout(self)
-        head = QHBoxLayout()
-        head.addStretch(1)
-        for text, slot in (("Add", self.add), ("Remove", self.remove)):
-            b = QPushButton(text)
-            b.clicked.connect(lambda *_, s=slot: s())
-            head.addWidget(b)
-        lay.addLayout(head)
+        if buttons:
+            head = QHBoxLayout()
+            head.addStretch(1)
+            for text, slot in (("Add", self.add), ("Remove", self.remove)):
+                b = QPushButton(text)
+                b.clicked.connect(lambda *_, s=slot: s())
+                head.addWidget(b)
+            lay.addLayout(head)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["What", "Description", "Amount"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -129,7 +130,7 @@ class _Entries(QGroupBox):
             desc = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").strip()
             raw = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
             amt = parse_money(raw) if raw.strip() else 0
-            if kind or desc or amt:
+            if desc or amt:                    # (a line with nothing in it isn't kept)
                 out.append(pers.Entry(kind, desc, amt or 0))
         return out
 
@@ -170,20 +171,51 @@ class NetWorthPage(QWidget):
         head.addWidget(opn)
         lay.addLayout(head)
         cards = QHBoxLayout()
-        self.cards = {k: Card(t) for k, t in (("assets", "Total assets"), ("liabs", "Total liabilities"),
-                                              ("worth", "Net worth"), ("cash", "Cash balance"),
+        self.cards = {k: Card(t) for k, t in (("cash", "Cash balance"), ("assets", "Total assets"),
+                                              ("liabs", "Total liabilities"), ("worth", "Net worth"),
                                               ("income", "Income this month"), ("spent", "Spent this month"))}
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
+        # projected (the budget) against actual: this week, month and year
+        self.plan = QTableWidget(4, 7)
+        self.plan.setHorizontalHeaderLabels(["", "Week — projected", "Week — actual", "Month — projected",
+                                             "Month — actual", "Year — projected", "Year — actual"])
+        self.plan.verticalHeader().hide()
+        self.plan.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.plan.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.plan.setToolTip("Projected = your budget (a week is 12/52 of a month; the year is the whole year's "
+                             "budget); actual = so far, from your statements and what you entered. Cash projected = "
+                             "your cash at the start (as kept that day) plus what the budget says you'd save.")
+        rh = self.plan.verticalHeader().defaultSectionSize()
+        self.plan.setFixedHeight(rh * 4 + self.plan.horizontalHeader().sizeHint().height() + 4)
+        lay.addWidget(self.plan)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
-        self.assets = _Entries("Assets", pers.TYPED_ASSET_KINDS, self._preview, on_auto=self._auto_clicked)
+        addrow = QHBoxLayout()
+        addrow.addStretch(1)
+        add = QPushButton("Add…")
+        add.setObjectName("primary")
+        add.setToolTip("Add an asset or a liability that isn't on another tab — your home and its mortgage, a "
+                       "vehicle, a car loan …")
+        add.clicked.connect(lambda *_: self.add_item())
+        addrow.addWidget(add)
+        rem = QPushButton("Remove")
+        rem.setToolTip("Remove the line selected (lines filled in from the other tabs stay)")
+        rem.clicked.connect(lambda *_: self.remove_item())
+        addrow.addWidget(rem)
+        ll.addLayout(addrow)
+        self.assets = _Entries("Assets", pers.TYPED_ASSET_KINDS, self._preview, on_auto=self._auto_clicked,
+                               buttons=False)
         ll.addWidget(self.assets, 3)
-        self.liabs = _Entries("Liabilities", pers.TYPED_LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked)
+        self.liabs = _Entries("Liabilities", pers.TYPED_LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked,
+                              buttons=False)
         ll.addWidget(self.liabs, 2)
+        self._last_box = self.assets
+        for box in (self.assets, self.liabs):
+            box.table.currentCellChanged.connect(lambda *_, b=box: setattr(self, "_last_box", b))
         auto_hint = QLabel("<b>Bold</b> lines come from the Bank Accounts and Investments tabs, the portfolio and your "
                            "companies' books — double-click a property to change your share of it. Add anything else "
                            "(your home, vehicles …) below them.")
@@ -231,10 +263,6 @@ class NetWorthPage(QWidget):
             self.assets.add(e)
         for e in self.saved.liabilities:
             self.liabs.add(e)
-        if not self.saved.assets:
-            self.assets.add(pers.Entry("Principal residence"))
-        if not self.saved.liabilities:
-            self.liabs.add(pers.Entry("Mortgage on principal residence"))
         self._show_folder()
         self._loading = False
         self._preview()
@@ -244,6 +272,7 @@ class NetWorthPage(QWidget):
         may have changed elsewhere — e.g. cash moved by a shareholder loan recorded on Shareholder Loans)."""
         self._loading = True
         self._month_cache = None
+        self._plan_cache = None
         self.as_of = self._as_of()
         self.saved = pers.load(self.pf)
         for box, rows in ((self.assets, self.saved.assets), (self.liabs, self.saved.liabilities)):
@@ -269,6 +298,27 @@ class NetWorthPage(QWidget):
         self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
         self._fill_auto()
         self._preview()
+
+    # ---- adding and removing your own lines ----
+    def add_item(self, *, run=None) -> bool:
+        """Add an asset or a liability (``run`` for tests takes the dialog)."""
+        dlg = AddItemDialog(self)
+        if not (run(dlg) if run is not None else dlg.exec()):
+            return False
+        group, e = dlg.item()
+        box = self.assets if group == "asset" else self.liabs
+        box.add(e)
+        box.table.setCurrentCell(box.table.rowCount() - 1, 1)
+        return True
+
+    def remove_item(self) -> bool:
+        """Remove the line selected in Assets or Liabilities (your own lines only)."""
+        for box in sorted((self.assets, self.liabs), key=lambda b: b is not self._last_box):
+            r = box.table.currentRow()
+            if r >= box.n_auto and box.table.selectionModel().hasSelection():
+                box.remove()
+                return True
+        return False
 
     # ---- the lines filled in for you ----
     def _fill_auto(self) -> None:
@@ -362,6 +412,7 @@ class NetWorthPage(QWidget):
         self.cards["cash"].set(fmt_money(sum(e.amount for e in cash)),
                                f"{len(cash)} account(s) — Bank Accounts tab")
         self._show_budget()
+        self._fill_plan()
         self.save()                         # kept as you type
         if self.as_of == date.today():      # today's figures: one snapshot a day
             pers.record(self.pf, st)
@@ -381,6 +432,38 @@ class NetWorthPage(QWidget):
             except Exception:  # noqa: BLE001
                 self._month_cache = (0, 0, 0, 0, 0, 0)
         return self._month_cache
+
+    def _fill_plan(self) -> None:
+        from .. import personal_finance as pfi
+
+        if getattr(self, "_plan_cache", None) is None:
+            try:
+                self._plan_cache = pfi.periods(self.pf)
+            except Exception:  # noqa: BLE001
+                self._plan_cache = []
+        ps = self._plan_cache
+        t = self.plan
+        labels = ["Cash", "Income", "Spending", "Saved (income − spending)"]
+        for r, lab in enumerate(labels):
+            it = QTableWidgetItem(lab)
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            t.setItem(r, 0, it)
+            for i, p in enumerate(ps):
+                proj, act = {0: (p.cash_proj, p.cash_now), 1: (p.income_proj, p.income),
+                             2: (p.spend_proj, p.spend), 3: (p.saved_proj, p.saved)}[r]
+                for c, v in ((1 + 2 * i, proj), (2 + 2 * i, act)):
+                    cell = QTableWidgetItem("—" if v is None else fmt_money(v))
+                    cell.setTextAlignment(ALIGN_RIGHT)
+                    if c % 2 == 0 and proj is not None and v is not None and r:   # actual vs projected
+                        good = v >= proj if r in (1, 3) else v <= proj
+                        if v != proj:
+                            cell.setForeground(POSITIVE if good else NEGATIVE)
+                    if r == 0 and c % 2 == 1 and v is None:
+                        cell.setToolTip("Your cash at the start isn't known yet (it's kept each day you open "
+                                        "Net Worth)")
+                    t.setItem(r, c, cell)
 
     def _show_budget(self) -> None:
         inc, out, binc, bout, inc_y, out_y = self._month()
@@ -665,3 +748,57 @@ class PersonalSettingsDialog(QDialog):
         pers.save(self.pf, s)
         self.accept()
         return True
+
+
+class AddItemDialog(QDialog):
+    """An asset or a liability of your own (not on another tab): what it is, a description and the amount."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QDialogButtonBox, QFormLayout
+
+        self.setWindowTitle("Add to Your Net Worth")
+        self.resize(460, 0)
+        form = QFormLayout(self)
+        self.group = QComboBox()
+        self.group.addItem("An asset (something you own)", "asset")
+        self.group.addItem("A liability (something you owe)", "liability")
+        self.group.currentIndexChanged.connect(lambda *_: self._kinds())
+        form.addRow("This is:", self.group)
+        self.kind = QComboBox()
+        self.kind.setEditable(True)
+        form.addRow("What:", self.kind)
+        self.desc = QLineEdit()
+        self.desc.setPlaceholderText("e.g. 12 Oak St, 2022 Honda CR-V, RBC mortgage")
+        form.addRow("Description:", self.desc)
+        self.amount = QLineEdit()
+        self.amount.setPlaceholderText("$0.00")
+        form.addRow("Amount:", self.amount)
+        hint = QLabel("Cash, investments, cards and lines of credit go on the Bank Accounts and Investments tabs; "
+                      "properties in the portfolio and your companies are filled in for you.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._ok)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self._kinds()
+
+    def _kinds(self) -> None:
+        self.kind.clear()
+        self.kind.addItems(pers.TYPED_ASSET_KINDS if self.group.currentData() == "asset"
+                           else pers.TYPED_LIABILITY_KINDS)
+
+    def _ok(self) -> None:
+        raw = self.amount.text().strip()
+        v = parse_money(raw) if raw else 0
+        if v is None:
+            error(self, "Amount", "That isn't an amount.")
+            return
+        self.accept()
+
+    def item(self) -> tuple[str, pers.Entry]:
+        raw = self.amount.text().strip()
+        return self.group.currentData(), pers.Entry(self.kind.currentText().strip(), self.desc.text().strip(),
+                                                    (parse_money(raw) or 0) if raw else 0)

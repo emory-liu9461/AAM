@@ -453,6 +453,9 @@ def html(st: Statement) -> str:
            f"<p style='margin-top:4px'><b>{esc(st.name or '')}</b><br>As of {st.as_of:%B} {st.as_of.day}, {st.as_of.year}</p>",
            "<table cellspacing='0' width='100%'>",
            "<tr><td colspan='2' style='padding-top:10px'><b>ASSETS</b></td></tr>"]
+    for e in st.assets:                       # cash first
+        if e.kind in CASH_KINDS:
+            out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     for p in st.loans:
         if p.owed_to_you > 0:
             out.append(row(f"Shareholder loan to {p.company}", p.owed_to_you, indent=8))
@@ -462,7 +465,8 @@ def html(st: Statement) -> str:
     for p in st.properties:
         out.append(row(f"Real estate — {p.name} (your {p.share_pct:g}% of market value)", p.my_value, indent=8))
     for e in st.assets:
-        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
+        if e.kind not in CASH_KINDS:
+            out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
                f"<b style='white-space:nowrap'>{_m(st.total_assets)}</b></td></tr>")
     out.append("<tr><td colspan='2' style='padding-top:14px'><b>LIABILITIES</b></td></tr>")
