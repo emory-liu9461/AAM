@@ -389,29 +389,30 @@ def html(st: Statement) -> str:
            f"<p style='margin-top:4px'><b>{esc(st.name or '')}</b><br>As of {st.as_of:%B} {st.as_of.day}, {st.as_of.year}</p>",
            "<table cellspacing='0' width='100%'>",
            "<tr><td colspan='2' style='padding-top:10px'><b>ASSETS</b></td></tr>"]
-    for e in st.assets:
-        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     for p in st.loans:
         if p.owed_to_you > 0:
             out.append(row(f"Shareholder loan to {p.company}", p.owed_to_you, indent=8))
     if st.holdco and st.holdco.my_assets:
         out.append(row(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)",
                        st.holdco.my_assets, indent=8))
-    if st.properties:
-        out.append(row("Real estate owned (your share of market value — see schedule)", st.real_estate, indent=8))
+    for p in st.properties:
+        out.append(row(f"Real estate — {p.name} (your {p.share_pct:g}% of market value)", p.my_value, indent=8))
+    for e in st.assets:
+        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
                f"<b style='white-space:nowrap'>{_m(st.total_assets)}</b></td></tr>")
     out.append("<tr><td colspan='2' style='padding-top:14px'><b>LIABILITIES</b></td></tr>")
-    for e in st.liabilities:
-        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     for p in st.loans:
         if p.owed_to_you < 0:
             out.append(row(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you, indent=8))
     if st.holdco and st.holdco.my_liabilities:
         out.append(row(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities,
                        indent=8))
-    if st.properties:
-        out.append(row("Mortgages on real estate owned (your share — see schedule)", st.real_estate_debt, indent=8))
+    for p in st.properties:
+        if p.my_debt:
+            out.append(row(f"Mortgage — {p.name} (your {p.share_pct:g}%)", p.my_debt, indent=8))
+    for e in st.liabilities:
+        out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total liabilities</b></td><td align='right' style='{td};{tr_}'>"
                f"<b style='white-space:nowrap'>{_m(st.total_liabilities)}</b></td></tr>")
     out.append(f"<tr><td style='{td};{tr_};padding-top:10px'><b>NET WORTH</b></td><td align='right' "
@@ -459,27 +460,28 @@ def write_xlsx(st: Statement, path: Path) -> None:
         ws.cell(r, 2).number_format = money
 
     put("ASSETS", b=True)
-    for e in st.assets:
-        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
     for p in st.loans:
         if p.owed_to_you > 0:
             put(f"Shareholder loan to {p.company}", p.owed_to_you)
     if st.holdco and st.holdco.my_assets:
         put(f"{st.holdco.name} — cash and other assets (your {st.holdco.share_pct:g}%)", st.holdco.my_assets)
-    if st.properties:
-        put("Real estate owned (your share of market value)", st.real_estate)
+    for p in st.properties:
+        put(f"Real estate — {p.name} (your {p.share_pct:g}% of market value)", p.my_value)
+    for e in st.assets:
+        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
     put("Total assets", st.total_assets, b=True)
     ws.append([])
     put("LIABILITIES", b=True)
-    for e in st.liabilities:
-        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
     for p in st.loans:
         if p.owed_to_you < 0:
             put(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you)
     if st.holdco and st.holdco.my_liabilities:
         put(f"{st.holdco.name} — liabilities (your {st.holdco.share_pct:g}%)", st.holdco.my_liabilities)
-    if st.properties:
-        put("Mortgages on real estate owned (your share)", st.real_estate_debt)
+    for p in st.properties:
+        if p.my_debt:
+            put(f"Mortgage — {p.name} (your {p.share_pct:g}%)", p.my_debt)
+    for e in st.liabilities:
+        put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
     put("Total liabilities", st.total_liabilities, b=True)
     ws.append([])
     put("NET WORTH", st.net_worth, b=True)

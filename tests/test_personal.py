@@ -75,14 +75,25 @@ def test_dialog_generates_into_the_personal_folder(app, tmp_path):
     pf, h = _pf(tmp_path)
     f = tmp_path / "Me"
     dlg = NetWorthPage(pf, as_of=date(2026, 11, 1))
-    assert dlg.re.rowCount() == 1 and dlg.re.item(0, 3).text() == "50"
+    # the property is a line in Assets (and its mortgage in Liabilities), not a table of its own
+    assert dlg.assets.auto_rows() == [("Real estate", "45 Elm St — your 50% of $5,000,000.00", "$2,500,000.00")]
+    assert dlg.liabs.auto_rows() == [("Mortgage", "45 Elm St — your 50% of $2,750,000.00 (First National)",
+                                      "$1,375,000.00")]
+    n = dlg.assets.n_auto
     dlg.choose_folder(str(f))
     assert pers.folder(pf) == f and (f / "Income Tax/T1 Returns").is_dir()
     dlg.name.setText("Pat Lee")
-    dlg.assets.table.item(0, 2).setText("50000")                       # cash
-    assert dlg.assets.table.item(0, 2).text() == "$50,000.00"
-    dlg.re.item(0, 3).setText("25")
-    assert dlg.re.item(0, 4).text() == "$562,500.00"
+    dlg.assets.table.item(n, 2).setText("50000")                       # cash, below the property
+    assert dlg.assets.table.item(n, 2).text() == "$50,000.00"
+    dlg.assets.table.item(0, 2).setText("1")                           # the property's line isn't typed over
+    assert pers.load(pf).assets[0].amount == 50_000_00
+    dlg.set_share(dlg.props[0].holding_id, 25)
+    assert dlg.assets.auto_rows()[0][2] == "$1,250,000.00" and dlg.assets.n_auto == 1
+    dlg.assets.table.setCurrentCell(0, 0)
+    dlg.assets.remove()                                                # the property's line stays
+    assert dlg.assets.n_auto == 1 and dlg.assets.auto_rows()[0][0] == "Real estate"
+    page_html = pers.html(dlg.statement())
+    assert "Real estate — 45 Elm St (your 25% of market value)" in page_html and "Mortgage — 45 Elm St" in page_html
     old = f / "Net Worth Statements/2025-01-01 Net Worth Statement - Pat Lee.pdf"
     old.write_text("x")
     made = dlg.generate(quiet=True)
@@ -157,12 +168,12 @@ def test_history_and_charts(app, tmp_path):
                          date(2026, 1, 31))
     pers.record(pf, old)
     page = NetWorthPage(pf)                                       # today: recorded as you type
-    page.assets.table.item(0, 2).setText("25000")                 # cash
+    page.assets.table.item(page.assets.n_auto, 2).setText("25000")   # cash
     hist = pers.history(pf)
     assert [x.date for x in hist] == ["2026-01-31", date.today().isoformat()]
     assert hist[0].cash == 10_000_00 and hist[-1].cash == 25_000_00
     assert hist[-1].by_kind[pers.REAL_ESTATE] == 2_500_000_00 and hist[-1].net_worth == page.statement().net_worth
-    page.assets.table.item(0, 2).setText("30000")                 # same day: replaced, not added
+    page.assets.table.item(page.assets.n_auto, 2).setText("30000")   # same day: replaced, not added
     assert len(pers.history(pf)) == 2 and pers.history(pf)[-1].cash == 30_000_00
     assert page.chart_cash.dates == [x.date for x in pers.history(pf)]
     assert page.chart_cash.series[0][1] == [10_000_00, 30_000_00]
@@ -173,6 +184,6 @@ def test_history_and_charts(app, tmp_path):
     page.show()
     page.grab()                                                   # draws without errors
     past = NetWorthPage(pf, as_of=date(2025, 6, 30))              # a past date isn't recorded
-    past.assets.table.item(0, 2).setText("1")
+    past.assets.table.item(past.assets.n_auto, 2).setText("1")
     assert "2025-06-30" not in [x.date for x in pers.history(pf)]
     pf.close()

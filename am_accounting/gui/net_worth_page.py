@@ -24,9 +24,10 @@ ROLE = Qt.ItemDataRole.UserRole
 class _Entries(QWidget):
     """Rows of kind / description / amount, added and removed by hand."""
 
-    def __init__(self, title: str, kinds: list[str], on_change, parent=None):
+    def __init__(self, title: str, kinds: list[str], on_change, parent=None, *, on_auto=None):
         super().__init__(parent)
-        self.kinds, self.on_change = kinds, on_change
+        self.kinds, self.on_change, self.on_auto = kinds, on_change, on_auto
+        self.n_auto = 0                       # rows at the top filled in from the portfolio and the books
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
@@ -44,7 +45,46 @@ class _Entries(QWidget):
         self.table.setColumnWidth(2, 130)
         self.table.verticalHeader().hide()
         self.table.itemChanged.connect(self._edited)
+        self.table.cellDoubleClicked.connect(self._double)
         lay.addWidget(self.table)
+
+    def set_auto(self, rows: list[tuple]) -> None:
+        """The rows filled in for you — (what, description, amount, tooltip, key) — at the top, not editable here
+        (double-click one with a key to change it)."""
+        t = self.table
+        t.blockSignals(True)
+        for _ in range(self.n_auto):
+            t.removeRow(0)
+        for r, (what, desc, amount, tip, key) in enumerate(rows):
+            t.insertRow(r)
+            for c, v in enumerate((what, desc, fmt_money(amount))):
+                it = QTableWidgetItem(v)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                it.setData(Qt.ItemDataRole.UserRole, key)
+                it.setToolTip(tip)
+                if c == 2:
+                    it.setTextAlignment(ALIGN_RIGHT)
+                if c == 0:
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+                t.setItem(r, c, it)
+        self.n_auto = len(rows)
+        t.blockSignals(False)
+
+    def auto_rows(self) -> list[tuple[str, str, str]]:
+        t = self.table
+        return [tuple(t.item(r, c).text() for c in range(3)) for r in range(self.n_auto)]
+
+    def _double(self, r: int, _c: int) -> None:
+        if r < self.n_auto and self.on_auto:
+            key = self.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+            if key:
+                self.on_auto(key)
+
+    def clear_entries(self) -> None:
+        while self.table.rowCount() > self.n_auto:
+            self.table.removeRow(self.n_auto)
 
     def add(self, e: pers.Entry | None = None) -> None:
         e = e or pers.Entry(self.kinds[0])
@@ -67,11 +107,13 @@ class _Entries(QWidget):
 
     def remove(self) -> None:
         r = self.table.currentRow()
-        if r >= 0:
+        if r >= self.n_auto:                  # (the rows filled in for you stay)
             self.table.removeRow(r)
             self.on_change()
 
     def _edited(self, it: QTableWidgetItem) -> None:
+        if it.row() < self.n_auto:
+            return
         if it.column() == 2:
             v = parse_money(it.text()) if it.text().strip() else None
             self.table.blockSignals(True)
@@ -84,7 +126,7 @@ class _Entries(QWidget):
 
     def entries(self) -> list[pers.Entry]:
         out = []
-        for r in range(self.table.rowCount()):
+        for r in range(self.n_auto, self.table.rowCount()):
             kind = self.table.cellWidget(r, 0).currentText().strip()
             desc = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").strip()
             raw = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
@@ -198,19 +240,15 @@ class NetWorthPage(QWidget):
         self.holdco_label.setObjectName("hint")
         self.holdco_label.setWordWrap(True)
         ll.addWidget(self.holdco_label)
-        ll.addWidget(QLabel("<b>Real estate from the portfolio</b> — set <b>Your share</b> when you own only part of "
-                            "the holding company"))
-        self.re = QTableWidget(0, 6)
-        self.re.setHorizontalHeaderLabels(["Property", "Market value (100%)", "Mortgages (100%)", "Your share %",
-                                           "Your equity", "Lender(s)"])
-        self.re.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.re.verticalHeader().hide()
-        self.re.itemChanged.connect(self._share_edited)
-        ll.addWidget(self.re, 2)
-        self.assets = _Entries("Other assets", pers.ASSET_KINDS, self._preview)
-        ll.addWidget(self.assets, 2)
-        self.liabs = _Entries("Liabilities", pers.LIABILITY_KINDS, self._preview)
+        self.assets = _Entries("Assets", pers.ASSET_KINDS, self._preview, on_auto=self._auto_clicked)
+        ll.addWidget(self.assets, 3)
+        self.liabs = _Entries("Liabilities", pers.LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked)
         ll.addWidget(self.liabs, 2)
+        auto_hint = QLabel("<b>Bold</b> lines come from the portfolio and your companies' books — double-click a "
+                           "property to change your share of it. Add your own lines below them.")
+        auto_hint.setObjectName("hint")
+        auto_hint.setWordWrap(True)
+        ll.addWidget(auto_hint)
         split.addWidget(left)
         from PySide6.QtWidgets import QScrollArea, QTabWidget
 
@@ -248,7 +286,7 @@ class NetWorthPage(QWidget):
         self.loans = self._loans()
         self._fill_holdco_box()
         self.holdco = pers.holdco_part(pf, self.saved, self.as_of)
-        self._fill_re()
+        self._fill_auto()
         for e in self.saved.assets:
             self.assets.add(e)
         for e in self.saved.liabilities:
@@ -270,7 +308,7 @@ class NetWorthPage(QWidget):
         self.as_of = self._as_of()
         self.saved = pers.load(self.pf)
         for box, rows in ((self.assets, self.saved.assets), (self.liabs, self.saved.liabilities)):
-            box.table.setRowCount(0)
+            box.clear_entries()
             for e in rows:
                 box.add(e)
         self.props = pers.properties(self.pf, self.saved, self.as_of)
@@ -280,7 +318,7 @@ class NetWorthPage(QWidget):
         self.holdco_pct.setValue(self.saved.holdco_pct)
         self.holdco_pct.blockSignals(False)
         self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
-        self._fill_re()
+        self._fill_auto()
         self._show_folder()
         self._loading = False
         self._preview()
@@ -335,7 +373,7 @@ class NetWorthPage(QWidget):
         """Your shares of the properties follow your share of your holding company (unless you changed them)."""
         self.props = pers.properties(self.pf, self.saved, self.as_of)
         self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
-        self._fill_re()
+        self._fill_auto()
         self._preview()
 
     def _show_holdco(self, st) -> None:
@@ -352,42 +390,56 @@ class NetWorthPage(QWidget):
                 + (f" (its {fmt_money(hc.left_out)} invested in the properties is in the real estate below)"
                    if hc.left_out else ""))
 
-    # ---- real estate ----
-    def _fill_re(self) -> None:
-        t = self.re
-        t.blockSignals(True)
-        t.setRowCount(len(self.props))
-        for r, p in enumerate(self.props):
-            vals = [p.name, fmt_money(p.value), fmt_money(p.debt), f"{p.share_pct:g}", fmt_money(p.my_equity),
-                    p.lenders]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                if c in (1, 2, 3, 4):
-                    it.setTextAlignment(ALIGN_RIGHT)
-                if c != 3:
-                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                else:
-                    it.setToolTip("Your share of this property, % (the holding's ownership to start with)")
-                t.setItem(r, c, it)
-        t.resizeColumnsToContents()
-        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        t.blockSignals(False)
+    # ---- the lines filled in for you ----
+    def _fill_auto(self) -> None:
+        """Your properties, your holding company and your shareholder loans, as lines in Assets and Liabilities."""
+        a_rows, l_rows = [], []
+        for p in self.props:
+            tip = (f"{p.name}: market value {fmt_money(p.value)} (100%), your share {p.share_pct:g}% — double-click "
+                   "to change your share")
+            a_rows.append(("Real estate", f"{p.name} — your {p.share_pct:g}% of {fmt_money(p.value)}", p.my_value, tip,
+                           ("share", p.holding_id)))
+            if p.debt:
+                l_rows.append(("Mortgage", f"{p.name} — your {p.share_pct:g}% of {fmt_money(p.debt)}"
+                               + (f" ({p.lenders})" if p.lenders else ""), p.my_debt,
+                               "From Financing & Cap Table — double-click to change your share",
+                               ("share", p.holding_id)))
+        hc = getattr(self, "holdco", None)
+        if hc is not None and not hc.error:
+            if hc.my_assets:
+                a_rows.append(("Your holding company", f"{hc.name} — cash and other assets, your {hc.share_pct:g}%",
+                               hc.my_assets, "From its books (its investments in the properties are in Real estate)",
+                               None))
+            if hc.my_liabilities:
+                l_rows.append(("Your holding company", f"{hc.name} — liabilities, your {hc.share_pct:g}%",
+                               hc.my_liabilities, "From its books", None))
+        for ln in getattr(self, "loans", []):
+            if ln.owed_to_you > 0:
+                a_rows.append(("Shareholder loan", f"to {ln.company}", ln.owed_to_you,
+                               "From the company's books (Shareholder Loans tab)", None))
+            elif ln.owed_to_you < 0:
+                l_rows.append(("Shareholder loan", f"owed to {ln.company}", -ln.owed_to_you,
+                               "From the company's books (Shareholder Loans tab)", None))
+        self.assets.set_auto(a_rows)
+        self.liabs.set_auto(l_rows)
 
-    def _share_edited(self, it: QTableWidgetItem) -> None:
-        if it.column() != 3:
+    def _auto_clicked(self, key) -> None:
+        if key and key[0] == "share":
+            p = next((x for x in self.props if x.holding_id == key[1]), None)
+            if p is None:
+                return
+            from PySide6.QtWidgets import QInputDialog
+
+            v, ok = QInputDialog.getDouble(self, "Your share", f"Your share of {p.name} (%):", p.share_pct, 0, 100, 4)
+            if ok:
+                self.set_share(p.holding_id, v)
+
+    def set_share(self, holding_id: int, pct: float) -> None:
+        p = next((x for x in self.props if x.holding_id == holding_id), None)
+        if p is None or not 0 <= pct <= 100:
             return
-        p = self.props[it.row()]
-        try:
-            v = float(it.text().replace("%", "").strip())
-            if not 0 <= v <= 100:
-                raise ValueError
-            p.share_pct = v
-        except ValueError:
-            pass
-        self.re.blockSignals(True)
-        it.setText(f"{p.share_pct:g}")
-        self.re.item(it.row(), 4).setText(fmt_money(p.my_equity))
-        self.re.blockSignals(False)
+        p.share_pct = pct
+        self._fill_auto()
         self._preview()
 
     # ---- the statement ----
