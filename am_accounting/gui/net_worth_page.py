@@ -221,6 +221,7 @@ class NetWorthPage(QWidget):
         hint.setWordWrap(True)
         lay.addWidget(hint)
         self.props = pers.properties(pf, self.saved, self.as_of)
+        self.loans = self._loans()
         self._fill_re()
         for e in self.saved.assets:
             self.assets.add(e)
@@ -237,11 +238,20 @@ class NetWorthPage(QWidget):
         self._preview()
 
     def refresh(self) -> None:
-        """Re-read the portfolio (values, loans, holdings) for the date at the top."""
+        """Re-read the portfolio (values, loans, holdings) for the date at the top, and your entries as saved (they
+        may have changed elsewhere — e.g. cash moved by a shareholder loan recorded on Shareholder Loans)."""
+        self._loading = True
         self.as_of = self._as_of()
-        self.props = pers.properties(self.pf, self.current(), self.as_of)
+        self.saved = pers.load(self.pf)
+        for box, rows in ((self.assets, self.saved.assets), (self.liabs, self.saved.liabilities)):
+            box.table.setRowCount(0)
+            for e in rows:
+                box.add(e)
+        self.props = pers.properties(self.pf, self.saved, self.as_of)
+        self.loans = self._loans()
         self._fill_re()
         self._show_folder()
+        self._loading = False
         self._preview()
 
     # ---- real estate ----
@@ -287,8 +297,17 @@ class NetWorthPage(QWidget):
         shares = {p.holding_id: p.share_pct for p in self.props}
         return pers.Saved(self.name.text().strip(), self.assets.entries(), self.liabs.entries(), shares)
 
+    def _loans(self) -> list:
+        """Shareholder loans with your companies, from their books (read when the page opens, not as you type)."""
+        from .. import shareholder_loans as shl
+
+        try:
+            return [p for p in shl.positions(self.pf, self.as_of) if p.owed_to_you]
+        except Exception:  # noqa: BLE001
+            return []
+
     def statement(self) -> pers.Statement:
-        return pers.statement(self.pf, self.current(), self.as_of, self.props)
+        return pers.statement(self.pf, self.current(), self.as_of, self.props, getattr(self, "loans", []))
 
     def _preview(self) -> None:
         if getattr(self, "_loading", True) or not hasattr(self, "props"):

@@ -1,13 +1,13 @@
 """Personal Finance (beside Portfolio Summary and Deal Pipeline): your own money in one place — Net Worth, a monthly
-Budget, and Income from Businesses (see personal.py and personal_finance.py)."""
+Budget, Income from Businesses and Shareholder Loans (see personal.py, personal_finance.py, shareholder_loans.py)."""
 
 from __future__ import annotations
 
 from datetime import date
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                               QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+                               QLineEdit, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from .. import personal_finance as pfi
@@ -387,12 +387,22 @@ class PersonalFinancePage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
+        from .. import shareholder_loans as shl
+
+        try:                                   # your companies' shareholder loan accounts, found by their names
+            if not shl.links(pf):
+                shl.auto_link(pf)
+        except Exception:  # noqa: BLE001
+            pass
         self.net_worth = NetWorthPage(pf, as_of=as_of)
         self.budget = BudgetTab(pf)
         self.income = IncomeTab(pf)
+        self.loans = LoansTab(pf)
         self.tabs.addTab(self.net_worth, "Net Worth")
         self.tabs.addTab(self.budget, "Budget")
         self.tabs.addTab(self.income, "Income from Businesses")
+        self.tabs.addTab(self.loans, "Shareholder Loans")
+        self.loans.on_change = self.net_worth.refresh
         self.tabs.currentChanged.connect(lambda *_: self._shown())
         lay.addWidget(self.tabs)
 
@@ -405,3 +415,257 @@ class PersonalFinancePage(QWidget):
 
     def refresh(self) -> None:
         self._shown()
+
+
+class RecordLoanDialog(QDialog):
+    """Money between you and a company: posted in the company's books against your shareholder loan account."""
+
+    def __init__(self, pf, positions: list, parent=None, *, company: str | None = None):
+        super().__init__(parent)
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QCheckBox, QDateEdit, QFormLayout
+
+        from .. import shareholder_loans as shl
+
+        self.pf, self.shl = pf, shl
+        self.positions = [p for p in positions if p.account_id is not None]
+        self.entry_id: int | None = None
+        self.setWindowTitle("Record Money Between You and a Company")
+        self.resize(560, 0)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.company = QComboBox()
+        for p in self.positions:
+            self.company.addItem(f"{p.company} — {p.account}", p.path)
+        if company:
+            self.company.setCurrentIndex(max(0, self.company.findData(company)))
+        self.company.currentIndexChanged.connect(lambda *_: self._accounts())
+        form.addRow("Company:", self.company)
+        self.direction = QComboBox()
+        for k, label in shl.DIRECTIONS.items():
+            self.direction.addItem(label, k)
+        self.direction.currentIndexChanged.connect(lambda *_: self._accounts())
+        form.addRow("What happened:", self.direction)
+        self.on = QDateEdit(QDate.currentDate())
+        self.on.setCalendarPopup(True)
+        self.on.setDisplayFormat("MMM d, yyyy")
+        form.addRow("Date:", self.on)
+        self.amount = QLineEdit()
+        self.amount.setPlaceholderText("$0.00")
+        form.addRow("Amount:", self.amount)
+        self.other_label = QLabel()
+        self.other = QComboBox()
+        form.addRow(self.other_label, self.other)
+        self.memo = QLineEdit()
+        self.memo.setPlaceholderText("optional")
+        form.addRow("Note:", self.memo)
+        lay.addLayout(form)
+        self.cash = QCheckBox("Also change my cash on the Net Worth page")
+        self.cash.setChecked(True)
+        lay.addWidget(self.cash)
+        self.hint = QLabel()
+        self.hint.setObjectName("hint")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        ok = QPushButton("Record")
+        ok.setObjectName("primary")
+        ok.clicked.connect(lambda *_: self.record())
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        lay.addLayout(btns)
+        self._accounts()
+
+    def _accounts(self) -> None:
+        path = self.company.currentData()
+        d = self.direction.currentData()
+        self.other.clear()
+        if not path:
+            return
+        expense = d == self.shl.PAID_EXPENSE
+        self.other_label.setText("Company expense:" if expense else "Company bank account:")
+        for i, n in (self.shl.expense_accounts(path) if expense else self.shl.bank_accounts(path)):
+            self.other.addItem(n, i)
+        self.cash.setEnabled(d != self.shl.PAID_FOR_YOU)
+        self.hint.setText(
+            "Posted in the company's books now. If its bank statement will bring this deposit or payment in too, "
+            "categorize that line to the shareholder loan instead — or it's counted twice." if not expense else
+            "Posted in the company's books: the expense, owed to you.")
+
+    def record(self) -> int | None:
+        from PySide6.QtWidgets import QMessageBox
+
+        p = next((x for x in self.positions if x.path == self.company.currentData()), None)
+        v = parse_money(self.amount.text()) if self.amount.text().strip() else None
+        if p is None or not v or v <= 0 or self.other.currentData() is None:
+            QMessageBox.warning(self, "Not finished", "Pick the company and its account, and enter the amount.")
+            return None
+        d = self.direction.currentData()
+        qd = self.on.date()
+        try:
+            self.entry_id = self.shl.record(p.path, p.account_id, d, v, date(qd.year(), qd.month(), qd.day()),
+                                            other_account=self.other.currentData(), memo=self.memo.text().strip())
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "Couldn't record it", str(e))
+            return None
+        if self.cash.isChecked() and self.cash.isEnabled():
+            self.shl.adjust_cash(self.pf, d, v)
+        self.accept()
+        return self.entry_id
+
+
+class LoansTab(QWidget):
+    """Shareholder loans between you and your companies: the account in each company's books, its balance, and
+    money recorded between you and a company (posted in its books)."""
+
+    def __init__(self, pf, parent=None):
+        super().__init__(parent)
+        from .asset_mgmt import Card
+
+        self.pf = pf
+        self.on_change = None                   # called after something here changed your net worth
+        lay = QVBoxLayout(self)
+        cards = QHBoxLayout()
+        self.cards = {k: Card(t, small=True) for k, t in (("to_you", "Your companies owe you"),
+                                                           ("by_you", "You owe your companies"),
+                                                           ("net", "Net"))}
+        for c in self.cards.values():
+            cards.addWidget(c)
+        lay.addLayout(cards)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Your companies</b> — the account in each company's books for money between it and "
+                              "you; its balance counts in your net worth"))
+        head.addStretch(1)
+        find = QPushButton("Find Accounts")
+        find.setToolTip("Link each company to its shareholder loan account, found by its name (or yours)")
+        find.clicked.connect(lambda *_: self.find())
+        head.addWidget(find)
+        rec = QPushButton("Record…")
+        rec.setObjectName("primary")
+        rec.setToolTip("Money between you and a company — posted in the company's books")
+        rec.clicked.connect(lambda *_: self.record())
+        head.addWidget(rec)
+        lay.addLayout(head)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Company", "Shareholder loan account", "Owed to you"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.currentCellChanged.connect(lambda *_: self._history())
+        lay.addWidget(self.table, 2)
+        self.hist_label = QLabel("<b>Entries</b>")
+        lay.addWidget(self.hist_label)
+        self.hist = QTableWidget(0, 3)
+        self.hist.setHorizontalHeaderLabels(["Date", "Entry", "Change"])
+        self.hist.horizontalHeaderItem(2).setToolTip("+ the company owes you more, − less")
+        self.hist.setColumnWidth(2, 150)
+        self.hist.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.hist.verticalHeader().hide()
+        self.hist.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.hist, 2)
+        hint = QLabel("A credit balance in the company's account (it owes you) is an asset on your net worth; a debit "
+                      "balance (you owe it) is a liability. Entries from the bank statements categorized to the "
+                      "account count too.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.positions: list = []
+        self.fill()
+
+    def fill(self) -> None:
+        from .. import shareholder_loans as shl
+
+        self.positions = shl.positions(self.pf)
+        person = pers_name(self.pf)
+        t = self.table
+        t.setRowCount(len(self.positions))
+        for r, p in enumerate(self.positions):
+            t.setItem(r, 0, _cell(p.company))
+            box = QComboBox()
+            box.addItem("(not linked)", None)
+            try:
+                found = {a.id for a in shl.candidates(p.path, person)}
+                for i, label, _typ in shl.all_accounts(p.path):
+                    box.addItem(("★ " if i in found else "") + label, i)
+            except Exception:  # noqa: BLE001
+                pass
+            box.addItem(f"Create “Shareholder Loan – {person or 'you'}”…", "create")
+            box.setCurrentIndex(max(0, box.findData(p.account_id)))
+            box.setToolTip("★ looks like a shareholder loan")
+            box.activated.connect(lambda _i, path=p.path, b=box: self._linked(path, b.currentData()))
+            t.setCellWidget(r, 1, box)
+            t.setItem(r, 2, _cell(fmt_money(p.owed_to_you) if p.account_id else "—", right=True,
+                                  colour=NEGATIVE if p.owed_to_you < 0 else None))
+        t.resizeColumnToContents(0)
+        t.setColumnWidth(2, 150)
+        to_you = sum(p.owed_to_you for p in self.positions if p.owed_to_you > 0)
+        by_you = -sum(p.owed_to_you for p in self.positions if p.owed_to_you < 0)
+        self.cards["to_you"].set(fmt_money(to_you), "an asset on your net worth")
+        self.cards["by_you"].set(fmt_money(by_you), "a liability on your net worth")
+        self.cards["net"].set(fmt_money(to_you - by_you), "", NEGATIVE if to_you < by_you else None)
+        if self.positions and t.currentRow() < 0:
+            t.setCurrentCell(0, 0)
+        self._history()
+
+    def _linked(self, path: str, data) -> None:
+        from .. import shareholder_loans as shl
+
+        if data == "create":
+            data = shl.create_account(path, pers_name(self.pf))
+        shl.set_link(self.pf, path, data)
+        self.fill()
+        if self.on_change:
+            self.on_change()
+
+    def _history(self) -> None:
+        from .. import shareholder_loans as shl
+
+        r = self.table.currentRow()
+        self.hist.setRowCount(0)
+        if not 0 <= r < len(self.positions):
+            return
+        p = self.positions[r]
+        self.hist_label.setText(f"<b>Entries</b> — {p.company}" + (f", {p.account}" if p.account else ""))
+        if p.account_id is None:
+            return
+        rows = shl.history(p.path, p.account_id)
+        self.hist.setRowCount(len(rows))
+        for i, ln in enumerate(rows):
+            self.hist.setItem(i, 0, _cell(ln.date))
+            self.hist.setItem(i, 1, _cell(ln.memo))
+            self.hist.setItem(i, 2, _cell(("+" if ln.amount > 0 else "") + fmt_money(ln.amount), right=True,
+                                          colour=NEGATIVE if ln.amount < 0 else POSITIVE))
+
+    def find(self) -> int:
+        from .. import shareholder_loans as shl
+
+        n = shl.auto_link(self.pf)
+        self.fill()
+        return n
+
+    def record(self, *, run=None):
+        r = self.table.currentRow()
+        company = self.positions[r].path if 0 <= r < len(self.positions) else None
+        dlg = RecordLoanDialog(self.pf, self.positions, self, company=company)
+        if not dlg.positions:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(self, "Link an account first", "Pick each company's shareholder loan account "
+                                                                   "(or create one) in the list first.")
+            return None
+        ok = run(dlg) if run is not None else dlg.exec()
+        if ok:
+            self.fill()
+            if self.on_change:
+                self.on_change()
+        return dlg.entry_id if ok else None
+
+
+def pers_name(pf) -> str:
+    from .. import personal as pers
+
+    return pers.load(pf).name

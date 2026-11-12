@@ -180,6 +180,17 @@ class Statement:
     assets: list[Entry]
     liabilities: list[Entry]
     guarantees: str = ""
+    loans: list = field(default_factory=list)   # shareholder loans with your companies (shareholder_loans.Position)
+
+    @property
+    def loans_to_companies(self) -> int:
+        """Your companies owe you (from their books)."""
+        return sum(p.owed_to_you for p in self.loans if p.owed_to_you > 0)
+
+    @property
+    def owed_to_companies(self) -> int:
+        """You owe your companies (from their books)."""
+        return -sum(p.owed_to_you for p in self.loans if p.owed_to_you < 0)
 
     @property
     def real_estate(self) -> int:
@@ -191,11 +202,11 @@ class Statement:
 
     @property
     def total_assets(self) -> int:
-        return self.real_estate + sum(e.amount for e in self.assets)
+        return self.real_estate + self.loans_to_companies + sum(e.amount for e in self.assets)
 
     @property
     def total_liabilities(self) -> int:
-        return self.real_estate_debt + sum(e.amount for e in self.liabilities)
+        return self.real_estate_debt + self.owed_to_companies + sum(e.amount for e in self.liabilities)
 
     @property
     def net_worth(self) -> int:
@@ -203,18 +214,26 @@ class Statement:
 
 
 def statement(pf, saved: Saved | None = None, as_of: date | None = None,
-              props: list[Property] | None = None) -> Statement:
+              props: list[Property] | None = None, loans: list | None = None) -> Statement:
     saved = saved or load(pf)
     as_of = as_of or date.today()
+    if loans is None:
+        from . import shareholder_loans as shl
+
+        try:
+            loans = [p for p in shl.positions(pf, as_of) if p.owed_to_you]
+        except Exception:  # noqa: BLE001 — a company file that can't be read: left out
+            loans = []
     return Statement(saved.name, as_of, props if props is not None else properties(pf, saved, as_of),
                      [e for e in saved.assets if e.amount], [e for e in saved.liabilities if e.amount],
-                     saved.guarantees)
+                     saved.guarantees, loans)
 
 
 # ---- history: a snapshot per day you update it ----
 
 CASH_KINDS = {"Cash and bank accounts"}
 REAL_ESTATE = "Real estate (your share)"
+LOANS_TO = "Shareholder loans to your companies"
 
 
 @dataclass
@@ -231,6 +250,8 @@ def snapshot(st: Statement) -> Snapshot:
     by_kind: dict[str, int] = {}
     if st.properties:
         by_kind[REAL_ESTATE] = st.real_estate
+    if st.loans_to_companies:
+        by_kind[LOANS_TO] = st.loans_to_companies
     for e in st.assets:
         by_kind[e.kind] = by_kind.get(e.kind, 0) + e.amount
     return Snapshot(st.as_of.isoformat(), st.total_assets, st.total_liabilities, st.net_worth,
@@ -275,6 +296,9 @@ def html(st: Statement) -> str:
            "<tr><td colspan='2' style='padding-top:10px'><b>ASSETS</b></td></tr>"]
     for e in st.assets:
         out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
+    for p in st.loans:
+        if p.owed_to_you > 0:
+            out.append(row(f"Shareholder loan to {p.company}", p.owed_to_you, indent=8))
     if st.properties:
         out.append(row("Real estate owned (your share of market value — see schedule)", st.real_estate, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
@@ -282,6 +306,9 @@ def html(st: Statement) -> str:
     out.append("<tr><td colspan='2' style='padding-top:14px'><b>LIABILITIES</b></td></tr>")
     for e in st.liabilities:
         out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
+    for p in st.loans:
+        if p.owed_to_you < 0:
+            out.append(row(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you, indent=8))
     if st.properties:
         out.append(row("Mortgages on real estate owned (your share — see schedule)", st.real_estate_debt, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total liabilities</b></td><td align='right' style='{td};{tr_}'>"
@@ -333,6 +360,9 @@ def write_xlsx(st: Statement, path: Path) -> None:
     put("ASSETS", b=True)
     for e in st.assets:
         put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
+    for p in st.loans:
+        if p.owed_to_you > 0:
+            put(f"Shareholder loan to {p.company}", p.owed_to_you)
     if st.properties:
         put("Real estate owned (your share of market value)", st.real_estate)
     put("Total assets", st.total_assets, b=True)
@@ -340,6 +370,9 @@ def write_xlsx(st: Statement, path: Path) -> None:
     put("LIABILITIES", b=True)
     for e in st.liabilities:
         put(e.kind + (f" — {e.description}" if e.description else ""), e.amount)
+    for p in st.loans:
+        if p.owed_to_you < 0:
+            put(f"Owed to {p.company} (shareholder loan)", -p.owed_to_you)
     if st.properties:
         put("Mortgages on real estate owned (your share)", st.real_estate_debt)
     put("Total liabilities", st.total_liabilities, b=True)
