@@ -2080,11 +2080,18 @@ class AssetManagementView(QWidget):
                                     "Financing & Cap Table, Waterfall, Projections")
         self.company_btn.clicked.connect(self.show_company_pages)
         bar.addWidget(self.company_btn)
-        self.net_worth_btn = QPushButton("Net Worth Statement")
-        self.net_worth_btn.setToolTip("Your personal net worth statement: the portfolio's real estate at your share "
-                                      "plus your own assets and liabilities, saved to your personal folder")
-        self.net_worth_btn.clicked.connect(lambda *_: self.net_worth())
+        self.net_worth_btn = QPushButton("Net Worth")
+        self.net_worth_btn.setCheckable(True)
+        self.net_worth_btn.setObjectName("primary")
+        self.net_worth_btn.setToolTip("Your personal net worth: the portfolio's real estate at your share plus your "
+                                      "own assets and liabilities, and the statement to send a lender")
+        self.net_worth_btn.clicked.connect(lambda *_: self.show_net_worth())
         bar.addWidget(self.net_worth_btn)
+        # the portfolio's own controls: only with the portfolio (not over a company's pages, deals or net worth)
+        self.portfolio_bar = QWidget()
+        pbar = QHBoxLayout(self.portfolio_bar)
+        pbar.setContentsMargins(0, 0, 0, 0)
+        outer_bar, bar = bar, pbar
         bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
@@ -2119,6 +2126,8 @@ class AssetManagementView(QWidget):
                 b.setObjectName("primary")
             b.clicked.connect(slot)
             bar.addWidget(b)
+        bar = outer_bar
+        bar.addWidget(self.portfolio_bar, 1)
         lay.addLayout(bar)
 
         # what needs attention for the company shown (rent roll, expenses, capex) — like Accounting's dashboard
@@ -2499,13 +2508,18 @@ class AssetManagementView(QWidget):
         self.tabs.setCurrentWidget(self.deals_page)
         self._top_buttons()
 
-    def net_worth(self, *, run=None):
-        """Your personal net worth statement (see personal.py). ``run`` (for tests) takes the dialog instead of
-        showing it."""
-        from .net_worth_dialog import NetWorthDialog
+    def show_net_worth(self) -> None:
+        """Your personal net worth (beside Portfolio Summary; see personal.py)."""
+        if getattr(self, "net_worth_page", None) is None:
+            from .net_worth_page import NetWorthPage
 
-        dlg = NetWorthDialog(self.pf, self, as_of=self._as_of_date())
-        return run(dlg) if run is not None else dlg.exec()
+            self.net_worth_page = NetWorthPage(self.pf, as_of=self._as_of_date)
+            i = self.tabs.addTab(self.net_worth_page, "Net Worth")
+            self.tabs.setTabVisible(i, False)          # opened with its button at the top
+        else:
+            self.net_worth_page.refresh()
+        self.tabs.setCurrentWidget(self.net_worth_page)
+        self._top_buttons()
 
     def show_company_pages(self) -> None:
         """Back to the company pages (the one open last, or the Dashboard)."""
@@ -2517,13 +2531,18 @@ class AssetManagementView(QWidget):
         page = self.tabs.currentWidget()
         portfolio = self.tabs.currentIndex() == 0
         deals = page is getattr(self, "deals_page", None)
+        worth = page is not None and page is getattr(self, "net_worth_page", None)
+        other = portfolio or deals or worth
         self.summary_btn.setChecked(portfolio)
         self.deals_btn.setChecked(deals)
+        self.net_worth_btn.setChecked(worth)
         if hasattr(self, "company_btn"):
-            self.company_btn.setChecked(not (portfolio or deals))
-        # the company tabs only with a company's pages (not over the portfolio or the deal pipeline)
-        self.tabs.tabBar().setVisible(not (portfolio or deals))
-        if not (portfolio or deals):
+            self.company_btn.setChecked(not other)
+        # the company tabs only with a company's pages (not over the portfolio, deal pipeline or net worth)
+        self.tabs.tabBar().setVisible(not other)
+        # As of, Viewing, New Holding … only with the portfolio
+        self.portfolio_bar.setVisible(portfolio)
+        if not other:
             self._last_company_page = page
 
     def _filter(self) -> dict:
@@ -3305,7 +3324,8 @@ class AssetManagementView(QWidget):
     def _company_shown(self):
         """The holding the current company page shows (None on the portfolio / deal pipeline)."""
         w = self.tabs.currentWidget()
-        if self.tabs.currentIndex() == 0 or w is getattr(self, "deals_page", None):
+        if self.tabs.currentIndex() == 0 or w is getattr(self, "deals_page", None) or \
+                w is getattr(self, "net_worth_page", None):
             return None
         pick = {getattr(self, "dash_page", None): getattr(getattr(self, "dash_page", None), "pick", None),
                 getattr(self, "ops_page", None): getattr(getattr(self, "ops_page", None), "pick", None),

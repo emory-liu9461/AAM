@@ -459,7 +459,8 @@ class DealFolderTab(QWidget):
             return None
         from .. import personal as pers
 
-        dlg = LenderPackageDialog(f, self, personal=pers.folder(self.pf))
+        dlg = LenderPackageDialog(f, self, personal=pers.folder(self.pf),
+                                  statements=pers.statements_folder(self.pf))
         if not (run(dlg) if run is not None else dlg.exec()) or dlg.package is None:
             return None
         self.fill()

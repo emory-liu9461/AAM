@@ -16,10 +16,11 @@ ROLE = Qt.ItemDataRole.UserRole
 
 
 class LenderPackageDialog(QDialog):
-    def __init__(self, folder: Path, parent=None, *, lender: str = "", personal: Path | None = None):
+    def __init__(self, folder: Path, parent=None, *, lender: str = "", personal: Path | None = None,
+                 statements: Path | None = None):
         super().__init__(parent)
         self.folder = Path(folder)
-        self.personal = personal
+        self.personal, self.statements = personal, statements
         self.package: Path | None = None
         self.setWindowTitle("Lender Submission Package")
         self.resize(980, 640)
@@ -63,7 +64,7 @@ class LenderPackageDialog(QDialog):
         btns.addWidget(go)
         btns.addWidget(cancel)
         lay.addLayout(btns)
-        self.picks = lpk.candidates(self.folder, self.personal)
+        self.picks = lpk.candidates(self.folder, self.personal, self.statements)
         self._fill()
 
     # ---- the tree ----

@@ -13,8 +13,8 @@ from it.
 * your other assets (cash, investments, RRSP, TFSA, your home, vehicles …) and liabilities (your home's mortgage,
   lines of credit, credit cards …), entered by you and kept for next time;
 
-:func:`statement` works it out; the dialog saves it as a PDF and an Excel file in the personal folder's Net Worth
-Statements (the earlier ones move to its Archive).
+:func:`statement` works it out; the dialog saves it as a PDF and an Excel file in the folder you pick for statements
+(the personal folder's Net Worth Statements to start with); the earlier ones move to its Archive.
 """
 
 from __future__ import annotations
@@ -66,6 +66,21 @@ def folder(pf) -> Path | None:
 
 def set_folder(pf, path: str | Path) -> None:
     _set(pf, "personal_folder", str(path))
+
+
+def statements_folder(pf) -> Path | None:
+    """Where net worth statements are saved: the folder you picked for them, else the personal folder's Net Worth
+    Statements."""
+    v = _setting(pf, "net_worth_folder")
+    if v:
+        return Path(v)
+    f = folder(pf)
+    return f / NET_WORTH if f else None
+
+
+def set_statements_folder(pf, path: str | Path | None) -> None:
+    """The folder for net worth statements (None / '' = the personal folder's Net Worth Statements)."""
+    _set(pf, "net_worth_folder", str(path) if path else "")
 
 
 def create(path: Path) -> int:
@@ -196,6 +211,46 @@ def statement(pf, saved: Saved | None = None, as_of: date | None = None,
                      saved.guarantees)
 
 
+# ---- history: a snapshot per day you update it ----
+
+CASH_KINDS = {"Cash and bank accounts"}
+REAL_ESTATE = "Real estate (your share)"
+
+
+@dataclass
+class Snapshot:
+    date: str
+    assets: int
+    liabilities: int
+    net_worth: int
+    cash: int
+    by_kind: dict[str, int] = field(default_factory=dict)   # assets by type
+
+
+def snapshot(st: Statement) -> Snapshot:
+    by_kind: dict[str, int] = {}
+    if st.properties:
+        by_kind[REAL_ESTATE] = st.real_estate
+    for e in st.assets:
+        by_kind[e.kind] = by_kind.get(e.kind, 0) + e.amount
+    return Snapshot(st.as_of.isoformat(), st.total_assets, st.total_liabilities, st.net_worth,
+                    sum(e.amount for e in st.assets if e.kind in CASH_KINDS), by_kind)
+
+
+def history(pf) -> list[Snapshot]:
+    raw = _setting(pf, "net_worth_history")
+    return sorted((Snapshot(**d) for d in json.loads(raw)), key=lambda x: x.date) if raw else []
+
+
+def record(pf, st: Statement) -> Snapshot:
+    """Keep today's figures (one snapshot a day: the latest replaces the day's earlier one)."""
+    snap = snapshot(st)
+    hist = {h.date: h for h in history(pf)}
+    hist[snap.date] = snap
+    _set(pf, "net_worth_history", json.dumps([h.__dict__ for h in sorted(hist.values(), key=lambda x: x.date)]))
+    return snap
+
+
 def _m(cents: int) -> str:
     from .money import fmt_money
 
@@ -223,16 +278,16 @@ def html(st: Statement) -> str:
     if st.properties:
         out.append(row("Real estate owned (your share of market value — see schedule)", st.real_estate, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total assets</b></td><td align='right' style='{td};{tr_}'>"
-               f"<b>{_m(st.total_assets)}</b></td></tr>")
+               f"<b style='white-space:nowrap'>{_m(st.total_assets)}</b></td></tr>")
     out.append("<tr><td colspan='2' style='padding-top:14px'><b>LIABILITIES</b></td></tr>")
     for e in st.liabilities:
         out.append(row(e.kind + (f" — {e.description}" if e.description else ""), e.amount, indent=8))
     if st.properties:
         out.append(row("Mortgages on real estate owned (your share — see schedule)", st.real_estate_debt, indent=8))
     out.append(f"<tr><td style='{td};{tr_}'><b>Total liabilities</b></td><td align='right' style='{td};{tr_}'>"
-               f"<b>{_m(st.total_liabilities)}</b></td></tr>")
+               f"<b style='white-space:nowrap'>{_m(st.total_liabilities)}</b></td></tr>")
     out.append(f"<tr><td style='{td};{tr_};padding-top:10px'><b>NET WORTH</b></td><td align='right' "
-               f"style='{td};{tr_};padding-top:10px'><b>{_m(st.net_worth)}</b></td></tr></table>")
+               f"style='{td};{tr_};padding-top:10px;white-space:nowrap'><b>{_m(st.net_worth)}</b></td></tr></table>")
     if st.properties:
         cols = ["Property", "Location", "Value (100%)", "Debt (100%)", "Lender(s)", "Share", "Your equity"]
         out.append("<h3 style='margin-top:18px'>Schedule of Real Estate Owned</h3><table cellspacing='0' "
@@ -244,7 +299,7 @@ def html(st: Statement) -> str:
                                         for k, v in enumerate([esc(p.name), esc(p.location),
                                                                _m(p.value), _m(p.debt), esc(p.lenders),
                                                                f"{p.share_pct:g}%", _m(p.my_equity)])) + "</tr>")
-        out.append(f"<tr><td colspan='6' style='{td};{tr_}'><b>Total</b></td><td align='right' style='{td};{tr_}'>"
+        out.append(f"<tr><td colspan='6' style='{td};{tr_}'><b>Total</b></td><td align='right' style='{td};{tr_};white-space:nowrap'>"
                    f"<b>{_m(st.real_estate - st.real_estate_debt)}</b></td></tr></table>")
     out.append("<p style='margin-top:24px'>I certify that the information above is true and complete as of the date "
                "shown.</p><p style='margin-top:30px'>Signature: ______________________________ &nbsp;&nbsp; "
@@ -314,9 +369,9 @@ def file_name(st: Statement, ext: str) -> str:
     return f"{st.as_of.isoformat()} Net Worth Statement{who}.{ext}"
 
 
-def archive_older(folder: Path, keep: list[Path]) -> int:
-    """Move every earlier statement in Net Worth Statements into its Archive (the new ones stay). Returns how many."""
-    nw = folder / NET_WORTH
+def archive_older(nw: Path, keep: list[Path]) -> int:
+    """Move every earlier statement in the statements folder into its Archive (the new ones stay). Returns how
+    many."""
     arch = nw / ARCHIVE
     keep_names = {p.name for p in keep}
     n = 0

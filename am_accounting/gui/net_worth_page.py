@@ -1,5 +1,6 @@
-"""Net Worth Statement (beside Portfolio Summary): your personal net worth — real estate from the portfolio at your
-share, plus your own assets and liabilities — saved as a PDF and an Excel file in your personal folder."""
+"""Net Worth (beside Portfolio Summary and Deal Pipeline): your personal net worth on one page — real estate from the
+portfolio at your share, plus your own assets and liabilities, kept as you type — with the statement previewed beside
+it and saved as a PDF and an Excel file in the folder you pick for statements."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
                                QTextBrowser, QVBoxLayout, QWidget)
 
@@ -93,24 +94,53 @@ class _Entries(QWidget):
         return out
 
 
-class NetWorthDialog(QDialog):
-    def __init__(self, pf, parent=None, *, as_of: date | None = None):
+class NetWorthPage(QWidget):
+    """The Net Worth page. ``as_of`` is a callable giving the date (the As of box at the top)."""
+
+    def __init__(self, pf, parent=None, *, as_of=None):
         super().__init__(parent)
+        from .asset_mgmt import Card
+
         self.pf = pf
-        self.as_of = as_of or date.today()
+        self._as_of = as_of if callable(as_of) else (lambda d=as_of: d or date.today())
+        self.as_of = self._as_of()
         self.saved = pers.load(pf)
         self.made: list[Path] = []
-        self.setWindowTitle("Personal Net Worth Statement")
-        self.resize(1180, 820)
+        self._loading = True
         lay = QVBoxLayout(self)
+        head = QHBoxLayout()
+        title = QLabel("Personal Net Worth")
+        f = title.font()
+        f.setPointSizeF(f.pointSizeF() * 1.6)
+        f.setBold(True)
+        title.setFont(f)
+        head.addWidget(title)
+        self.when = QLabel()
+        self.when.setObjectName("hint")
+        head.addWidget(self.when)
+        head.addStretch(1)
+        go = QPushButton("Generate Statement")
+        go.setObjectName("primary")
+        go.setToolTip("Save it as a PDF and an Excel file in the folder for statements (earlier ones move to its "
+                      "Archive)")
+        go.clicked.connect(lambda *_: self.generate())
+        head.addWidget(go)
+        opn = QPushButton("Open Statements Folder")
+        opn.clicked.connect(lambda *_: self.open_statements())
+        head.addWidget(opn)
+        lay.addLayout(head)
+        cards = QHBoxLayout()
+        self.cards = {k: Card(t) for k, t in (("assets", "Total assets"), ("liabs", "Total liabilities"),
+                                              ("worth", "Net worth"), ("re", "Real estate equity"))}
+        for c in self.cards.values():
+            cards.addWidget(c)
+        lay.addLayout(cards)
         top = QHBoxLayout()
         top.addWidget(QLabel("Your name:"))
         self.name = QLineEdit(self.saved.name)
         self.name.setPlaceholderText("As it should appear on the statement")
         self.name.textChanged.connect(lambda *_: self._preview())
         top.addWidget(self.name, 1)
-        top.addSpacing(12)
-        top.addWidget(QLabel(f"As of {self.as_of:%b} {self.as_of.day}, {self.as_of.year}"))
         lay.addLayout(top)
         # the personal folder
         fbox = QGroupBox("Personal folder")
@@ -126,7 +156,20 @@ class NetWorthDialog(QDialog):
             b.setToolTip(tip)
             b.clicked.connect(slot)
             fl.addWidget(b)
+        sl = QHBoxLayout()
+        sl.addWidget(QLabel("Statements saved to:"))
+        self.out_label = QLabel()
+        self.out_label.setWordWrap(True)
+        sl.addWidget(self.out_label, 1)
+        for text, slot, tip in (("Change…", self.choose_output, "Pick the folder the net worth statements go in"),
+                                ("Use Personal Folder", self.reset_output,
+                                 "Save them in the personal folder's Net Worth Statements")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda *_, s_=slot: s_())
+            sl.addWidget(b)
         lay.addWidget(fbox)
+        lay.addLayout(sl)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         ll = QVBoxLayout(left)
@@ -145,27 +188,38 @@ class NetWorthDialog(QDialog):
         self.liabs = _Entries("Liabilities", pers.LIABILITY_KINDS, self._preview)
         ll.addWidget(self.liabs, 2)
         split.addWidget(left)
+        from PySide6.QtWidgets import QScrollArea, QTabWidget
+
+        from .net_worth_charts import TimeChart
+
+        self.right = QTabWidget()
         self.page = QTextBrowser()
-        split.addWidget(self.page)
+        self.right.addTab(self.page, "Statement")
+        trends = QWidget()
+        tl = QVBoxLayout(trends)
+        note = QLabel("Your figures are kept each day you update this page, so these grow over time.")
+        note.setObjectName("hint")
+        note.setWordWrap(True)
+        tl.addWidget(note)
+        self.chart_worth = TimeChart("Net worth over time")
+        self.chart_cash = TimeChart("Cash balance over time")
+        self.chart_assets = TimeChart("Assets by type", stacked=True)
+        for c in (self.chart_worth, self.chart_cash, self.chart_assets):
+            tl.addWidget(c, 1)
+        area = QScrollArea()
+        area.setWidget(trends)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.right.addTab(area, "Trends")
+        split.addWidget(self.right)
         split.setSizes([680, 500])
         lay.addWidget(split, 1)
-        self.totals = QLabel()
-        lay.addWidget(self.totals)
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        save = QPushButton("Save")
-        save.setToolTip("Keep what you entered for next time")
-        save.clicked.connect(self.save)
-        go = QPushButton("Generate Statement")
-        go.setObjectName("primary")
-        go.setToolTip("Save it as a PDF and an Excel file in the personal folder's Net Worth Statements (earlier "
-                      "ones move to its Archive)")
-        go.clicked.connect(self.generate)
-        close = QPushButton("Close")
-        close.clicked.connect(self._close)
-        for b in (save, go, close):
-            btns.addWidget(b)
-        lay.addLayout(btns)
+        hint = QLabel("What you enter is kept as you type. Real estate comes from the portfolio (market value from "
+                      "the latest valuation, mortgages from Financing & Cap Table) — refreshed each time you open this "
+                      "page.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
         self.props = pers.properties(pf, self.saved, self.as_of)
         self._fill_re()
         for e in self.saved.assets:
@@ -178,6 +232,15 @@ class NetWorthDialog(QDialog):
         if not self.saved.liabilities:
             for k in ("Mortgage on principal residence", "Lines of credit", "Credit cards"):
                 self.liabs.add(pers.Entry(k))
+        self._show_folder()
+        self._loading = False
+        self._preview()
+
+    def refresh(self) -> None:
+        """Re-read the portfolio (values, loans, holdings) for the date at the top."""
+        self.as_of = self._as_of()
+        self.props = pers.properties(self.pf, self.current(), self.as_of)
+        self._fill_re()
         self._show_folder()
         self._preview()
 
@@ -228,12 +291,34 @@ class NetWorthDialog(QDialog):
         return pers.statement(self.pf, self.current(), self.as_of, self.props)
 
     def _preview(self) -> None:
-        if not hasattr(self, "page") or not hasattr(self, "props"):
+        if getattr(self, "_loading", True) or not hasattr(self, "props"):
             return
         st = self.statement()
         self.page.setHtml(pers.html(st))
-        self.totals.setText(f"Total assets <b>{fmt_money(st.total_assets)}</b> · total liabilities "
-                            f"<b>{fmt_money(st.total_liabilities)}</b> · net worth <b>{fmt_money(st.net_worth)}</b>")
+        self.when.setText(f"  as of {self.as_of:%b} {self.as_of.day}, {self.as_of.year}")
+        n_other = len(st.assets)
+        self.cards["assets"].set(fmt_money(st.total_assets), f"real estate {fmt_money(st.real_estate)} · "
+                                                             f"{n_other} other")
+        self.cards["liabs"].set(fmt_money(st.total_liabilities), f"mortgages {fmt_money(st.real_estate_debt)} · "
+                                                                f"{len(st.liabilities)} other")
+        self.cards["worth"].set(fmt_money(st.net_worth), "assets − liabilities",
+                                NEGATIVE if st.net_worth < 0 else None)
+        self.cards["re"].set(fmt_money(st.real_estate - st.real_estate_debt),
+                             f"{len(st.properties)} propert{'y' if len(st.properties) == 1 else 'ies'} at your share")
+        self.save()                         # kept as you type
+        if self.as_of == date.today():      # today's figures: one snapshot a day
+            pers.record(self.pf, st)
+        self._fill_charts()
+
+    def _fill_charts(self) -> None:
+        hist = pers.history(self.pf)
+        dates = [h.date for h in hist]
+        self.chart_worth.set_data(dates, [("Net worth", [h.net_worth for h in hist]),
+                                          ("Assets", [h.assets for h in hist]),
+                                          ("Liabilities", [h.liabilities for h in hist])])
+        self.chart_cash.set_data(dates, [("Cash", [h.cash for h in hist])])
+        kinds = list(dict.fromkeys(k for h in hist for k in h.by_kind))
+        self.chart_assets.set_data(dates, [(k, [h.by_kind.get(k, 0) for h in hist]) for k in kinds])
 
     def save(self) -> None:
         self.saved = self.current()
@@ -245,6 +330,23 @@ class NetWorthDialog(QDialog):
         self.folder_label.setText(f"<b>{f}</b>" if f else "<span style='color:#b3261e'>Not chosen yet</span> — pick "
                                   "a folder for your own documents (net worth statements, T1s, T4s, notices of "
                                   "assessment …)")
+        out = pers.statements_folder(self.pf)
+        self.out_label.setText(f"<b>{out}</b>" if out else "<span style='color:#b3261e'>Not chosen yet</span> — "
+                               "you'll be asked when you generate")
+
+    def choose_output(self, path: str | None = None) -> Path | None:
+        if path is None:
+            path = QFileDialog.getExistingDirectory(self, "Folder for net worth statements",
+                                                    str(pers.statements_folder(self.pf) or ""))
+        if not path:
+            return None
+        pers.set_statements_folder(self.pf, path)
+        self._show_folder()
+        return Path(path)
+
+    def reset_output(self) -> None:
+        pers.set_statements_folder(self.pf, None)
+        self._show_folder()
 
     def choose_folder(self, path: str | None = None) -> Path | None:
         if path is None:
@@ -279,27 +381,30 @@ class NetWorthDialog(QDialog):
         from .reports_tab import write_pdf
 
         self.save()
-        f = pers.folder(self.pf) or (None if quiet else self.choose_folder())
-        if f is None:
+        out = pers.statements_folder(self.pf) or (None if quiet else self.choose_output())
+        if out is None:
             return []
         st = self.statement()
         try:
-            pers.create(f)
-            pdf = f / pers.NET_WORTH / pers.file_name(st, "pdf")
-            xlsx = f / pers.NET_WORTH / pers.file_name(st, "xlsx")
-            pers.archive_older(f, [pdf, xlsx])
+            lpth.mkdir(out)
+            pdf = out / pers.file_name(st, "pdf")
+            xlsx = out / pers.file_name(st, "xlsx")
+            pers.archive_older(out, [pdf, xlsx])
             write_pdf(pers.html(st), lpth.lp(pdf), font_pt=8.5)
             pers.write_xlsx(st, xlsx)
         except OSError as e:
             error(self, "Couldn't save the statement", str(e))
             return []
         self.made = [pdf, xlsx]
+        self._show_folder()
         if not quiet:
-            info(self, "Net worth statement", f"Saved in {f / pers.NET_WORTH}:\n\n• {pdf.name}\n• {xlsx.name}\n\n"
+            info(self, "Net worth statement", f"Saved in {out}:\n\n• {pdf.name}\n• {xlsx.name}\n\n"
                                               "Earlier statements are in its Archive.")
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf)))
         return self.made
 
-    def _close(self) -> None:
-        self.save()
-        self.accept()
+    def open_statements(self) -> None:
+        out = pers.statements_folder(self.pf)
+        if out is not None:
+            lpth.mkdir(out)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))

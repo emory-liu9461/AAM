@@ -129,26 +129,34 @@ def _modified(p: Path) -> datetime | None:
         return None
 
 
-def _personal(personal: Path | None, d: Doc) -> list[Candidate]:
-    """The document's files in your personal folder (not the archived ones): picked to start with."""
-    if personal is None or not d.personal or not lpth.is_dir(personal):
+def _personal(personal: Path | None, d: Doc, statements: Path | None = None) -> list[Candidate]:
+    """The document's files in your personal folder — and, for net worth statements, the folder they're saved in —
+    not the archived ones: picked to start with."""
+    if not d.personal:
         return []
-    out = []
+    bases = []
     for sub in d.personal:
-        base = Path(personal) / sub
+        if sub == "Net Worth Statements" and statements is not None:
+            bases.append((Path(statements), "Net Worth Statements"))
+        elif personal is not None:
+            bases.append((Path(personal) / sub, sub))
+    out, seen = [], set()
+    for base, label in bases:
         if not lpth.is_dir(base):
             continue
         for p in sorted(lpth.walk_files(base)):
-            rel = p.relative_to(personal)
-            if _skipped(rel.parts[:-1]) or p.name.startswith(("~$", ".")) or p.name.lower() == "desktop.ini":
+            rel = p.relative_to(base)
+            if p in seen or _skipped(rel.parts[:-1]) or p.name.startswith(("~$", ".")) or \
+                    p.name.lower() == "desktop.ini":
                 continue
-            out.append(Candidate(p, f"Personal/{rel.as_posix()}", True, "personal folder", _modified(p)))
+            seen.add(p)
+            out.append(Candidate(p, f"Personal/{label}/{rel.as_posix()}", True, "personal folder", _modified(p)))
     return out
 
 
-def candidates(folder: Path, personal: Path | None = None) -> list[Pick]:
+def candidates(folder: Path, personal: Path | None = None, statements: Path | None = None) -> list[Pick]:
     """For each document on the checklist, the files in the deal folder (and, for your own documents, your
-    personal folder) that could go in it."""
+    personal folder and the folder your net worth statements are saved in) that could go in it."""
     folder = Path(folder)
     files = []
     if lpth.is_dir(folder):
@@ -171,7 +179,7 @@ def candidates(folder: Path, personal: Path | None = None) -> list[Pick]:
                 for p, rel in files if own_place.get(p) == d.name]
         named = [Candidate(p, rel.as_posix(), not mine, "by its name", _modified(p))
                  for p, rel in files if p not in own_place and _matches(p.stem, d.words)]
-        out.append(Pick(d, mine + _personal(personal, d) + named))
+        out.append(Pick(d, mine + _personal(personal, d, statements) + named))
     return out
 
 
