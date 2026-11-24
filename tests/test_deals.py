@@ -270,9 +270,10 @@ def test_deal_underwriting_and_one_pager(app, tmp_path):
     dlg = dt.DealDialog(pf, dl.deal(pf, d.id))
     assert dlg.tabs.tabText(0) == "Summary" and dlg.tabs.currentIndex() == 0
     page = dlg.summary.toPlainText()
-    for word in ("Deal summary", "PROPERTY", "OPERATIONS", "DEBT", "EQUITY", "SENSITIVITY", "Net operating income",
-                 "Cash flow after debt", "Break-even occupancy", "$1,992,000"):
+    for word in ("Deal summary", "PROPERTY", "OPERATIONS", "CAPITAL STACK", "DEBT", "Sources", "Uses", "Equity",
+                 "Net operating income", "Cash flow after debt", "Break-even occupancy", "$1,992,000", "First mortgage"):
         assert word in page
+    assert "SENSITIVITY" not in page and "Potential" not in page          # simpler: in place only
     dlg.u_rate.setValue(5.5)
     assert "5.5%" in dlg.summary.toPlainText()                      # follows every change
     dlg.save()

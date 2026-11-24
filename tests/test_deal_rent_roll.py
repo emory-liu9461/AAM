@@ -50,6 +50,11 @@ def test_rent_roll_tab_and_closing(app, tmp_path):
     dlg = dt.DealDialog(pf, dl.deal(pf, d.id))
     tab = dlg.roll_tab
     assert dlg.tabs.tabText(dlg.tabs.indexOf(tab)) == "Rent Roll && Expenses"
+    # revenue and expenses are entered on this tab only: no rent / expense boxes on the Summary
+    assert all(w.isHidden() for w in (dlg.u_rent, dlg.u_market, dlg.u_opex, dlg.u_opex_pct))
+    assert all(tab.assumptions.isAncestorOf(w) for w in (dlg.u_other, dlg.u_vac, dlg.u_res))
+    dlg.u_other.setValue(500)                                                 # other income, on this tab
+    assert dlg.underwriting_now().other_income == 500_00
     for x in ROLL:
         tab._roll_row(x)
     tab._changed()
@@ -98,3 +103,39 @@ def test_import_rent_roll(app, tmp_path):
     assert tab.import_roll(str(p)) == 2
     assert [(x["unit"], x["tenant"], x["status"], x["rent"]) for x in tab.rent_roll()] == [
         ("1", "A. Tenant", "Occupied", 1_200_00), ("2", "", "Vacant", 0)]
+
+
+def test_funding_and_capital_stack(app, tmp_path):
+    from am_accounting.gui import deals_tab as dt
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    d = dl.Deal("45 Elm St", price_cents=1_000_000_00, units=10, noi_cents=70_000_00)
+    dl.save(pf, d)
+    dlg = dt.DealDialog(pf, dl.deal(pf, d.id))
+    names = [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
+    i = names.index("Rent Roll && Expenses")
+    assert names[i + 1:i + 3] == ["Funding", "Capital Stack"]
+    assert dlg.funding_tab.isAncestorOf(dlg.u_ltv) and dlg.stack_tab.isAncestorOf(dlg.u_close)
+    dlg.u_ltv.setValue(70)
+    dlg.u_fee.setValue(1)
+    dlg.u_lender.setText("First National")
+    dlg.u_l2_amount.setValue(50_000)
+    dlg.u_l2_rate.setValue(8)
+    dlg.u_close.setValue(3)
+    dlg.u_capex.setValue(100_000)
+    u = dlg.underwriting_now()
+    a = dl.analyze(dlg.draft(), u)
+    assert (a.loan, a.loan2, a.fees, a.capex) == (700_000_00, 50_000_00, 7_000_00, 100_000_00)
+    assert a.all_in == 1_000_000_00 + 30_000_00 + 7_000_00 + 100_000_00
+    assert a.equity == a.all_in - 750_000_00
+    uses, sources = dl.sources_uses(dlg.draft(), u)
+    assert sum(v for _k, v in uses) == sum(v for _k, v in sources)                 # balanced
+    assert sources[0][0].startswith("First mortgage — First National") and sources[-1][0] == "Equity"
+    assert "Sources and uses" in dlg.stack_view.toPlainText() and "Equity" in dlg.stack_view.toPlainText()
+    assert "Debt coverage" in dlg.funding_view.toPlainText()
+    dlg.save()
+    u2 = dl.underwriting(dl.deal(pf, d.id))
+    assert (u2.lender, u2.loan2_amount, u2.capex_budget, u2.lender_fee_pct) == ("First National", 50_000_00,
+                                                                              100_000_00, 1.0)
+    assert "Second loan" in dt.summary_html(dl.deal(pf, d.id), u2)
+    pf.close()

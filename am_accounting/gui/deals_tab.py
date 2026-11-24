@@ -270,24 +270,23 @@ class DealDialog(QDialog):
         self.u_io = QCheckBox("Interest only")
         self.u_io.setChecked(u.interest_only)
         self.u_io.toggled.connect(self._render)
-        form.addRow(head("Revenue"))
-        form.addRow("Rent / unit / month:", self.u_rent)
-        form.addRow("Market rent / unit:", self.u_market)
-        form.addRow("Other income / month:", self.u_other)
-        form.addRow("Vacancy && bad debt:", self.u_vac)
-        form.addRow(head("Expenses"))
-        form.addRow("Operating expenses / yr:", self.u_opex)
-        form.addRow("… or % of revenue:", self.u_opex_pct)
-        form.addRow("Capital reserve / unit / yr:", self.u_res)
-        form.addRow(head("Purchase"))
-        form.addRow("Closing costs:", self.u_close)
-        form.addRow(head("Debt"))
-        form.addRow("Loan-to-value:", self.u_ltv)
-        form.addRow("Interest rate:", self.u_rate)
-        form.addRow("Amortization:", self.u_amort)
-        form.addRow("Term:", self.u_term)
-        form.addRow("", self.u_io)
+        # revenue and expenses come from the Rent Roll & Expenses tab: the rent roll, the expenses one by one, and
+        # other income, vacancy and the capital reserve (put there). Averages typed before (kept, not shown here)
+        # still count for a deal without a rent roll.
+        for w in (self.u_rent, self.u_market, self.u_opex, self.u_opex_pct):
+            w.setParent(sw)
+            w.hide()
+        self.roll_tab.add_assumptions([("Other income / month:", self.u_other),
+                                       ("Vacancy && bad debt:", self.u_vac),
+                                       ("Capital reserve / unit / yr:", self.u_res)])
+        note = QLabel("Revenue and expenses come from the <b>Rent Roll &amp; Expenses</b> tab, the loans from "
+                      "<b>Funding</b> and the costs from <b>Capital Stack</b>.")
+        note.setObjectName("hint")
+        note.setWordWrap(True)
+        form.addRow(note)
+        self._build_funding(tabs, u, money, pct)
         pdf = QPushButton("Export PDF…")
+        pdf.setMaximumWidth(160)
         pdf.setToolTip("The one-pager as a PDF to share")
         pdf.clicked.connect(self._export_pdf)
         form.addRow("", pdf)
@@ -295,19 +294,126 @@ class DealDialog(QDialog):
         scroll.setWidget(side)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setMinimumWidth(330)
-        scroll.setMaximumWidth(360)
+        # (the inputs are on their own tabs now: a slim bar above the one-pager)
+        from PySide6.QtWidgets import QBoxLayout
+
+        row.setDirection(QBoxLayout.Direction.TopToBottom)
+        scroll.setMaximumHeight(64)
         row.addWidget(scroll)
         self.summary = QTextBrowser()
         self.summary.setFrameShape(QTextBrowser.Shape.NoFrame)
         row.addWidget(self.summary, 1)
         tabs.insertTab(0, sw, "Summary")
 
+    def _build_funding(self, tabs: QTabWidget, u: dl.Underwriting, money, pct) -> None:
+        """Funding (the loans) and Capital Stack (sources and uses), after Rent Roll & Expenses."""
+        from PySide6.QtWidgets import QGroupBox, QTextBrowser
+
+        # funding: the first mortgage and a second loan / VTB
+        fw = QWidget()
+        fl = QHBoxLayout(fw)
+        left = QVBoxLayout()
+        g1 = QGroupBox("First mortgage")
+        f1 = QFormLayout(g1)
+        self.u_lender = QLineEdit(u.lender)
+        self.u_lender.setPlaceholderText("e.g. First National, CMHC-insured")
+        self.u_lender.textChanged.connect(self._render)
+        self.u_fee = pct(u.lender_fee_pct, hi=10)
+        self.u_fee.setToolTip("Lender / broker fee, % of the loan (a use of funds)")
+        for label, w in (("Lender:", self.u_lender), ("Loan-to-value:", self.u_ltv), ("Interest rate:", self.u_rate),
+                         ("Amortization:", self.u_amort), ("Term:", self.u_term), ("", self.u_io),
+                         ("Lender fee:", self.u_fee)):
+            f1.addRow(label, w)
+        left.addWidget(g1)
+        g2 = QGroupBox("Second loan / vendor take-back (optional)")
+        f2 = QFormLayout(g2)
+        self.u_l2_lender = QLineEdit(u.loan2_lender)
+        self.u_l2_lender.setPlaceholderText("e.g. the seller (VTB), a private lender")
+        self.u_l2_lender.textChanged.connect(self._render)
+        self.u_l2_amount = money(u.loan2_amount)
+        self.u_l2_rate = pct(u.loan2_rate, hi=25, dec=3)
+        self.u_l2_amort = pct(u.loan2_amort, " yrs", 50, 1)
+        self.u_l2_amort.setToolTip("0 = interest only")
+        for label, w in (("Lender:", self.u_l2_lender), ("Amount:", self.u_l2_amount),
+                         ("Interest rate:", self.u_l2_rate), ("Amortization (0 = interest only):", self.u_l2_amort)):
+            f2.addRow(label, w)
+        left.addWidget(g2)
+        left.addStretch(1)
+        fl.addLayout(left, 2)
+        self.funding_view = QTextBrowser()
+        self.funding_view.setFrameShape(QTextBrowser.Shape.NoFrame)
+        fl.addWidget(self.funding_view, 3)
+        # capital stack: sources and uses
+        cw = QWidget()
+        cl = QHBoxLayout(cw)
+        g3 = QGroupBox("Uses — what it costs")
+        f3 = QFormLayout(g3)
+        self.u_capex = money(u.capex_budget)
+        self.u_capex.setToolTip("Renovations / capex funded at the start")
+        self.u_reserve_funded = money(u.reserve_funded)
+        self.u_reserve_funded.setToolTip("Working capital / reserves put in at closing")
+        for label, w in (("Closing costs (% of price):", self.u_close), ("Renovation / capex budget:", self.u_capex),
+                         ("Reserves funded at closing:", self.u_reserve_funded)):
+            f3.addRow(label, w)
+        hint = QLabel("The price is on Details, the loans on Funding; equity is the rest.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        f3.addRow(hint)
+        side = QVBoxLayout()
+        side.addWidget(g3)
+        side.addStretch(1)
+        cl.addLayout(side, 2)
+        self.stack_view = QTextBrowser()
+        self.stack_view.setFrameShape(QTextBrowser.Shape.NoFrame)
+        cl.addWidget(self.stack_view, 3)
+        at = tabs.indexOf(self.roll_tab) + 1
+        tabs.insertTab(at, fw, "Funding")
+        tabs.insertTab(at + 1, cw, "Capital Stack")
+        self.funding_tab, self.stack_tab = fw, cw
+
+    def _render_funding(self, d: dl.Deal, u: dl.Underwriting) -> None:
+        import html as _h
+
+        a = dl.analyze(d, u)
+        m = lambda c: fmt_money(c) if c else "—"   # noqa: E731
+        pct_ = lambda x: f"{x * 100:.1f}%" if x is not None else "—"   # noqa: E731
+        td = "padding:3px 10px"
+        rows = [("First mortgage", m(a.loan)), ("Second loan / VTB", m(a.loan2)), ("Total debt", m(a.total_debt)),
+                ("Debt service a year", m(a.debt_service)), ("Debt coverage (NOI ÷ debt service)",
+                                                             f"{a.dscr:.2f}×" if a.dscr else "—"),
+                ("Debt yield (NOI ÷ debt)", pct_(a.debt_yield)), ("Loan-to-value (all debt)", pct_(a.ltv)),
+                ("Loan-to-cost", pct_(a.ltc)), ("Equity required", m(a.equity))]
+        self.funding_view.setHtml("<h3>What the loans come to</h3><table cellspacing='0'>" + "".join(
+            f"<tr><td style='{td}'>{_h.escape(k)}</td><td align='right' style='{td};white-space:nowrap'><b>{v}</b>"
+            f"</td></tr>" for k, v in rows) + "</table>")
+        uses, sources = dl.sources_uses(d, u)
+        total = sum(v for _k, v in uses) or 1
+
+        def side(title, items):
+            out = [f"<tr><td colspan='3' style='{td};border-bottom:1px solid #999'><b>{title}</b></td></tr>"]
+            out += [f"<tr><td style='{td}'>{_h.escape(k)}</td><td align='right' style='{td};white-space:nowrap'>"
+                    f"{fmt_money(v)}</td><td align='right' style='{td};color:gray'>{v / total * 100:.1f}%</td></tr>"
+                    for k, v in items]
+            out.append(f"<tr><td style='{td};border-top:1px solid #999'><b>Total</b></td><td align='right' "
+                       f"style='{td};border-top:1px solid #999;white-space:nowrap'><b>{fmt_money(sum(v for _k, v in items))}"
+                       f"</b></td><td style='{td};border-top:1px solid #999'></td></tr>")
+            return "".join(out)
+        self.stack_view.setHtml(
+            "<h3>Sources and uses</h3><table cellspacing='0' width='100%'><tr><td valign='top' width='50%'>"
+            f"<table cellspacing='0' width='100%'>{side('Uses', uses)}</table></td><td valign='top' width='50%'>"
+            f"<table cellspacing='0' width='100%'>{side('Sources', sources)}</table></td></tr></table>"
+            f"<p>Loan-to-value {pct_(a.ltv)} · loan-to-cost {pct_(a.ltc)} · equity "
+            f"{a.equity / total * 100:.1f}% of the cost</p>")
+
     def underwriting_now(self) -> dl.Underwriting:
         c = lambda b: round(b.value() * 100)  # noqa: E731
         return dl.Underwriting(c(self.u_rent), c(self.u_market), c(self.u_other), self.u_vac.value(), c(self.u_opex),
                                self.u_opex_pct.value(), c(self.u_res), self.u_close.value(), self.u_ltv.value(),
                                self.u_rate.value(), self.u_amort.value(), self.u_io.isChecked(), self.u_term.value(),
+                               lender=self.u_lender.text().strip(), lender_fee_pct=self.u_fee.value(),
+                               loan2_lender=self.u_l2_lender.text().strip(), loan2_amount=c(self.u_l2_amount),
+                               loan2_rate=self.u_l2_rate.value(), loan2_amort=self.u_l2_amort.value(),
+                               capex_budget=c(self.u_capex), reserve_funded=c(self.u_reserve_funded),
                                rent_roll=self.roll_tab.rent_roll(), expenses=self.roll_tab.expenses())
 
     def _roll_changed(self) -> None:
@@ -327,8 +433,9 @@ class DealDialog(QDialog):
                        sqft=self.sqft.value() or None, noi_cents=round(self.noi.value() * 100))
 
     def _render(self, *_) -> None:
-        if hasattr(self, "summary"):
+        if hasattr(self, "summary") and hasattr(self, "stack_view"):
             self.summary.setHtml(summary_html(self.draft(), self.underwriting_now(), self.summary))
+            self._render_funding(self.draft(), self.underwriting_now())
             self.u_amort.setEnabled(not self.u_io.isChecked())
             uw = dl.Underwriting(rent_roll=self.roll_tab.rent_roll(), expenses=self.roll_tab.expenses())
             roll, exp = bool(uw.rent_roll), bool(uw.expenses)
@@ -556,8 +663,8 @@ class DealDialog(QDialog):
 
 
 def summary_html(d: dl.Deal, u: dl.Underwriting, widget=None, *, printing: bool = False) -> str:
-    """The deal's one-pager: property, operations (in place and at market), returns, debt & equity, and two
-    sensitivity tables — clean, no lines, like the Dashboard."""
+    """The deal's one-pager: property, operations in place, the capital stack (sources and uses) and the debt —
+    clean, no lines, like the Dashboard."""
     from .asset_mgmt import short
     from .theme import c as tc
 
@@ -569,7 +676,7 @@ def summary_html(d: dl.Deal, u: dl.Underwriting, widget=None, *, printing: bool 
 
         text, muted, red, accent = widget.palette().text().color().name(), tc("muted"), tc("red"), tc("link")
         green, shade = tc("green"), ("#20303c" if is_dark() else "#eef3fb")
-    now, pot = dl.analyze(d, u), dl.analyze(d, u, market=True)
+    now = dl.analyze(d, u)
 
     def m(c):
         """Whole dollars; negatives red in brackets."""
@@ -629,89 +736,77 @@ def summary_html(d: dl.Deal, u: dl.Underwriting, widget=None, *, printing: bool 
         f"{(red if now.cash_flow < 0 else green) if a == 'Cash flow' and now.noi else text}'>{esc(b)}</span><br>"
         f"<span style='color:{muted}; font-size:8pt'>{esc(c)}</span></td>" for a, b, c in tiles) + "</tr></table>")
 
-    ops = [("Gross potential rent", m(now.gpr), m(pot.gpr)),
-           (f"Vacancy ({u.vacancy_pct:g}%)", m(-now.vacancy) if now.vacancy else "—", m(-pot.vacancy) if pot.vacancy
-            else "—"),
-           ("Other income", m(now.other), m(pot.other)),
-           ("Effective gross income", m(now.egi), m(pot.egi)),
-           ("Operating expenses", m(-now.opex) if now.opex else "—", m(-pot.opex) if pot.opex else "—"),
-           ("Net operating income", m(now.noi), m(pot.noi)),
-           ("Capital reserve", m(-now.reserve) if now.reserve else "—", m(-pot.reserve) if pot.reserve else "—"),
-           ("Debt service", m(-now.debt_service) if now.debt_service else "—",
-            m(-pot.debt_service) if pot.debt_service else "—"),
-           ("Cash flow after debt", m(now.cash_flow), m(pot.cash_flow)),
-           ("", "", ""),
-           ("Cap rate", p(now.cap_rate, 2), p(pot.cap_rate, 2)),
-           ("Cash-on-cash", p(now.coc), p(pot.coc)),
-           ("DSCR", x_(now.dscr), x_(pot.dscr)),
-           ("Debt yield", p(now.debt_yield), p(pot.debt_yield)),
-           ("Expense ratio", p(now.expense_ratio), p(pot.expense_ratio)),
-           ("Break-even occupancy", p(now.breakeven), p(pot.breakeven))]
-    if u.expenses and now.opex:                # the expenses one by one, under their total
-        at = next(i for i, r in enumerate(ops) if r[0] == "Operating expenses") + 1
-        for k, x in enumerate(u.expenses):
-            amt = int(x.get("amount") or 0)
-            ops.insert(at + k, (f"   · {x.get('item', '')}", m(-amt) if amt else "—", m(-amt) if amt else "—"))
-    if units:
-        at = next(i for i, r in enumerate(ops) if r[0] == "Net operating income") + 1
-        ops.insert(at, ("NOI / unit", m(round(now.noi / units)), m(round(pot.noi / units))))
-    note = ("" if not now.from_deal_noi else
-            f"<p style='color:{muted}; font-size:8pt'>NOI as entered on the deal — enter the rents and expenses on the "
-            "left for the full picture.</p>")
-    left = (title("Property") + rows([("Units", str(units or "—")), ("Size", f"{d.sqft:,.0f} sq ft" if d.sqft else "—"),
-                                      ("Purchase price", m(now.price)),
-                                      ("Price / unit", m(round(now.price / units)) if units and now.price else "—"),
-                                      ("Price / sq ft", m(round(now.price / d.sqft)) if d.sqft and now.price else "—"),
-                                      (f"Closing costs ({u.closing_pct:g}%)", m(now.closing)),
-                                      ("All-in cost", m(now.all_in))], bold_last=True)
-            + title("Debt") + rows([("Loan", m(now.loan)), ("Loan-to-value", f"{u.ltv_pct:g}%"),
-                                    ("Interest rate", f"{u.rate_pct:g}%"),
-                                    ("Repayment", "Interest only" if u.interest_only else
-                                     f"{u.amort_years:g}-yr amortization"),
-                                    ("Term", f"{u.term_years:g} yrs"), ("Debt service / yr", m(now.debt_service))])
-            + title("Equity") + rows([("All-in cost", m(now.all_in)), ("Less loan", m(-now.loan) if now.loan else "—"),
-                                      ("Equity required", m(now.equity))], bold_last=True))
-    mid = title("Operations", "a year — in place and at market rents") + two(
-        ops, bolds=("Effective gross income", "Net operating income", "Cash flow after debt")) + note
-
-    # sensitivities
-    rates, rents, grid = dl.sensitivity_rate_rent(d, u)
-
-    def grid_html(corner, cols, rows_, cells, base_r, base_c, fmt):
-        out = [f"<table cellspacing='0' cellpadding='{2 if printing else 4}'><tr><td style='color:{muted}; "
-               f"font-size:8pt'>{corner}</td>"]
-        out += [f"<td align='right' style='color:{muted}; font-size:8pt'>{c}</td>" for c in cols]
-        out.append("</tr>")
-        for i, (label, line) in enumerate(zip(rows_, cells)):
-            out.append(f"<tr><td style='color:{muted}; white-space:nowrap'>{label}</td>")
-            for j, v in enumerate(line):
-                base = i == base_r and j == base_c
-                bg = f"background:{shade}; font-weight:700;" if base else ""
-                colour = red if isinstance(v, (int, float)) and v is not None and v < 0 else text
-                out.append(f"<td align='right' style='{bg}color:{colour}; white-space:nowrap'>{fmt(v)}</td>")
-            out.append("</tr>")
+    def one(pairs, bolds=()) -> str:
+        out = [f"<table width='100%' cellspacing='0' cellpadding='{1 if printing else 2}'>"]
+        for label, a in pairs:
+            w = "font-weight:700;" if label in bolds else ""
+            out.append(f"<tr><td style='{w}color:{text if w else muted}'>{label}</td><td align='right' style='{w}"
+                       f"color:{text}; white-space:nowrap'>{a}</td></tr>")
         return "".join(out) + "</table>"
 
-    s1 = grid_html("Rate ↓ · Rent →", [f"{c:+.0%}" if c else "Base" for c in rents], [f"{r:.2f}%" for r in rates],
-                   grid, 2, 2, lambda v: short(v) if v is not None else "—")
-    prices, ltvs, grid2 = dl.sensitivity_price_ltv(d, u)
-    s2 = grid_html("Price ↓ · LTV →", [f"{v:g}%" for v in ltvs], [short(x) for x in prices], grid2, 2, 2,
-                   lambda v: p(v))
-    t1, t2 = (title("Sensitivity", "cash flow after debt service, a year") + s1,
-              title("Sensitivity", "cash-on-cash return") + s2)
-    if printing:        # on paper: the two tables side by side under the figures
-        body = (f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-                f"<td width='45%' valign='top' style='padding-right:24px'>{left}</td>"
-                f"<td width='55%' valign='top'>{mid}</td></tr></table>"
-                f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-                f"<td width='50%' valign='top' style='padding-right:24px'>{t1}</td>"
-                f"<td width='50%' valign='top'>{t2}</td></tr></table>")
-        return f"<div style='color:{text}'>{head}{tile_html}{body}</div>"
-    sens = t1 + t2
+    neg = lambda c: m(-c) if c else "—"   # noqa: E731
+    ops = [("Gross potential rent", m(now.gpr)), (f"Vacancy ({u.vacancy_pct:g}%)", neg(now.vacancy)),
+           ("Other income", m(now.other)), ("Effective gross income", m(now.egi)),
+           ("Operating expenses", neg(now.opex)), ("Net operating income", m(now.noi)),
+           ("Capital reserve", neg(now.reserve)), ("Debt service", neg(now.debt_service)),
+           ("Cash flow after debt", m(now.cash_flow)), ("", ""),
+           ("Cap rate", p(now.cap_rate, 2)), ("Cash-on-cash", p(now.coc)), ("DSCR", x_(now.dscr)),
+           ("Debt yield", p(now.debt_yield)), ("Expense ratio", p(now.expense_ratio)),
+           ("Break-even occupancy", p(now.breakeven))]
+    if u.expenses and now.opex:                # the expenses one by one, under their total
+        at = next(i for i, r in enumerate(ops) if r[0] == "Operating expenses") + 1
+        items = [x for x in u.expenses if int(x.get("amount") or 0)]       # (the ones with an amount)
+        for k, x in enumerate(items):
+            ops.insert(at + k, (f"   · {esc(x.get('item', ''))}", neg(int(x.get("amount") or 0))))
+    if units:
+        at = next(i for i, r in enumerate(ops) if r[0] == "Net operating income") + 1
+        ops.insert(at, ("NOI / unit", m(round(now.noi / units))))
+    note = ("" if not now.from_deal_noi else
+            f"<p style='color:{muted}; font-size:8pt'>NOI as entered on the deal — enter the rent roll and expenses "
+            "for the full picture.</p>")
+    prop = title("Property") + one([("Units", str(units or "—")), ("Size", f"{d.sqft:,.0f} sq ft" if d.sqft else "—"),
+                                    ("Purchase price", m(now.price)),
+                                    ("Price / unit", m(round(now.price / units)) if units and now.price else "—"),
+                                    ("Price / sq ft", m(round(now.price / d.sqft)) if d.sqft and now.price else "—")])
+    mid = title("Operations", "a year, in place") + one(
+        ops, bolds=("Effective gross income", "Net operating income", "Cash flow after debt")) + note
+
+    # the capital stack: sources and uses
+    uses, sources = dl.sources_uses(d, u)
+    total = sum(v for _k, v in uses) or 1
+
+    def stack(name, items) -> str:
+        out = [f"<tr><td colspan='3' style='color:{muted}; font-size:8pt; padding-top:4px'>{name}</td></tr>"]
+        out += [f"<tr><td style='color:{muted}'>{esc(k)}</td><td align='right' style='color:{text}; white-space:nowrap'>"
+                f"{m(v)}</td><td align='right' style='color:{muted}; white-space:nowrap'>{v / total * 100:.0f}%</td></tr>"
+                for k, v in items]
+        out.append(f"<tr><td style='font-weight:700'>Total {name.lower()}</td><td align='right' style='font-weight:700;"
+                   f" white-space:nowrap'>{m(sum(v for _k, v in items))}</td><td></td></tr>")
+        return "".join(out)
+    cap = (title("Capital stack", f"LTV {p(now.ltv)} · LTC {p(now.ltc)}")
+           + f"<table width='100%' cellspacing='0' cellpadding='{1 if printing else 2}'>"
+           + stack("Uses", uses) + stack("Sources", sources) + "</table>")
+
+    # the debt, loan by loan
+    loans = []
+    if now.loan:
+        loans.append(("First mortgage", u.lender or "—", now.loan, f"{u.rate_pct:g}%",
+                      "Interest only" if u.interest_only else f"{u.amort_years:g} yrs", f"{u.term_years:g} yrs"))
+    if now.loan2:
+        loans.append(("Second loan / VTB", u.loan2_lender or "—", now.loan2, f"{u.loan2_rate:g}%",
+                      f"{u.loan2_amort:g} yrs" if u.loan2_amort else "Interest only", ""))
+    hdr = "".join(f"<td{' align=right' if i >= 2 else ''} style='color:{muted}; font-size:8pt; white-space:nowrap'>"
+                  f"{h}</td>"
+                  for i, h in enumerate(["Loan", "Lender", "Amount", "Rate", "Amortization", "Term"]))
+    debt = title("Debt", f"debt service {m(now.debt_service)} a year · DSCR {x_(now.dscr)}") + (
+        f"<table width='100%' cellspacing='0' cellpadding='{1 if printing else 2}'><tr>{hdr}</tr>" + "".join(
+            "<tr>" + "".join(f"<td{' align=right' if i >= 2 else ''} style='color:{text}; white-space:nowrap'>"
+                             f"{m(v) if i == 2 else esc(str(v))}</td>" for i, v in enumerate(ln)) + "</tr>"
+            for ln in loans) + "</table>" if loans else f"<p style='color:{muted}'>No loans — enter them on Funding.</p>")
     body = (f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-            f"<td width='30%' valign='top' style='padding-right:18px'>{left}</td>"
-            f"<td width='38%' valign='top' style='padding-right:18px'>{mid}</td>"
-            f"<td width='32%' valign='top'>{sens}</td></tr></table>")
+            f"<td width='28%' valign='top' style='padding-right:18px'>{prop}{cap}</td>"
+            f"<td width='34%' valign='top' style='padding-right:18px'>{mid}</td>"
+            f"<td width='38%' valign='top'>{debt}</td></tr></table>")
     return f"<div style='color:{text}'>{head}{tile_html}{body}</div>"
 
 

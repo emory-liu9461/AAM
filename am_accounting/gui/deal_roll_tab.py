@@ -29,10 +29,25 @@ def _money_item(cents: int) -> QTableWidgetItem:
 
 
 class RollExpensesTab(QWidget):
+    def add_assumptions(self, rows: list) -> None:
+        """The rest of the revenue and expense inputs (other income, vacancy, capital reserve), in a box at the top
+        — so all of them are on this tab."""
+        from PySide6.QtWidgets import QFormLayout, QGroupBox
+
+        box = QGroupBox("Other income, vacancy and capital reserve")
+        h = QHBoxLayout(box)
+        for label, w in rows:
+            f = QFormLayout()
+            f.addRow(label, w)
+            h.addLayout(f)
+        h.addStretch(1)
+        self.assumptions = box
+        self._lay.insertWidget(0, box)
+
     def __init__(self, u: dl.Underwriting, on_change=None, parent=None):
         super().__init__(parent)
         self.on_change = on_change or (lambda: None)
-        lay = QVBoxLayout(self)
+        lay = self._lay = QVBoxLayout(self)
         split = QSplitter(Qt.Orientation.Horizontal)
         # the rent roll
         left = QWidget()

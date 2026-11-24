@@ -147,7 +147,20 @@ def default_setup(deal: dl.Deal, pf=None) -> ClosingSetup:
         s.prepaid = dc.prepaid(pf, deal.id)
         for p in s.prepaid:            # pre-closing costs are part of the property's cost
             s.costs += [(c.item, c.amount_cents) for c in p.lines if c.kind == "cost"]
-    if deal.equity_cents and price > deal.equity_cents:
+    u = dl.underwriting(deal) if deal.uw else None
+    if u is not None and price and u.ltv_pct:     # the loans as on the deal's Funding tab
+        loan = round(price * u.ltv_pct / 100)
+        s.loans = [pfm.Loan(u.lender, "Mortgage", loan, rate_pct=u.rate_pct, start_date=s.closing_date,
+                            term_months=round(u.term_years * 12), amort_months=round(u.amort_years * 12),
+                            repayment="Interest only" if u.interest_only else "Amortizing")]
+        if u.loan2_amount:
+            s.loans.append(pfm.Loan(u.loan2_lender, "Vendor take-back", u.loan2_amount, rate_pct=u.loan2_rate,
+                                    start_date=s.closing_date, term_months=round((u.loan2_amort or 5) * 12),
+                                    amort_months=round(u.loan2_amort * 12),
+                                    repayment="Amortizing" if u.loan2_amort else "Interest only"))
+        if u.lender_fee_pct:
+            s.costs.append(("Lender fees", round(loan * u.lender_fee_pct / 100)))
+    elif deal.equity_cents and price > deal.equity_cents:
         s.loans = [pfm.Loan("", "Mortgage", price - deal.equity_cents, start_date=s.closing_date, term_months=60,
                             amort_months=300)]
     eq = max(0, s.uses - s.debt - s.prepaid_total)

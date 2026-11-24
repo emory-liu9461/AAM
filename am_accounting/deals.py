@@ -441,6 +441,16 @@ class Underwriting:
     amort_years: float = 25.0
     interest_only: bool = False
     term_years: float = 5.0
+    # funding (the Funding tab): the first mortgage's lender and fee, and a second loan / VTB
+    lender: str = ""
+    lender_fee_pct: float = 0.0        # the first mortgage's fee, % of the loan
+    loan2_lender: str = ""
+    loan2_amount: int = 0
+    loan2_rate: float = 0.0
+    loan2_amort: float = 0.0           # years (0 = interest only)
+    # more uses (the Capital Stack tab): renovation / capex budget and reserves funded at closing
+    capex_budget: int = 0
+    reserve_funded: int = 0
     # the seller's rent roll, unit by unit: {"unit", "type", "tenant", "status", "rent", "market"} (a month, cents);
     # when entered, it replaces the average rents above and sets the number of units
     rent_roll: list = field(default_factory=list)
@@ -535,6 +545,10 @@ class Analysis:
     closing: int = 0
     all_in: int = 0
     loan: int = 0
+    loan2: int = 0                 # a second loan / VTB
+    fees: int = 0                  # lender fees
+    capex: int = 0                 # renovation / capex budget
+    reserves: int = 0              # reserves funded at closing
     debt_service: int = 0
     cash_flow: int = 0             # NOI − reserve − debt service
     equity: int = 0                # all-in cost − loan
@@ -554,7 +568,20 @@ class Analysis:
 
     @property
     def debt_yield(self) -> float | None:
-        return self.noi / self.loan if self.loan else None
+        return self.noi / (self.loan + self.loan2) if self.loan + self.loan2 else None
+
+    @property
+    def total_debt(self) -> int:
+        return self.loan + self.loan2
+
+    @property
+    def ltv(self) -> float | None:
+        return self.total_debt / self.price if self.price else None
+
+    @property
+    def ltc(self) -> float | None:
+        """Loan-to-cost: all the debt ÷ everything it costs (all-in)."""
+        return self.total_debt / self.all_in if self.all_in else None
 
     @property
     def expense_ratio(self) -> float | None:
@@ -593,16 +620,43 @@ def analyze(d: Deal, u: Underwriting, *, market: bool = False, rent_change: floa
         a.noi = round(d.noi_cents * (1 + rent_change))
     a.reserve = u.reserve_per_unit * units
     a.closing = round(a.price * u.closing_pct / 100)
-    a.all_in = a.price + a.closing
     a.loan = round(a.price * (u.ltv_pct if ltv is None else ltv) / 100)
+    a.loan2 = u.loan2_amount
+    a.fees = round(a.loan * u.lender_fee_pct / 100)
+    a.capex, a.reserves = u.capex_budget, u.reserve_funded
+    a.all_in = a.price + a.closing + a.fees + a.capex + a.reserves
     if a.loan:
         ln = pfm.Loan("", "Mortgage", a.loan, rate_pct=u.rate_pct if rate is None else rate,
                       term_months=round(u.term_years * 12), amort_months=round(u.amort_years * 12),
                       repayment="Interest only" if u.interest_only else "Amortizing")
         a.debt_service = ln.annual_debt_service
+    if a.loan2:
+        l2 = pfm.Loan("", "Vendor take-back", a.loan2, rate_pct=u.loan2_rate,
+                      term_months=round((u.loan2_amort or 5) * 12), amort_months=round(u.loan2_amort * 12),
+                      repayment="Amortizing" if u.loan2_amort else "Interest only")
+        a.debt_service += l2.annual_debt_service
     a.cash_flow = a.noi - a.reserve - a.debt_service
-    a.equity = a.all_in - a.loan
+    a.equity = a.all_in - a.loan - a.loan2
     return a
+
+
+def sources_uses(d: Deal, u: Underwriting) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """(uses, sources) of the purchase: what it costs, and the loans and the equity that pay for it."""
+    a = analyze(d, u)
+    uses = [("Purchase price", a.price), (f"Closing costs ({u.closing_pct:g}%)", a.closing)]
+    if a.fees:
+        uses.append((f"Lender fees ({u.lender_fee_pct:g}%)", a.fees))
+    if a.capex:
+        uses.append(("Renovation / capex budget", a.capex))
+    if a.reserves:
+        uses.append(("Reserves funded at closing", a.reserves))
+    sources = []
+    if a.loan:
+        sources.append((f"First mortgage{' — ' + u.lender if u.lender else ''} ({u.ltv_pct:g}% LTV)", a.loan))
+    if a.loan2:
+        sources.append((f"Second loan / VTB{' — ' + u.loan2_lender if u.loan2_lender else ''}", a.loan2))
+    sources.append(("Equity", a.equity))
+    return uses, sources
 
 
 RENT_STEPS = [-0.10, -0.05, 0.0, 0.05, 0.10]
