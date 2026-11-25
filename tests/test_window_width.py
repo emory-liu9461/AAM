@@ -301,3 +301,32 @@ def test_company_box_only_with_company_pages(app, tmp_path):
     v.show_personal()
     assert not w.switcher.isVisible()
     w.close()
+
+
+def test_portfolio_pages_aligned_left(app, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTableWidget
+
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)
+    w.set_mode("assets")
+    v = w.asset_view
+    v.refresh()
+    v.show_summary()
+    tables = v.portfolio_tabs.findChildren(QTableWidget)
+    assert tables
+    n = 0
+    for t in tables:
+        assert t.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignLeft
+        for r in range(t.rowCount()):
+            for c in range(t.columnCount()):
+                it = t.item(r, c)
+                if it is not None and it.text():
+                    assert it.textAlignment() & Qt.AlignmentFlag.AlignLeft, (t.objectName(), r, c, it.text())
+                    n += 1
+    assert n > 0
+    w.close()

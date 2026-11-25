@@ -2107,7 +2107,6 @@ class AssetManagementView(QWidget):
         pbar = QHBoxLayout(self.portfolio_bar)
         pbar.setContentsMargins(0, 0, 0, 0)
         outer_bar, bar = bar, pbar
-        bar.addSpacing(16)
         bar.addWidget(QLabel("As of"))
         self.as_of = QDateEdit(QDate.currentDate())
         self.as_of.setCalendarPopup(True)
@@ -2304,6 +2303,7 @@ class AssetManagementView(QWidget):
         split = QSplitter(Qt.Orientation.Vertical)
         self.table = _table(HOLD_COLS, len(HOLD_COLS) - 1)
         self.table.itemSelectionChanged.connect(self._show_detail)
+        self.table.itemSelectionChanged.connect(lambda: self._left_align_portfolio())
         self.table.doubleClicked.connect(self.edit_holding)
         split.addWidget(self.table)
         detail = QWidget()
@@ -2476,6 +2476,7 @@ class AssetManagementView(QWidget):
         self.portfolio_tabs.addTab(self.ic_page, "Intercompany")
         self.portfolio_tabs.currentChanged.connect(
             lambda *_: self.ic_page.fill() if self.portfolio_tabs.currentWidget() is self.ic_page else None)
+        self.portfolio_tabs.currentChanged.connect(lambda *_: self._left_align_portfolio())
         self.portfolio_area = self.portfolio_tabs
         self.tabs.addTab(self.portfolio_area, "Portfolio")
         self.tabs.setTabVisible(0, False)  # opened with the Portfolio Summary button at the top, not a tab
@@ -2658,7 +2659,27 @@ class AssetManagementView(QWidget):
                 if p.holding.id == keep:
                     self.table.selectRow(r)
         self._show_detail()
+        self._left_align_portfolio()
         self._update_attention(force=True)
+
+    def _left_align_portfolio(self) -> None:
+        """The portfolio pages (Summary, Holdings, Consolidated Financials, Managed Companies, Intercompany) read
+        left to right: every table's cells and headings aligned left."""
+        area = getattr(self, "portfolio_tabs", None)
+        if area is None:
+            return
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        for t in area.findChildren(QTableWidget):
+            t.horizontalHeader().setDefaultAlignment(left)
+            for c in range(t.columnCount()):
+                h = t.horizontalHeaderItem(c)
+                if h is not None:
+                    h.setTextAlignment(left)
+            for r in range(t.rowCount()):
+                for c in range(t.columnCount()):
+                    it = t.item(r, c)
+                    if it is not None:
+                        it.setTextAlignment(left)
 
     def _fill_holdings(self, t: QTableWidget, s: pfm.Summary) -> None:
         perfs = s.performances
