@@ -79,12 +79,16 @@ def test_page(app, tmp_path):
     r = next(i for i, (k, x) in enumerate(bt._rows) if k == "line" and x.line.category == "Groceries")
     bt.table.item(r, 1).setText("800")                           # budget a month
     r = next(i for i, (k, x) in enumerate(bt._rows) if k == "line" and x.line.category == "Groceries")
-    bt.table.item(r, 2).setText("$750")                          # January's actual
+    assert [bt.table.horizontalHeaderItem(c).text() for c in range(6)] == [
+        "Category", "Budget / month", "Budget to date", "Actual to date", "Variance", "Jan"]   # actual by the budget
+    bt.table.item(r, bt.JAN).setText("$750")                     # January's actual
     r = next(i for i, (k, x) in enumerate(bt._rows) if k == "line" and x.line.category == "Groceries")
-    assert bt.table.item(r, 1).text() == "$800.00" and bt.table.item(r, 2).text() == "$750.00"
-    assert bt.table.item(r, 14).text() == "$750.00"
+    assert bt.table.item(r, 1).text() == "$800.00" and bt.table.item(r, bt.JAN).text() == "$750.00"
+    assert bt.table.item(r, 3).text() == "$750.00"                # actual to date, beside the budget
+    assert bt.table.item(r, 2).text() == "$9,600.00"              # a past year: 12 × $800
+    assert bt.table.item(r, 4).text() == "$8,850.00"              # under budget by
     biz = next(i for i, (k, x) in enumerate(bt._rows) if k == "line" and x.line.category == pfi.BUSINESS)
-    assert bt.table.item(biz, 2).text() == "$12,000.00"
+    assert bt.table.item(biz, bt.JAN).text() == "$12,000.00"
     bt.add_category("Pet care", pfi.EXPENSE)
     assert any(k == "line" and x.line.category == "Pet care" for k, x in bt._rows)
     bt.remove_category("Pet care")
@@ -102,7 +106,7 @@ def test_page(app, tmp_path):
     assert inc.cards["total"].value.text() == "$14,500.00"
     page.tabs.setCurrentWidget(bt)                               # the budget picks it up
     biz = next(i for i, (k, x) in enumerate(bt._rows) if k == "line" and x.line.category == pfi.BUSINESS)
-    assert bt.table.item(biz, 14).text() == "$14,500.00"
+    assert bt.table.item(biz, 3).text() == "$14,500.00"
     page.resize(1300, 900)
     page.show()
     page.grab()
@@ -173,4 +177,36 @@ def test_budget_category_column_stays_put(app, tmp_path):
     tab.year.setValue(2025)                                                     # refilled: still only Category
     app.processEvents()
     assert all(f.isColumnHidden(c) for c in range(1, t.columnCount()))
+    pf.close()
+
+
+def test_budget_view_toggle(app, tmp_path):
+    from PySide6.QtCore import Qt
+
+    from am_accounting.gui.common import NEGATIVE, POSITIVE
+    from am_accounting.gui.personal_finance_page import BudgetTab
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    lines = pfi.budget_lines(pf, 2025)
+    for ln in lines:
+        if ln.category == "Groceries":
+            ln.budget = 800_00
+    pfi.save_budget_lines(pf, lines, 2025)
+    pfi.set_actual(pf, 2025, "Groceries", 1, 900_00)
+    pfi.set_actual(pf, 2025, "Groceries", 2, 700_00)
+    tab = BudgetTab(pf)
+    tab.year.setValue(2025)
+    t = tab.table
+    row = next(i for i, (k, x) in enumerate(tab._rows) if k == "line" and x.line.category == "Groceries")
+    shown = lambda: [t.horizontalHeaderItem(c).text() for c in range(tab.JAN) if not t.isColumnHidden(c)]  # noqa: E731
+    assert tab.mode == "vs" and shown() == ["Category", "Budget / month", "Budget to date", "Actual to date",
+                                            "Variance"]
+    jan, feb = t.item(row, tab.JAN), t.item(row, tab.JAN + 1)
+    assert jan.text() == "$900.00" and jan.foreground().color() == NEGATIVE   # over budget
+    assert feb.foreground().color() == POSITIVE                                # under
+    tab.view_btns["budget"].click()
+    assert shown() == ["Category", "Budget / month"] and t.item(row, tab.JAN + 5).text() == "$800.00"
+    tab.view_btns["actual"].click()
+    assert shown() == ["Category", "Actual to date"] and t.item(row, 3).text() == "$1,600.00"
+    assert t.item(row, tab.JAN).text() == "$900.00" and t.item(row, tab.JAN).flags() & Qt.ItemFlag.ItemIsEditable
     pf.close()

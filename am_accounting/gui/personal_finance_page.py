@@ -67,6 +67,25 @@ class BudgetTab(QWidget):
         top.addWidget(QLabel("Year:"))
         self.year = _year_box(self.fill)
         top.addWidget(self.year)
+        top.addSpacing(16)
+        # what the table shows: the budget, the actuals, or the two side by side
+        from PySide6.QtWidgets import QButtonGroup
+
+        self.mode = "vs"
+        self.view_group = QButtonGroup(self)
+        self.view_btns = {}
+        for key, text, tip in (("budget", "Budget", "Your budget: a month, and across each month"),
+                               ("actual", "Actual", "What actually came in and went out, month by month (type here)"),
+                               ("vs", "Budget vs Actual", "Budget to date against actual to date, and each month's "
+                                                          "actual against its budget (green better, red worse)")):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setChecked(key == self.mode)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda *_, k=key: self.set_mode(k))
+            self.view_group.addButton(b)
+            self.view_btns[key] = b
+            top.addWidget(b)
         top.addStretch(1)
         for text, slot, tip in (("Import from a Year…", self.import_year,
                                  "Start this year's budget from another year's — its budget, or what you actually "
@@ -116,7 +135,9 @@ class BudgetTab(QWidget):
         self._rows: list = []
         self.fill()
 
-    COLS = ["Category", "Budget / month"] + MONTHS + ["Year actual", "Budget to date", "Variance"]
+    # budget beside actual (so far this year) and the difference, then each month's actual
+    COLS = ["Category", "Budget / month", "Budget to date", "Actual to date", "Variance"] + MONTHS
+    JAN = 5                       # the column of January
 
     def fill(self) -> None:
         b = self.data = pfi.budget(self.pf, self.year.value())
@@ -147,18 +168,30 @@ class BudgetTab(QWidget):
                 t.item(i, 0).setToolTip("From Income from Businesses" if r.auto else "")
                 t.setItem(i, 1, _cell(fmt_money(r.line.budget) if r.line.budget else "", right=True, editable=True))
                 for m in range(1, 13):
+                    if self.mode == "budget":                 # the budget across the months
+                        bm = r.line.budget
+                        t.setItem(i, self.JAN - 1 + m, _cell(fmt_money(bm) if bm else "", right=True,
+                                                             colour=MUTED))
+                        continue
                     v = r.months.get(m, 0)
-                    c = _cell(fmt_money(v) if v else "", right=True, editable=not r.auto,
-                              colour=MUTED if r.auto else None)
+                    colour = MUTED if r.auto else None
+                    if self.mode == "vs" and r.line.budget and m <= n and v != r.line.budget:
+                        good = v < r.line.budget if spend else v > r.line.budget
+                        colour = POSITIVE if good else NEGATIVE
+                    c = _cell(fmt_money(v) if v else "", right=True, editable=not r.auto, colour=colour)
+                    if self.mode == "vs" and r.line.budget and m <= n:
+                        c.setToolTip(f"Budget {fmt_money(r.line.budget)} · actual {fmt_money(v)} · "
+                                     f"{'under' if v <= r.line.budget else 'over'} by "
+                                     f"{fmt_money(abs(r.line.budget - v))}")
                     if r.statements.get(m):
                         c.setToolTip(f"{fmt_money(r.statements[m])} from your statements"
                                      + (f" + {fmt_money(v - r.statements[m])} typed" if v != r.statements[m] else ""))
-                    t.setItem(i, 1 + m, c)
+                    t.setItem(i, self.JAN - 1 + m, c)
                 to_date = r.budget_to(n)
                 var = (to_date - r.actual) if spend else (r.actual - to_date)
-                t.setItem(i, 14, _cell(fmt_money(r.actual), right=True, bold=True))
-                t.setItem(i, 15, _cell(fmt_money(to_date) if r.line.budget else "", right=True))
-                t.setItem(i, 16, _cell(fmt_money(var) if r.line.budget else "", right=True,
+                t.setItem(i, 2, _cell(fmt_money(to_date) if r.line.budget else "", right=True))
+                t.setItem(i, 3, _cell(fmt_money(r.actual), right=True, bold=True))
+                t.setItem(i, 4, _cell(fmt_money(var) if r.line.budget else "", right=True,
                                        colour=(NEGATIVE if var < 0 else POSITIVE) if r.line.budget else None))
                 continue
             if kind == "total":
@@ -166,13 +199,14 @@ class BudgetTab(QWidget):
                 label = "Total income" if g == pfi.INCOME else "Total expenses"
                 bud = b.budget_total(g)
                 act = b.total(g)
-                vals = [label, fmt_money(bud)] + [fmt_money(b.total(g, m)) for m in range(1, 13)] + \
-                       [fmt_money(act), fmt_money(bud * n), fmt_money((act - bud * n) if g == pfi.INCOME
-                                                                     else (bud * n - act))]
+                vals = [label, fmt_money(bud), fmt_money(bud * n), fmt_money(act),
+                        fmt_money((act - bud * n) if g == pfi.INCOME else (bud * n - act))] + \
+                       [fmt_money(bud if self.mode == "budget" else b.total(g, m)) for m in range(1, 13)]
             else:
                 bud = b.budget_total(pfi.INCOME) - b.budget_total(pfi.EXPENSE)
-                vals = ["Saved (income − expenses)", fmt_money(bud)] + [fmt_money(b.net(m)) for m in range(1, 13)] + \
-                       [fmt_money(b.net()), fmt_money(bud * n), fmt_money(b.net() - bud * n)]
+                vals = ["Saved (income − expenses)", fmt_money(bud), fmt_money(bud * n), fmt_money(b.net()),
+                        fmt_money(b.net() - bud * n)] + [fmt_money(bud if self.mode == "budget" else b.net(m))
+                                                         for m in range(1, 13)]
             for c, v in enumerate(vals):
                 t.setItem(i, c, _cell(v, right=c > 0, bold=True))
         t.resizeColumnsToContents()
@@ -180,6 +214,9 @@ class BudgetTab(QWidget):
         for c in range(1, len(self.COLS)):
             t.setColumnWidth(c, max(t.columnWidth(c), 92))
         t.blockSignals(False)
+        shown = {"budget": {1}, "actual": {3}, "vs": {1, 2, 3, 4}}[self.mode]
+        for c in range(1, self.JAN):
+            t.setColumnHidden(c, c not in shown)
         # as tall as its lines (the page scrolls), plus room for the sideways scroll bar
         t.setFixedHeight(t.horizontalHeader().sizeHint().height() + sum(t.rowHeight(r) for r in range(t.rowCount()))
                          + t.horizontalScrollBar().sizeHint().height() + 2 * t.frameWidth() + 2)
@@ -213,9 +250,15 @@ class BudgetTab(QWidget):
                 if ln.category == r.line.category and ln.group == r.line.group:
                     ln.budget = v
             pfi.save_budget_lines(self.pf, lines, self.year.value())
-        elif 2 <= it.column() <= 13 and not r.auto:   # what you type is the month's total; the statements are part
-            m = it.column() - 1
+        elif self.JAN <= it.column() < self.JAN + 12 and not r.auto:   # the month's total; statements are part
+            m = it.column() - self.JAN + 1
             pfi.set_actual(self.pf, self.year.value(), r.line.category, m, v - r.statements.get(m, 0))
+        self.fill()
+
+    def set_mode(self, mode: str) -> None:
+        """Budget, Actual or Budget vs Actual."""
+        self.mode = mode
+        self.view_btns[mode].setChecked(True)
         self.fill()
 
     def import_year(self, *, run=None) -> bool:

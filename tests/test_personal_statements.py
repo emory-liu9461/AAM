@@ -106,11 +106,11 @@ def test_tab(app, tmp_path):
     assert st.cards["unsorted"].value.text() == "0"
     b = page.budget
     i = next(i for i, (k, x) in enumerate(b._rows) if k == "line" and x.line.category == "Dining out")
-    assert b.table.item(i, 4).text() == "$25.00"                             # March, from the statement
-    b.table.item(i, 4).setText("$40")                                       # typed total: $15 more in cash
+    assert b.table.item(i, b.JAN + 2).text() == "$25.00"                     # March, from the statement
+    b.table.item(i, b.JAN + 2).setText("$40")                                       # typed total: $15 more in cash
     assert pfi.actuals(pf, YEAR)["Dining out"][3] == 15_00
     i = next(i for i, (k, x) in enumerate(b._rows) if k == "line" and x.line.category == "Dining out")
-    assert b.table.item(i, 4).text() == "$40.00"
+    assert b.table.item(i, b.JAN + 2).text() == "$40.00"
     new = tmp_path / "Elsewhere"
     st.choose(str(new))
     assert pst.folder(pf) == new and new.is_dir()
