@@ -9,8 +9,8 @@ from PySide6.QtCore import QDate, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QStyledItemDelegate,
+                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import portfolio as pfm
 from ..money import fmt_money
@@ -2017,7 +2017,36 @@ def _table(cols: list[str], stretch: int | None = None) -> QTableWidget:
     return t
 
 
-def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2) -> None:
+class ColumnBoxes(QStyledItemDelegate):
+    """Draws a thin box around each column after the first (each company on the Portfolio Summary), with a little
+    space between one box and the next."""
+
+    GAP = 8
+
+    def paint(self, painter, option, index) -> None:
+        if index.column() == 0:
+            super().paint(painter, option, index)
+            return
+        from PySide6.QtGui import QPen
+        from PySide6.QtWidgets import QStyleOptionViewItem
+
+        inner = QStyleOptionViewItem(option)          # the text (and any shading) inside the box, off its edges
+        inner.rect = option.rect.adjusted(self.GAP // 2 + 1, 0, -(self.GAP // 2) - 1, 0)
+        super().paint(painter, inner, index)
+
+        r = option.rect.adjusted(self.GAP // 2, 0, -(self.GAP // 2) - 1, -1)
+        painter.save()
+        painter.setPen(QPen(option.palette.mid().color(), 1))
+        painter.drawLine(r.topLeft(), r.bottomLeft())
+        painter.drawLine(r.topRight(), r.bottomRight())
+        if index.row() == 0:
+            painter.drawLine(r.topLeft(), r.topRight())
+        if index.row() == index.model().rowCount() - 1:
+            painter.drawLine(r.bottomLeft(), r.bottomRight())
+        painter.restore()
+
+
+def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2, pad: int = 24) -> None:
     """Columns as wide as their numbers; each column's heading (a company name) wraps onto up to two lines and is
     cut with "…" if it still doesn't fit — the full name shows when you hover over it."""
     from PySide6.QtGui import QFontMetrics
@@ -2034,11 +2063,14 @@ def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2) -
         if c == 0:  # the row labels
             t.setColumnWidth(0, max(widest + 24, 110))
             continue
-        width = max(widest + 24, min_width)
+        width = max(widest + pad, min_width)
         t.setColumnWidth(c, width)
         if hi is None:
             continue
-        full = hi.data(Qt.ItemDataRole.UserRole) or hi.text()
+        # the full name: kept from the last time, unless the heading was set afresh since (headings are reused when
+        # the companies change, so an old name mustn't stick to the column)
+        wrapped = hi.data(Qt.ItemDataRole.UserRole + 1)
+        full = hi.data(Qt.ItemDataRole.UserRole) if wrapped is not None and wrapped == hi.text() else hi.text()
         hi.setData(Qt.ItemDataRole.UserRole, full)
         hi.setToolTip(full)
         room = width - 12
@@ -2056,6 +2088,7 @@ def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2) -
             lines = lines[:max_lines - 1] + [" ".join(lines[max_lines - 1:])]
         lines = [hfm.elidedText(x, Qt.TextElideMode.ElideRight, room) for x in lines]
         hi.setText("\n".join(lines))
+        hi.setData(Qt.ItemDataRole.UserRole + 1, hi.text())
 
 
 def _set_row(t: QTableWidget, r: int, vals: list, money_cols: set[int], *, bold: bool = False,
@@ -2073,7 +2106,7 @@ def _set_row(t: QTableWidget, r: int, vals: list, money_cols: set[int], *, bold:
         t.setItem(r, c, cell)
 
 
-SUM_ROWS = ["Type", "Held by", "",
+SUM_ROWS = ["Corporation", "Our share", "",
             "Value", "Debt", "NAV", "",
             "Revenue", "Op. Ex", "EBITDA", "",
             "Non-Op. Ex", "CapEx", "Net cash flow", "",
@@ -3270,7 +3303,7 @@ class AssetManagementView(QWidget):
             h, f = p.holding, (p.financials if p.has_books else None)
             held = owners.get(self.pf.owner_of(h), "")
             cols.append([
-                h.type, f"{held} · {h.ownership_pct:g}%" if held else f"{h.ownership_pct:g}%", "",
+                h.type, f"{h.ownership_pct:g}% (via {held})" if held else f"{h.ownership_pct:g}%", "",
                 fmt_money(p.company_value) if p.company_value is not None else "No value yet", fmt_money(p.debt),
                 fmt_money(p.nav), "",
                 *([fmt_money(f.revenue_ltm), fmt_money(f.opex_ltm), fmt_money(f.ebitda_ltm), "",
@@ -3322,7 +3355,10 @@ class AssetManagementView(QWidget):
                 if ci < len(perfs) and perfs[ci].holding.status == "exited":
                     cell.setForeground(MUTED)
                 t.setItem(r, ci + 1, cell)
-        fit_name_columns(t)
+        fit_name_columns(t, min_width=140, pad=56)        # room between one company and the next
+        if not isinstance(t.itemDelegate(), ColumnBoxes):
+            t.setItemDelegate(ColumnBoxes(t))             # a thin box around each company
+            t.setShowGrid(False)
         t.verticalHeader().setVisible(False)
 
     # -- customers & vendors of one company ------------------------------------

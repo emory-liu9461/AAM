@@ -380,3 +380,22 @@ def test_click_again_unselects_a_column_or_many_lines(app, tmp_path):
     assert t.selectionModel().selectedIndexes() == []
     t.close()
     w.close()
+
+
+def test_company_headings_follow_the_companies(app):
+    """Headings are reused when the companies change: an old name mustn't stick to a column."""
+    from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+    from am_accounting.gui.asset_mgmt import fit_name_columns
+
+    t = QTableWidget(1, 3)
+    t.setHorizontalHeaderLabels(["", "Alder Court Ltd", "Portfolio (our share)"])
+    t.setItem(0, 1, QTableWidgetItem("$1.00"))
+    fit_name_columns(t)
+    t.setColumnCount(4)
+    t.setHorizontalHeaderLabels(["", "Alder Court Ltd", "Birch Lane Ltd", "Portfolio (our share)"])
+    fit_name_columns(t)
+    assert [t.horizontalHeaderItem(c).toolTip() for c in (1, 2, 3)] == [
+        "Alder Court Ltd", "Birch Lane Ltd", "Portfolio (our share)"]
+    fit_name_columns(t)                                   # and again (wrapped headings keep their full names)
+    assert t.horizontalHeaderItem(2).toolTip() == "Birch Lane Ltd"
