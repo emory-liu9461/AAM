@@ -156,15 +156,45 @@ class Line:
     budget: int = 0               # a month
 
 
-def budget_lines(pf) -> list[Line]:
+def budget_lines(pf, year: int | None = None) -> list[Line]:
+    """The budget for ``year`` (its own, once it has one; otherwise the standing budget)."""
+    if year is not None:
+        own = _get(pf, "personal_budget_years", {}).get(str(year))
+        if own is not None:
+            return [Line(**r) for r in own]
     rows = _get(pf, "personal_budget", None)
     if rows is None:
         return [Line(INCOME, c) for c in INCOME_CATS] + [Line(EXPENSE, c) for c in EXPENSE_CATS]
     return [Line(**r) for r in rows]
 
 
-def save_budget_lines(pf, lines: list[Line]) -> None:
-    _put(pf, "personal_budget", [ln.__dict__ for ln in lines])
+def save_budget_lines(pf, lines: list[Line], year: int | None = None) -> None:
+    if year is None:
+        _put(pf, "personal_budget", [ln.__dict__ for ln in lines])
+        return
+    allv = _get(pf, "personal_budget_years", {})
+    allv[str(year)] = [ln.__dict__ for ln in lines]
+    _put(pf, "personal_budget_years", allv)
+
+
+def budget_years(pf) -> list[int]:
+    """Years with a budget of their own or anything entered."""
+    ys = {int(y) for y in _get(pf, "personal_budget_years", {})} | {int(y) for y in _get(pf, "personal_actuals", {})}
+    return sorted(ys)
+
+
+def import_budget(pf, from_year: int, to_year: int, how: str = "budget") -> list[Line]:
+    """Start ``to_year``'s budget from ``from_year``: its categories with its budget a month (``how="budget"``), or
+    with what you actually averaged a month that year (``how="actual"``). Replaces ``to_year``'s budget."""
+    lines = budget_lines(pf, from_year)
+    if how == "actual":
+        b = budget(pf, from_year)
+        months = b.through or 12
+        got = {(r.line.group, r.line.category): r.actual for r in b.rows}
+        for ln in lines:
+            ln.budget = round(got.get((ln.group, ln.category), 0) / months)
+    save_budget_lines(pf, lines, to_year)
+    return lines
 
 
 def actuals(pf, year: int) -> dict[str, dict[int, int]]:
@@ -219,7 +249,7 @@ class Budget:
 def budget(pf, year: int) -> Budget:
     from . import personal_statements as pst
 
-    lines = budget_lines(pf)
+    lines = budget_lines(pf, year)
     acts = actuals(pf, year)
     stm = pst.monthly(pf, year)
     biz = business_income(pf, year).by_month()

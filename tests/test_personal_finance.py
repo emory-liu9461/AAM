@@ -107,3 +107,70 @@ def test_page(app, tmp_path):
     page.show()
     page.grab()
     pf.close()
+
+
+def test_budget_table_and_chart_not_squeezed(app, tmp_path):
+    from am_accounting.gui.personal_finance_page import BudgetTab
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    tab = BudgetTab(pf)
+    tab.resize(1000, 500)                            # a small window
+    tab.show()
+    app.processEvents()
+    t = tab.table
+    assert t.height() >= sum(t.rowHeight(r) for r in range(t.rowCount()))   # every line, the page scrolls
+    assert tab.chart.height() >= 280 and tab.scroll.verticalScrollBar().maximum() > 0
+    pf.close()
+
+
+def test_import_budget_from_a_previous_year(app, tmp_path):
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    lines = pfi.budget_lines(pf, 2025)
+    for ln in lines:
+        if ln.category == "Groceries":
+            ln.budget = 800_00
+    lines.append(pfi.Line(pfi.EXPENSE, "Boat"))
+    pfi.save_budget_lines(pf, lines, 2025)
+    for m in range(1, 13):
+        pfi.set_actual(pf, 2025, "Groceries", m, 900_00)
+    assert all(ln.budget == 0 for ln in pfi.budget_lines(pf, 2026))        # each year its own budget
+    got = {ln.category: ln.budget for ln in pfi.import_budget(pf, 2025, 2026)}
+    assert got["Groceries"] == 800_00 and "Boat" in got
+    assert {ln.category: ln.budget for ln in pfi.budget_lines(pf, 2026)}["Groceries"] == 800_00
+    pfi.import_budget(pf, 2025, 2027, "actual")                            # what was actually spent a month
+    assert {ln.category: ln.budget for ln in pfi.budget_lines(pf, 2027)}["Groceries"] == 900_00
+    assert {ln.category: ln.budget for ln in pfi.budget_lines(pf, 2025)}["Groceries"] == 800_00   # untouched
+
+    from am_accounting.gui.personal_finance_page import BudgetTab
+
+    tab = BudgetTab(pf)
+    tab.year.setValue(2028)
+
+    def pick(dlg):
+        dlg.from_year.setValue(2025)
+        dlg.use_actual.setChecked(True)
+        return True
+
+    assert tab.import_year(run=pick)
+    assert {ln.category: ln.budget for ln in pfi.budget_lines(pf, 2028)}["Groceries"] == 900_00
+    pf.close()
+
+
+def test_budget_category_column_stays_put(app, tmp_path):
+    from am_accounting.gui.personal_finance_page import BudgetTab
+
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    tab = BudgetTab(pf)
+    tab.resize(700, 600)
+    tab.show()
+    app.processEvents()
+    t, f = tab.table, tab.frozen
+    assert f.isVisible() and f.width() == t.columnWidth(0)
+    assert all(f.isColumnHidden(c) for c in range(1, t.columnCount())) and not f.isColumnHidden(0)
+    t.horizontalScrollBar().setValue(t.horizontalScrollBar().maximum())        # scrolled all the way right
+    app.processEvents()
+    assert f.x() <= t.frameWidth() + 1 and f.model().index(2, 0).data() == t.item(2, 0).text()
+    tab.year.setValue(2025)                                                     # refilled: still only Category
+    app.processEvents()
+    assert all(f.isColumnHidden(c) for c in range(1, t.columnCount()))
+    pf.close()

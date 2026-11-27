@@ -68,7 +68,10 @@ class BudgetTab(QWidget):
         self.year = _year_box(self.fill)
         top.addWidget(self.year)
         top.addStretch(1)
-        for text, slot, tip in (("Add Category…", self.add_category, "A category of your own"),
+        for text, slot, tip in (("Import from a Year…", self.import_year,
+                                 "Start this year's budget from another year's — its budget, or what you actually "
+                                 "spent and earned a month that year"),
+                                ("Add Category…", self.add_category, "A category of your own"),
                                 ("Remove Category", self.remove_category, "Take the selected category off the budget")):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -81,16 +84,30 @@ class BudgetTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
-        split = QSplitter(Qt.Orientation.Vertical)
+        # the table (all its lines) and the chart below it, on one page that scrolls — nothing squeezed
+        from PySide6.QtWidgets import QScrollArea
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
         self.table = QTableWidget()
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.itemChanged.connect(self._edited)
-        split.addWidget(self.table)
+        from .frozen import freeze_first_column
+
+        self.frozen = freeze_first_column(self.table)     # Category stays put when scrolling sideways
+        bl.addWidget(self.table)
         self.chart = TimeChart("Income and spending by month (totals for the year)", legend_total=True)
-        split.addWidget(self.chart)
-        split.setSizes([520, 220])
-        lay.addWidget(split, 1)
+        self.chart.setMinimumHeight(280)
+        bl.addWidget(self.chart)
+        self.scroll = QScrollArea()
+        self.scroll.setWidget(body)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        lay.addWidget(self.scroll, 1)
         hint = QLabel("Type the monthly budget and each month's actual in the table. Business income comes from "
                       "Income from Businesses (your distributions and what you took from your companies).")
         hint.setObjectName("hint")
@@ -163,6 +180,9 @@ class BudgetTab(QWidget):
         for c in range(1, len(self.COLS)):
             t.setColumnWidth(c, max(t.columnWidth(c), 92))
         t.blockSignals(False)
+        # as tall as its lines (the page scrolls), plus room for the sideways scroll bar
+        t.setFixedHeight(t.horizontalHeader().sizeHint().height() + sum(t.rowHeight(r) for r in range(t.rowCount()))
+                         + t.horizontalScrollBar().sizeHint().height() + 2 * t.frameWidth() + 2)
         inc, exp = b.total(pfi.INCOME), b.total(pfi.EXPENSE)
         bud_net = (b.budget_total(pfi.INCOME) - b.budget_total(pfi.EXPENSE)) * n
         self.cards["income"].set(fmt_money(inc), f"budget {fmt_money(b.budget_total(pfi.INCOME) * n)} to date")
@@ -188,15 +208,47 @@ class BudgetTab(QWidget):
             self.fill()
             return
         if it.column() == 1:
-            lines = pfi.budget_lines(self.pf)
+            lines = pfi.budget_lines(self.pf, self.year.value())
             for ln in lines:
                 if ln.category == r.line.category and ln.group == r.line.group:
                     ln.budget = v
-            pfi.save_budget_lines(self.pf, lines)
+            pfi.save_budget_lines(self.pf, lines, self.year.value())
         elif 2 <= it.column() <= 13 and not r.auto:   # what you type is the month's total; the statements are part
             m = it.column() - 1
             pfi.set_actual(self.pf, self.year.value(), r.line.category, m, v - r.statements.get(m, 0))
         self.fill()
+
+    def import_year(self, *, run=None) -> bool:
+        """Pick a year and whether to take its budget or its actual monthly averages."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QRadioButton, QSpinBox
+
+        to = self.year.value()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Import the {to} budget from another year")
+        form = QFormLayout(dlg)
+        dlg.from_year = QSpinBox()
+        dlg.from_year.setRange(2000, 2100)
+        past = [y for y in pfi.budget_years(self.pf) if y != to]
+        dlg.from_year.setValue(max(past) if past else to - 1)
+        form.addRow("From year:", dlg.from_year)
+        dlg.use_budget = QRadioButton("Its budget a month")
+        dlg.use_actual = QRadioButton("What you actually earned and spent a month that year (average)")
+        dlg.use_budget.setChecked(True)
+        form.addRow("Use:", dlg.use_budget)
+        form.addRow("", dlg.use_actual)
+        note = QLabel(f"Replaces the {to} budget (categories and amounts). What you've entered as actuals stays.")
+        note.setObjectName("hint")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if not (run(dlg) if run is not None else dlg.exec()):
+            return False
+        pfi.import_budget(self.pf, dlg.from_year.value(), to, "actual" if dlg.use_actual.isChecked() else "budget")
+        self.fill()
+        return True
 
     def add_category(self, name: str | None = None, group: str | None = None) -> None:
         if name is None:
@@ -210,13 +262,13 @@ class BudgetTab(QWidget):
         name = (name or "").strip()
         if not name:
             return
-        lines = pfi.budget_lines(self.pf)
+        lines = pfi.budget_lines(self.pf, self.year.value())
         if any(ln.category.lower() == name.lower() for ln in lines):
             return
         group = group or pfi.EXPENSE
         last = max((i for i, ln in enumerate(lines) if ln.group == group), default=len(lines) - 1)
         lines.insert(last + 1, pfi.Line(group, name))
-        pfi.save_budget_lines(self.pf, lines)
+        pfi.save_budget_lines(self.pf, lines, self.year.value())
         self.fill()
 
     def remove_category(self, category: str | None = None) -> None:
@@ -227,7 +279,8 @@ class BudgetTab(QWidget):
             category = self._rows[r][1].line.category
         if category == pfi.BUSINESS:
             return
-        pfi.save_budget_lines(self.pf, [ln for ln in pfi.budget_lines(self.pf) if ln.category != category])
+        pfi.save_budget_lines(self.pf, [ln for ln in pfi.budget_lines(self.pf, self.year.value())
+                                        if ln.category != category], self.year.value())
         self.fill()
 
 
@@ -436,7 +489,15 @@ class PersonalFinancePage(QWidget):
         self.bank_tab.addWidget(self.banks)
         self.bank_tab.addWidget(self.statements)
         self.bank_tab.setSizes([300, 520])
-        self.tabs.insertTab(1, self.bank_tab, "Bank Accounts")
+        self.bank_tab.setChildrenCollapsible(False)
+        self.statements.table.setMinimumHeight(240)      # the transactions always get room (the tab scrolls)
+        from PySide6.QtWidgets import QScrollArea
+
+        self.bank_scroll = QScrollArea()
+        self.bank_scroll.setWidget(self.bank_tab)
+        self.bank_scroll.setWidgetResizable(True)
+        self.bank_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.tabs.insertTab(1, self.bank_scroll, "Bank Accounts")
         self.tabs.insertTab(2, self.investments, "Investments")
         self.banks.on_change = self.net_worth.refresh
         self.investments.on_change = self.net_worth.refresh
@@ -447,7 +508,7 @@ class PersonalFinancePage(QWidget):
         w = self.tabs.currentWidget()
         if w is self.net_worth:
             self.net_worth.refresh()
-        elif w is self.bank_tab:
+        elif w is self.bank_scroll:
             self.banks.fill()
             self.statements.read_now()          # new statements in the folder are read when you open it
         else:
