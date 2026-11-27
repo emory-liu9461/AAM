@@ -45,9 +45,10 @@ class _Entries(QGroupBox):
                                                                 | Qt.AlignmentFlag.AlignVCenter)
         self.table.setColumnWidth(3, 70)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 250)
+        self.table.setColumnWidth(0, 160)
         self.table.setColumnWidth(2, 130)
         self.table.verticalHeader().hide()
+        self.compact = self.table.fontMetrics().height() + 10
         self.table.itemChanged.connect(self._edited)
         self.table.cellDoubleClicked.connect(self._double)
         # as tall as its lines (the page scrolls, not the table), so nothing is cut off
@@ -86,7 +87,9 @@ class _Entries(QGroupBox):
                     f.setBold(True)
                     it.setFont(f)
                 t.setItem(r, c, it)
+            t.setRowHeight(r, self.compact)            # read-only lines: tight (typed ones keep room to type)
         self.n_auto = len(rows)
+        self.fit()
         t.blockSignals(False)
 
     def auto_rows(self) -> list[tuple[str, str, str]]:
