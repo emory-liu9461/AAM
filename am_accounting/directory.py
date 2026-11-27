@@ -155,8 +155,117 @@ def from_portfolio(pf) -> int:
             if where not in p.works_on:
                 p.works_on.append(where)
     n = 0
+    existing = {p.name.strip().lower(): p for p in people(pf)}
     for key, p in found.items():
         if key not in have:
             save(pf, p)
             n += 1
+        else:                               # already a contact: put them on the properties they're on
+            q = existing[key]
+            more = [w for w in p.works_on if w not in q.works_on]
+            if more:
+                q.works_on += more
+                save(pf, q)
     return n
+
+
+# ---- projects (a deal and the property it became are one project) ----
+
+def _short(pf, h) -> str:
+    from . import personal as pers
+
+    try:
+        return pers.short_name(pf, h)
+    except Exception:  # noqa: BLE001
+        return h.name
+
+
+def project_names(pf, *, holding=None, deal=None) -> tuple[str, list[str]]:
+    """(the name people are linked under, every name the project goes by) for a property or a deal."""
+    from . import deals as dl
+
+    names: list[str] = []
+    try:
+        all_deals = dl.deals(pf)
+    except Exception:  # noqa: BLE001
+        all_deals = []
+    if deal is not None and deal.holding_id is not None:
+        holding = next((h for h in pf.holdings() if h.id == deal.holding_id), holding)
+    if holding is not None:
+        primary = _short(pf, holding)
+        names += [primary, holding.name]
+        names += [d.name for d in all_deals if d.holding_id == holding.id]
+    else:
+        primary = deal.name if deal is not None else ""
+    if deal is not None:
+        names.append(deal.name)
+    names = list(dict.fromkeys(n for n in names if n))
+    return primary or (names[0] if names else ""), names
+
+
+def on_project(pf, names: list[str], kind: str | None = None) -> list[Person]:
+    """The contacts on a project (any of its names), by kind then name."""
+    want = {n.strip().lower() for n in names if n.strip()}
+    out = [p for p in people(pf, kind) if want & {w.strip().lower() for w in p.works_on}]
+    order = {k: i for i, k in enumerate(KINDS)}
+    return sorted(out, key=lambda p: (order.get(p.kind, len(KINDS)), p.name.lower()))
+
+
+def link(pf, p: Person, name: str) -> None:
+    if name and name not in p.works_on:
+        p.works_on.append(name)
+        save(pf, p)
+
+
+def unlink(pf, p: Person, names: list[str]) -> None:
+    drop = {n.strip().lower() for n in names}
+    keep = [w for w in p.works_on if w.strip().lower() not in drop]
+    if keep != p.works_on:
+        p.works_on = keep
+        save(pf, p)
+
+
+def find(pf, name: str) -> Person | None:
+    """The contact with this name (or company), if there is one."""
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    ps = people(pf)
+    return (next((p for p in ps if p.name.strip().lower() == key), None)
+            or next((p for p in ps if p.company.strip().lower() == key), None))
+
+
+def details(p: Person) -> str:
+    """One line of how to reach someone."""
+    return " · ".join(x for x in (p.company if p.company != p.name else "", p.phone, p.email, p.address) if x)
+
+
+# ---- into a company's books: someone from Contacts as a vendor (or customer) of that company ----
+
+BOOKS_TYPE = {"Contractor": "Contractor", "Lender": "Lender", "Mortgage broker": "Supplier", "Investor": "Shareholder",
+              "Other": "Other"}
+
+
+def book_name(p: Person) -> str:
+    """The name they go by in the books: their company (how bills and the bank show them), else their own name."""
+    return (p.company or p.name).strip()
+
+
+def assign(books, p: Person, role: str = "vendor"):
+    """Make ``p`` a vendor (or customer) in ``books``: added to its Customers & Vendors with their phone, email and
+    address, or, if they're there already, made that role too. Returns the books' contact."""
+    from . import contacts as ct
+
+    name = book_name(p)
+    c = ct.find(books, name) or (ct.find(books, p.name) if p.company else None)
+    if c is None:
+        c = ct.Contact(name, role, BOOKS_TYPE.get(p.kind, "Supplier" if role == "vendor" else "Customer"),
+                       email=p.email, phone=p.phone, address=p.address,
+                       aliases=[p.name] if p.company and p.company.strip().lower() != p.name.strip().lower() else [],
+                       notes=f"{p.kind} — from Contacts")
+    else:
+        if c.role != role and c.role != "both":
+            c.role = "both"
+        c.email, c.phone, c.address = c.email or p.email, c.phone or p.phone, c.address or p.address
+    ct.save(books, c)
+    return c

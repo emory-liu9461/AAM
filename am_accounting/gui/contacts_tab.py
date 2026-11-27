@@ -164,6 +164,7 @@ class ContactsTab(QWidget):
         super().__init__()
         self.books = books
         self.companies = None          # () -> [company file paths]: vendors are shared by all of them
+        self.directory = None          # () -> (portfolio, project name): your Contacts, to pick vendors from
         lay = QVBoxLayout(self)
         bar = QHBoxLayout()
         self.which = QButtonGroup(self)
@@ -184,6 +185,11 @@ class ContactsTab(QWidget):
         self.new_btn.setObjectName("primary")
         self.new_btn.clicked.connect(lambda: self.new(self._role()))
         bar.addWidget(self.new_btn)
+        self.pick_btn = QPushButton("Add from Contacts…")
+        self.pick_btn.setToolTip("Make people from your Contacts (beside Personal Finance) vendors — or customers — of "
+                                 "this company, with their phone, email and address")
+        self.pick_btn.clicked.connect(lambda: self.from_directory())
+        bar.addWidget(self.pick_btn)
         lay.addLayout(bar)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
@@ -309,6 +315,39 @@ class ContactsTab(QWidget):
     def _selected(self) -> ct.Contact | None:
         sel = self.table.selectionModel().selectedRows()
         return self.rows[sel[0].row()].contact if sel else None
+
+    def from_directory(self, *, run=None) -> list:
+        """Pick people from your Contacts and make them vendors (or customers, per the list shown) here."""
+        if self.directory is None:
+            return []
+        from .. import directory as dr
+        from .directory_page import PickContactsDialog
+
+        try:
+            pf, project = self.directory()
+        except Exception as e:  # noqa: BLE001
+            error(self, "Contacts", f"Couldn't open your contacts: {e}")
+            return []
+        role = self._role()
+        dlg = PickContactsDialog(pf, set(), self, "Contractor" if role == "vendor" else None)
+        dlg.setWindowTitle("Add Vendors from Contacts" if role == "vendor" else "Add Customers from Contacts")
+        if not (run(dlg) if run is not None else dlg.exec()):
+            return []
+        ids = set(dlg.chosen())
+        out = []
+        for p in dr.people(pf):
+            if p.id in ids:
+                try:
+                    out.append(dr.assign(self.books, p, role))
+                except ValueError as e:
+                    error(self, "Couldn't add", f"{p.label}: {e}")
+                    continue
+                if project:
+                    dr.link(pf, p, project)
+        if out:
+            self.refresh()
+            self.changed.emit()
+        return out
 
     def new(self, role: str) -> None:
         if ContactDialog(self.books, role=role, parent=self).exec():

@@ -105,6 +105,11 @@ class DirectoryPage(QWidget):
         self.kind = QComboBox()
         self.kind.currentIndexChanged.connect(lambda *_: self.fill())
         bar.addWidget(self.kind)
+        bar.addWidget(QLabel("Project:"))
+        self.project = QComboBox()
+        self.project.setMinimumWidth(160)
+        self.project.currentIndexChanged.connect(lambda *_: self.fill())
+        bar.addWidget(self.project)
         for text, slot, tip in (("New Contact…", self.new, "Add someone"),
                                 ("Edit…", self.edit, "Change the selected contact"),
                                 ("Delete", self.delete, "Remove the selected contact"),
@@ -148,9 +153,24 @@ class DirectoryPage(QWidget):
         self.kind.setCurrentIndex(max(0, self.kind.findData(want)))
         self.kind.blockSignals(False)
 
+    def _projects(self) -> None:
+        want = self.project.currentData()
+        names = list(dict.fromkeys(dr.places(self.pf) + [w for p in dr.people(self.pf) for w in p.works_on]))
+        self.project.blockSignals(True)
+        self.project.clear()
+        self.project.addItem("All", None)
+        for n in names:
+            self.project.addItem(n, n)
+        self.project.setCurrentIndex(max(0, self.project.findData(want)))
+        self.project.blockSignals(False)
+
     def fill(self) -> None:
         self._kinds()
+        self._projects()
         self.rows = dr.people(self.pf, self.kind.currentData(), self.search.text())
+        if self.project.currentData():
+            want = self.project.currentData().lower()
+            self.rows = [p for p in self.rows if want in {w.lower() for w in p.works_on}]
         t = self.table
         t.setRowCount(len(self.rows))
         for r, p in enumerate(self.rows):
@@ -208,3 +228,202 @@ class DirectoryPage(QWidget):
             info(self, "Contacts", f"{n} investor(s) and lender(s) added from the portfolio." if n else
                  "Everyone on the cap tables and loans is already here.")
         return n
+
+
+PROJECT_COLS = ["Name", "Kind", "Company", "Phone", "Email", "Notes"]
+
+
+class PickContactsDialog(QDialog):
+    """Choose people from your contacts (the whole list, searchable by kind) to put on a project."""
+
+    def __init__(self, pf, exclude: set[int], parent=None, kind: str | None = None):
+        super().__init__(parent)
+        self.pf, self.exclude = pf, exclude
+        self.setWindowTitle("Add from Contacts")
+        self.resize(640, 460)
+        lay = QVBoxLayout(self)
+        bar = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search name, company, phone …")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda *_: self.fill())
+        bar.addWidget(self.search, 1)
+        bar.addWidget(QLabel("Kind:"))
+        self.kind = QComboBox()
+        self.kind.addItem("All", None)
+        for k in dr.KINDS:
+            self.kind.addItem(k, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(kind)))
+        self.kind.currentIndexChanged.connect(lambda *_: self.fill())
+        bar.addWidget(self.kind)
+        lay.addLayout(bar)
+        self.list = QListWidget()
+        lay.addWidget(self.list, 1)
+        hint = QLabel("Tick everyone to put on this project. Someone new? Use New Contact… on the project instead.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.ticked: set[int] = set()
+        self.fill()
+
+    def _remember(self) -> None:
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            pid = it.data(Qt.ItemDataRole.UserRole)
+            if it.checkState() == Qt.CheckState.Checked:
+                self.ticked.add(pid)
+            else:
+                self.ticked.discard(pid)
+
+    def fill(self) -> None:
+        self._remember()
+        self.list.clear()
+        self.rows = [p for p in dr.people(self.pf, self.kind.currentData(), self.search.text())
+                     if p.id not in self.exclude]
+        for p in self.rows:
+            extra = dr.details(p)
+            it = QListWidgetItem(f"{p.name}  —  {p.kind}" + (f"  ·  {extra}" if extra else ""))
+            it.setData(Qt.ItemDataRole.UserRole, p.id)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if p.id in self.ticked else Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+
+    def chosen(self) -> list[int]:
+        self._remember()
+        return sorted(self.ticked)
+
+
+class ProjectContacts(QWidget):
+    """The people on one project (a deal, or the property it became): brokers, lenders, contractors, investors …
+    Picked from your contacts, or added new (and so kept in Contacts too). Investors on the cap table and lenders on
+    the loans come in by themselves."""
+
+    def __init__(self, pf, primary: str, names: list[str], parent=None, *, sync: bool = True):
+        super().__init__(parent)
+        self.pf, self.primary, self.names = pf, primary, list(dict.fromkeys([primary] + names))
+        self.sync = sync
+        lay = QVBoxLayout(self)
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("Kind:"))
+        self.kind = QComboBox()
+        self.kind.addItem("All", None)
+        for k in dr.KINDS:
+            self.kind.addItem(k, k)
+        self.kind.currentIndexChanged.connect(lambda *_: self.fill())
+        bar.addWidget(self.kind)
+        for text, slot, tip in (("Add from Contacts…", self.add_existing,
+                                 "Put people already in Contacts (contractors, brokers, lenders …) on this project"),
+                                ("New Contact…", self.new, "Someone new: kept in Contacts and put on this project"),
+                                ("Edit…", self.edit, "Change the selected person's details"),
+                                ("Remove from Project", self.remove,
+                                 "Take the selected person off this project (they stay in Contacts)"),
+                                ("Email", self.email, "Write to the selected person (your email program)")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            if text.startswith("Add"):
+                b.setObjectName("primary")
+            b.clicked.connect(lambda *_, f_=slot: f_())
+            bar.addWidget(b)
+        bar.addStretch(1)
+        lay.addLayout(bar)
+        box = QGroupBox(f"People on {primary}" if primary else "People on this project")
+        bl = QVBoxLayout(box)
+        self.table = QTableWidget(0, len(PROJECT_COLS))
+        self.table.setHorizontalHeaderLabels(PROJECT_COLS)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.table.doubleClicked.connect(lambda *_: self.edit())
+        bl.addWidget(self.table)
+        self.empty = QLabel()
+        self.empty.setObjectName("hint")
+        self.empty.setWordWrap(True)
+        bl.addWidget(self.empty)
+        lay.addWidget(box, 1)
+        hint = QLabel("Everyone here is also in Contacts (beside Personal Finance at the top). Investors on the cap "
+                      "table and lenders on the loans are added by themselves.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.rows: list[dr.Person] = []
+        self.fill()
+
+    def fill(self) -> None:
+        if self.sync:
+            try:
+                dr.from_portfolio(self.pf)
+            except Exception:  # noqa: BLE001
+                pass
+        self.rows = dr.on_project(self.pf, self.names, self.kind.currentData())
+        t = self.table
+        t.setRowCount(len(self.rows))
+        for r, p in enumerate(self.rows):
+            for c, v in enumerate([p.name, p.kind, p.company, p.phone, p.email, p.notes.replace("\n", " ")]):
+                it = QTableWidgetItem(v)
+                it.setToolTip("\n".join(x for x in (p.label, p.phone, p.email, p.address, p.website) if x))
+                t.setItem(r, c, it)
+        t.resizeColumnsToContents()
+        for c in range(5):
+            t.setColumnWidth(c, min(max(t.columnWidth(c), 90), 240))
+        t.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.empty.setVisible(not self.rows)
+        self.empty.setText("No one on this project yet — Add from Contacts… (e.g. your mortgage broker or "
+                           "contractors), or New Contact….")
+
+    def refresh(self) -> None:
+        self.fill()
+
+    def _selected(self) -> dr.Person | None:
+        r = self.table.currentRow()
+        return self.rows[r] if 0 <= r < len(self.rows) and self.table.selectionModel().hasSelection() else None
+
+    def add_existing(self, *, run=None) -> list[int]:
+        have = {p.id for p in dr.on_project(self.pf, self.names)}
+        dlg = PickContactsDialog(self.pf, have, self, self.kind.currentData())
+        ok = run(dlg) if run is not None else dlg.exec()
+        if not ok:
+            return []
+        ids = dlg.chosen()
+        for p in dr.people(self.pf):
+            if p.id in ids:
+                dr.link(self.pf, p, self.primary)
+        self.fill()
+        return ids
+
+    def new(self, *, run=None):
+        p = dr.Person("", kind=self.kind.currentData() or "Other", works_on=[self.primary] if self.primary else [])
+        dlg = PersonDialog(self.pf, p, self)
+        ok = run(dlg) if run is not None else dlg.exec()
+        if ok:
+            self.fill()
+        return ok
+
+    def edit(self, *, run=None):
+        p = self._selected()
+        if p is None:
+            return None
+        dlg = PersonDialog(self.pf, p, self)
+        ok = run(dlg) if run is not None else dlg.exec()
+        if ok:
+            self.fill()
+        return ok
+
+    def remove(self, *, ask: bool = True) -> bool:
+        p = self._selected()
+        if p is None or (ask and not confirm(self, "Remove from project",
+                                             f"Take {p.label} off {self.primary}? They stay in your contacts.")):
+            return False
+        dr.unlink(self.pf, p, self.names)
+        self.fill()
+        return True
+
+    def email(self) -> None:
+        p = self._selected()
+        if p and p.email:
+            QDesktopServices.openUrl(QUrl(f"mailto:{p.email}"))

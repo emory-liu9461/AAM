@@ -198,6 +198,20 @@ class DealDialog(QDialog):
         self.folder_tab = DealFolderTab(pf, d)
         tabs.addTab(self.folder_tab, "Deal Folder")
 
+        # the people on the deal: mortgage broker, lenders, lawyer, contractors, investors … (from Contacts)
+        if d.id is not None:
+            from .. import directory as dr
+            from .directory_page import ProjectContacts
+
+            primary, names = dr.project_names(pf, deal=d)
+            self.contacts = ProjectContacts(pf, primary, names)
+        else:
+            self.contacts = QLabel("Save the deal, then open it again to put people on it (broker, lender, lawyer, "
+                                   "contractors …) from your contacts.")
+            self.contacts.setWordWrap(True)
+            self.contacts.setAlignment(Qt.AlignmentFlag.AlignTop)
+        tabs.addTab(self.contacts, "Deal Team")
+
         # notes
         self.notes = QPlainTextEdit(d.notes)
         self.notes.setPlaceholderText("Anything about the deal: seller's story, pricing guidance, issues found…")

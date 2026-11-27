@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2500, self.share_vendors)
         self.contacts_tab.companies = lambda: [p for _n, p, _r in self._company_choices()]
         self.contacts_tab.changed.connect(self.share_vendors)
+        self.contacts_tab.directory = self._directory_for_books
 
     # -- menus --------------------------------------------------------------
 
@@ -635,6 +636,22 @@ class MainWindow(QMainWindow):
         path = self.reports_tab.save_trial_balance()
         if path:
             self.statusBar().showMessage(f"Trial balance saved: {path}", 10000)
+
+    def _directory_for_books(self):
+        """Your Contacts (in the portfolio file) and the project these books are, for Add from Contacts."""
+        from .. import directory as dr
+        from .. import portfolio as pfm
+
+        pf = self.asset_view.pf if self.asset_view is not None else pfm.Portfolio(self.portfolio_path())
+        project = ""
+        try:
+            path = self.books.path
+            h = next((h for h in pf.holdings() if h.company_path and pfm._same_file(h.company_path, path)), None)
+            if h is not None:
+                project = dr.project_names(pf, holding=h)[0]
+        except Exception:  # noqa: BLE001
+            pass
+        return pf, project
 
     def share_vendors(self) -> None:
         """Every company gets the vendors the others have (see shared_vendors.py)."""

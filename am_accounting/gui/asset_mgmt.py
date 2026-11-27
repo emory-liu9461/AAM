@@ -681,6 +681,17 @@ class ShareholderDialog(QDialog):
         self.company = QLineEdit(src.company)
         self.company.setPlaceholderText("If they hold through a company, e.g. Morgan Holdings Inc (optional)")
         form.addRow("Company name:", self.company)
+        # how to reach them: kept in Contacts (as an investor on this property)
+        from .. import directory as dr
+
+        known = dr.find(pf, src.name) or dr.find(pf, src.company)
+        self.phone = QLineEdit(known.phone if known else "")
+        form.addRow("Phone:", self.phone)
+        self.email = QLineEdit(known.email if known else "")
+        form.addRow("Email:", self.email)
+        self.address = QLineEdit(known.address if known else "")
+        form.addRow("Address:", self.address)
+        self.name.editingFinished.connect(self._contact_details)
         self.share_class = QComboBox()
         self.share_class.setEditable(True)
         self.share_class.addItems(pfm.SHARE_CLASSES)
@@ -739,7 +750,37 @@ class ShareholderDialog(QDialog):
         except ValueError as e:
             error(self, "Couldn't save", str(e))
             return
+        self._save_contact(x)
         self.accept()
+
+    def _contact_details(self) -> None:
+        """Typing the name of someone already in Contacts fills in how to reach them."""
+        from .. import directory as dr
+
+        known = dr.find(self.pf, self.name.text()) or dr.find(self.pf, self.company.text())
+        if known:
+            for box, v in ((self.phone, known.phone), (self.email, known.email), (self.address, known.address)):
+                if not box.text().strip():
+                    box.setText(v)
+
+    def _save_contact(self, x) -> None:
+        """Investors (not you or your holding company) go into Contacts, on this property, with their details."""
+        from .. import directory as dr
+
+        name = (x.name or x.company).strip()
+        if not name or x.link in ("me", "holdco"):
+            return
+        try:
+            p = dr.find(self.pf, name) or dr.Person(name, x.company if x.company != name else "", "Investor")
+            for attr, box in (("phone", self.phone), ("email", self.email), ("address", self.address)):
+                if box.text().strip():
+                    setattr(p, attr, box.text().strip())
+            where, _names = dr.project_names(self.pf, holding=self.holding)
+            if where and where not in p.works_on:
+                p.works_on.append(where)
+            dr.save(self.pf, p)
+        except Exception:  # noqa: BLE001 - the owner is saved; Contacts is a convenience
+            pass
 
 
 LOAN_SUMMARY_COLS = ["Lender", "Facility", "Type", "Balance", "Rate", "Payment", "Maturity"]
@@ -3276,6 +3317,11 @@ class AssetManagementView(QWidget):
         self.cv_period.currentIndexChanged.connect(lambda *_: self._fill_parties())
         row.addWidget(self.cv_period)
         row.addStretch(1)
+        pick_b = QPushButton("Add Vendor from Contacts…")
+        pick_b.setToolTip("Pick people from your Contacts (e.g. an electrician) and make them vendors of this company, "
+                          "with their phone, email and address")
+        pick_b.clicked.connect(lambda: self.cv_from_directory())
+        row.addWidget(pick_b)
         open_b = QPushButton("Assign Names in the Books…")
         open_b.setToolTip("Opens the company's Transactions with no customer / vendor: select them and Set "
                           "Customer / Vendor… (or name them on invoices and bills), and they show here")
@@ -3470,6 +3516,39 @@ class AssetManagementView(QWidget):
         i = self.cv_pick.findData(self.ops_page.pick.currentData())
         if i >= 0 and i != self.cv_pick.currentIndex():
             self.cv_pick.setCurrentIndex(i)
+
+    def cv_from_directory(self, *, run=None) -> list:
+        """Make people from Contacts vendors of the company shown (in its books)."""
+        from .. import directory as dr
+        from ..books import Books
+        from .directory_page import PickContactsDialog
+
+        hid = self.cv_pick.currentData()
+        p = next((x for x in (self.summary.performances if self.summary else []) if x.holding.id == hid), None)
+        if p is None or not p.holding.company_path or not Path(p.holding.company_path).exists():
+            error(self, "Add vendor", "Pick a company linked to its books first.")
+            return []
+        dlg = PickContactsDialog(self.pf, set(), self, "Contractor")
+        dlg.setWindowTitle(f"Add Vendors from Contacts – {p.holding.name}")
+        if not (run(dlg) if run is not None else dlg.exec()):
+            return []
+        ids = set(dlg.chosen())
+        project = dr.project_names(self.pf, holding=p.holding)[0]
+        out = []
+        books = Books.open(p.holding.company_path, create=False)
+        try:
+            for person in dr.people(self.pf):
+                if person.id in ids:
+                    try:
+                        out.append(dr.assign(books, person, "vendor"))
+                    except ValueError as e:
+                        error(self, "Couldn't add", f"{person.label}: {e}")
+                        continue
+                    dr.link(self.pf, person, project)
+        finally:
+            books.close()
+        self._fill_parties()
+        return out
 
     def _cv_open_books(self) -> None:
         hid = self.cv_pick.currentData()
@@ -3814,6 +3893,7 @@ class AssetManagementView(QWidget):
         names = {pth: n for n, pth, _r in self._companies()}
         holders = pfm.cap_table(self.pf, p, names.get(self.pf.owner_of(p.holding), ""))
         classes = pfm.class_totals(holders)
+        from .. import directory as dr
         from .. import personal as pers
 
         saved = pers.load(self.pf)
@@ -3847,6 +3927,9 @@ class AssetManagementView(QWidget):
                      fmt_money(x.value) if x.value is not None else "—",
                      "worked out from the ownership % — Edit to enter" if x.worked_out else x.note],
                     owner=x, muted_note=x.worked_out)
+                who = dr.find(self.pf, x.name) or dr.find(self.pf, x.company) if not x.worked_out else None
+                if who is not None and dr.details(who):
+                    t.item(t.rowCount() - 1, 0).setToolTip(f"{who.label}\n" + dr.details(who).replace(" · ", "\n"))
             if many:
                 add([f"Total {cls}", "", "", fmt_money(amt), f"{share * 100:.2f}%", fmt_money(fund),
                      ("over by " + fmt_money(fund - amt)) if fund > amt else "",
