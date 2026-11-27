@@ -14,10 +14,29 @@ from ..money import fmt_money
 from .common import ALIGN_RIGHT, MUTED, confirm, error, fill_account_combo
 
 
+# () -> (portfolio, project name): your Contacts, for suggesting contractors on a new vendor (set by the main window)
+directory_source = None
+
+
+def contractors(source=None) -> list:
+    """Everyone labeled Contractor in your Contacts."""
+    source = source or directory_source
+    if source is None:
+        return []
+    from .. import directory as dr
+
+    try:
+        pf, _project = source()
+        return dr.people(pf, "Contractor")
+    except Exception:  # noqa: BLE001
+        return []
+
+
 class ContactDialog(QDialog):
     """Add or edit a customer / vendor."""
 
-    def __init__(self, books: Books, contact: ct.Contact | None = None, *, role: str = "customer", parent=None):
+    def __init__(self, books: Books, contact: ct.Contact | None = None, *, role: str = "customer", parent=None,
+                 suggest=None):
         super().__init__(parent)
         self.books = books
         self.contact = contact or ct.Contact("", role, "Customer" if role == "customer" else "Supplier")
@@ -27,6 +46,11 @@ class ContactDialog(QDialog):
         form = QFormLayout(self)
         self.name = QLineEdit(c.name)
         self.name.setPlaceholderText("e.g. Sister Co Ltd, Alex Morgan, Harbor Supply Co")
+        self.suggest_hint = None
+        if contact is None and suggest is None and role in ("vendor", "both"):
+            suggest = contractors()
+        if contact is None and suggest:
+            self._suggest(suggest)
         self.role = QComboBox()
         for k, v in ct.ROLES.items():
             self.role.addItem(v, k)
@@ -70,6 +94,8 @@ class ContactDialog(QDialog):
         self.active = QCheckBox("Active (shown in pick lists)")
         self.active.setChecked(c.active)
         form.addRow("Name:", self.name)
+        if self.suggest_hint is not None:
+            form.addRow("", self.suggest_hint)
         form.addRow("Customer / vendor:", self.role)
         form.addRow("Type:", self.type)
         self.rec_label = QLabel("Receivable account:")
@@ -100,6 +126,48 @@ class ContactDialog(QDialog):
         self.role.currentIndexChanged.connect(self._role_changed)
         self.type.currentTextChanged.connect(self._role_changed)
         self._role_changed()
+
+    def _suggest(self, people) -> None:
+        """A new vendor: your contractors (from Contacts) are suggested as you type the name; picking one fills
+        in their type, phone, email and address."""
+        from PySide6.QtCore import QStringListModel
+        from PySide6.QtWidgets import QCompleter
+
+        from .. import directory as dr
+
+        self._people = {}
+        for p in people:
+            self._people.setdefault(dr.book_name(p), p)
+            self._people.setdefault(p.name.strip(), p)
+        self._suggest_model = QStringListModel(sorted(self._people, key=str.lower), self)
+        comp = QCompleter(self._suggest_model, self)
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchFlag.MatchContains)
+        comp.activated.connect(self.use_suggestion)
+        self.name.setCompleter(comp)
+        self.name.setPlaceholderText("Start typing — your contractors from Contacts are suggested")
+        self.suggest_hint = QLabel(f"Suggested from Contacts: {len(people)} contractor(s) — " +
+                                   ", ".join(sorted({dr.book_name(p) for p in people}, key=str.lower)[:6]) +
+                                   (" …" if len(people) > 6 else ""))
+        self.suggest_hint.setObjectName("hint")
+        self.suggest_hint.setWordWrap(True)
+
+    def use_suggestion(self, text: str) -> None:
+        from .. import directory as dr
+
+        p = getattr(self, "_people", {}).get(text)
+        if p is None:
+            return
+        self.picked = p
+        self.name.setText(dr.book_name(p))
+        self.type.setCurrentText(dr.BOOKS_TYPE.get(p.kind, "Supplier"))
+        for box, v in ((self.email, p.email), (self.phone, p.phone)):
+            if not box.text().strip():
+                box.setText(v)
+        if not self.address.toPlainText().strip():
+            self.address.setPlainText(p.address)
+        if p.company and p.company.strip().lower() != p.name.strip().lower() and not self.aliases.text().strip():
+            self.aliases.setText(p.name)
 
     def _role_changed(self, *_) -> None:
         role = self.role.currentData()
@@ -349,8 +417,24 @@ class ContactsTab(QWidget):
             self.changed.emit()
         return out
 
-    def new(self, role: str) -> None:
-        if ContactDialog(self.books, role=role, parent=self).exec():
+    def contractors(self) -> list:
+        """Everyone labeled Contractor in your Contacts (suggested for a new vendor)."""
+        return contractors(self.directory)
+
+    def new(self, role: str, *, run=None) -> None:
+        dlg = ContactDialog(self.books, role=role, parent=self,
+                            suggest=self.contractors() if role in ("vendor", "both") else None)
+        if run(dlg) if run is not None else dlg.exec():
+            picked = getattr(dlg, "picked", None)
+            if picked is not None and self.directory is not None:
+                from .. import directory as dr
+
+                try:
+                    pf, project = self.directory()
+                    if project:
+                        dr.link(pf, picked, project)
+                except Exception:  # noqa: BLE001
+                    pass
             self.refresh()
             self.changed.emit()
 

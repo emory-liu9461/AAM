@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogBut
 from .. import directory as dr
 from .common import confirm, error, info
 
-COLS = ["Name", "Company", "Kind", "Phone", "Email", "Works on", "Notes"]
+COLS = ["Name", "Company", "Phone", "Email", "Address", "Type", "Works on", "Notes"]
 
 
 class PersonDialog(QDialog):
@@ -30,17 +30,18 @@ class PersonDialog(QDialog):
         self.company = QLineEdit(p.company)
         self.company.setPlaceholderText("e.g. Roe Renovations Inc.")
         form.addRow("Company:", self.company)
-        self.kind = QComboBox()
-        self.kind.setEditable(True)
-        self.kind.addItems(dr.KINDS)
-        self.kind.setCurrentText(p.kind or "Other")
-        form.addRow("Kind:", self.kind)
         self.phone = QLineEdit(p.phone)
         form.addRow("Phone:", self.phone)
         self.email = QLineEdit(p.email)
         form.addRow("Email:", self.email)
         self.address = QLineEdit(p.address)
         form.addRow("Address:", self.address)
+        self.kind = QComboBox()
+        self.kind.setEditable(True)
+        self.kind.addItems(dr.KINDS)
+        self.kind.setCurrentText(p.kind or "Other")
+        self.kind.setToolTip("Investor, contractor, lender, broker … — pick one or type your own")
+        form.addRow("Type:", self.kind)
         self.website = QLineEdit(p.website)
         form.addRow("Website:", self.website)
         self.places = QListWidget()
@@ -101,7 +102,7 @@ class DirectoryPage(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda *_: self.fill())
         bar.addWidget(self.search, 1)
-        bar.addWidget(QLabel("Kind:"))
+        bar.addWidget(QLabel("Type:"))
         self.kind = QComboBox()
         self.kind.currentIndexChanged.connect(lambda *_: self.fill())
         bar.addWidget(self.kind)
@@ -131,7 +132,7 @@ class DirectoryPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.doubleClicked.connect(lambda *_: self.edit())
         bl.addWidget(self.table)
@@ -174,13 +175,14 @@ class DirectoryPage(QWidget):
         t = self.table
         t.setRowCount(len(self.rows))
         for r, p in enumerate(self.rows):
-            for c, v in enumerate([p.name, p.company, p.kind, p.phone, p.email, ", ".join(p.works_on),
+            for c, v in enumerate([p.name, p.company, p.phone, p.email, p.address.replace("\n", ", "), p.kind,
+                                   ", ".join(p.works_on),
                                    p.notes.replace("\n", " ")]):
                 t.setItem(r, c, QTableWidgetItem(v))
         t.resizeColumnsToContents()
-        for c in range(6):
+        for c in range(7):
             t.setColumnWidth(c, min(max(t.columnWidth(c), 90), 260))
-        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        t.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         total = sum(dr.counts(self.pf).values())
         self.count.setText(f"  {len(self.rows)} shown · {total} in all")
 
@@ -230,7 +232,7 @@ class DirectoryPage(QWidget):
         return n
 
 
-PROJECT_COLS = ["Name", "Kind", "Company", "Phone", "Email", "Notes"]
+PROJECT_COLS = ["Name", "Company", "Phone", "Email", "Address", "Type", "Notes"]
 
 
 class PickContactsDialog(QDialog):
@@ -248,7 +250,7 @@ class PickContactsDialog(QDialog):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda *_: self.fill())
         bar.addWidget(self.search, 1)
-        bar.addWidget(QLabel("Kind:"))
+        bar.addWidget(QLabel("Type:"))
         self.kind = QComboBox()
         self.kind.addItem("All", None)
         for k in dr.KINDS:
@@ -308,7 +310,7 @@ class ProjectContacts(QWidget):
         self.sync = sync
         lay = QVBoxLayout(self)
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("Kind:"))
+        bar.addWidget(QLabel("Type:"))
         self.kind = QComboBox()
         self.kind.addItem("All", None)
         for k in dr.KINDS:
@@ -364,14 +366,15 @@ class ProjectContacts(QWidget):
         t = self.table
         t.setRowCount(len(self.rows))
         for r, p in enumerate(self.rows):
-            for c, v in enumerate([p.name, p.kind, p.company, p.phone, p.email, p.notes.replace("\n", " ")]):
+            for c, v in enumerate([p.name, p.company, p.phone, p.email, p.address.replace("\n", ", "), p.kind,
+                                   p.notes.replace("\n", " ")]):
                 it = QTableWidgetItem(v)
                 it.setToolTip("\n".join(x for x in (p.label, p.phone, p.email, p.address, p.website) if x))
                 t.setItem(r, c, it)
         t.resizeColumnsToContents()
-        for c in range(5):
+        for c in range(6):
             t.setColumnWidth(c, min(max(t.columnWidth(c), 90), 240))
-        t.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.empty.setVisible(not self.rows)
         self.empty.setText("No one on this project yet — Add from Contacts… (e.g. your mortgage broker or "
                            "contractors), or New Contact….")

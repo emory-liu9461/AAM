@@ -253,6 +253,9 @@ class MainWindow(QMainWindow):
         self.contacts_tab.companies = lambda: [p for _n, p, _r in self._company_choices()]
         self.contacts_tab.changed.connect(self.share_vendors)
         self.contacts_tab.directory = self._directory_for_books
+        from . import contacts_tab as _ctab
+
+        _ctab.directory_source = self._directory_for_books     # new vendors anywhere: contractors suggested
 
     # -- menus --------------------------------------------------------------
 

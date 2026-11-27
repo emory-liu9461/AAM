@@ -67,7 +67,7 @@ def test_page_beside_personal_finance(app, tmp_path):
         return dlg.save()
 
     assert page.new(run=add)
-    assert page.table.rowCount() == 1 and page.table.item(0, 2).text() == "Contractor"
+    assert page.table.rowCount() == 1 and page.table.item(0, 5).text() == "Contractor"
     page.kind.setCurrentIndex(page.kind.findData("Lender"))
     assert page.table.rowCount() == 0
     page.kind.setCurrentIndex(0)
@@ -193,3 +193,50 @@ def test_contact_assigned_as_vendor_in_company_books(tmp_path, app):
     dr.assign(books, dr.find(pf, "Dana Volt"), "customer")
     assert ct.find(books, "Volt Electric Ltd").role == "both"
     assert len([x for x in ct.all_contacts(books) if x.name == "Volt Electric Ltd"]) == 1
+
+
+def test_contacts_columns(tmp_path, app):
+    from am_accounting.gui.directory_page import DirectoryPage
+
+    pf, _h = _pf(tmp_path)
+    dr.save(pf, dr.Person("Dana Volt", "Volt Electric Ltd", "Contractor", phone="555-0123",
+                          email="dana@volt.example", address="1 Main St"))
+    page = DirectoryPage(pf)
+    heads = [page.table.horizontalHeaderItem(c).text() for c in range(page.table.columnCount())]
+    assert heads[:6] == ["Name", "Company", "Phone", "Email", "Address", "Type"]
+    r = next(i for i, p in enumerate(page.rows) if p.name == "Dana Volt")
+    assert [page.table.item(r, c).text() for c in range(6)] == ["Dana Volt", "Volt Electric Ltd", "555-0123",
+                                                               "dana@volt.example", "1 Main St", "Contractor"]
+
+
+def test_new_vendor_suggests_contractors(tmp_path, app):
+    from am_accounting import contacts as ct
+    from am_accounting.books import Books
+    from am_accounting.gui.contacts_tab import ContactsTab
+
+    pf, _h = _pf(tmp_path)
+    dr.save(pf, dr.Person("Dana Volt", "Volt Electric Ltd", "Contractor", phone="555-0123", address="1 Main St"))
+    dr.save(pf, dr.Person("Lou Law", "", "Lawyer"))
+    books = Books.open(tmp_path / "co.amdb")
+    tab = ContactsTab(books)
+    tab.directory = lambda: (pf, "286 Saguenay")
+
+    def fill(dlg):
+        words = dlg.name.completer().model().stringList()
+        assert "Volt Electric Ltd" in words and "Dana Volt" in words and "Lou Law" not in words
+        dlg.use_suggestion("Dana Volt")
+        assert dlg.name.text() == "Volt Electric Ltd" and dlg.phone.text() == "555-0123"
+        assert dlg.type.currentText() == "Contractor"
+        dlg.save()
+        return True
+
+    tab.new("vendor", run=fill)
+    c = ct.find(books, "Volt Electric Ltd")
+    assert c.is_vendor and c.address == "1 Main St"
+    assert "286 Saguenay" in dr.find(pf, "Dana Volt").works_on
+
+    def no_suggest(dlg):                                     # customers: no contractor suggestions
+        assert dlg.name.completer() is None
+        return False
+
+    tab.new("customer", run=no_suggest)
