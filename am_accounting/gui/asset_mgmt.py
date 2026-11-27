@@ -2004,6 +2004,93 @@ class AllocationBar(QWidget):
             p.drawText(int(cx + 16), int(cy + 12), f"{n} · {v * 100 / total:.0f}% · {fmt_money(v)}")
 
 
+class AllocationColumns(QWidget):
+    """Share of NAV by type or by holding as vertical bars: one bar each, its % and amount above it and its name
+    below (the full name when you hover)."""
+
+    def __init__(self, title: str = ""):
+        super().__init__()
+        self.title = title
+        self.parts: list[tuple[str, int]] = []
+        self.setMinimumHeight(230)
+        self.setMouseTracking(True)
+        self._bars: list[tuple[QRectF, str]] = []
+
+    def set_parts(self, parts: list[tuple[str, int]]) -> None:
+        self.parts = [(n, v) for n, v in parts if v > 0]
+        self.update()
+
+    def mouseMoveEvent(self, ev) -> None:  # noqa: N802
+        from PySide6.QtWidgets import QToolTip
+
+        pos = ev.position()
+        tip = next((t for r, t in self._bars if r.contains(pos)), "")
+        if tip:
+            QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
+        else:
+            QToolTip.hideText()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        fm = p.fontMetrics()
+        line = fm.height()
+        text = self.palette().text().color()
+        top = 0
+        if self.title:
+            f = QFont(self.font())
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(text)
+            p.drawText(0, line, self.title)
+            p.setFont(self.font())
+            top = line + 6
+        self._bars = []
+        total = sum(v for _, v in self.parts)
+        if not total:
+            p.setPen(self.palette().placeholderText().color())
+            p.drawText(4, top + line + 4, "No value yet — record valuations or link company books")
+            return
+        n = len(self.parts)
+        label_h = 2 * line + 4                       # the name, up to two lines, under each bar
+        value_h = 2 * line + 2                       # % and amount above
+        plot_top, plot_bottom = top + value_h, self.height() - label_h - 2
+        avail = max(plot_bottom - plot_top, 10)
+        slot = (self.width() - 2) / n
+        bar_w = min(slot * 0.6, 90)
+        biggest = max(v for _, v in self.parts)
+        p.setPen(self.palette().mid().color())
+        p.drawLine(0, int(plot_bottom), self.width(), int(plot_bottom))
+        for i, (name, v) in enumerate(self.parts):
+            h = avail * v / biggest
+            x = 1 + i * slot + (slot - bar_w) / 2
+            rect = QRectF(x, plot_bottom - h, bar_w, h)
+            p.fillRect(rect, QColor(PALETTE[i % len(PALETTE)]))
+            tip = f"{name}: {v * 100 / total:.0f}% · {fmt_money(v)}"
+            self._bars.append((QRectF(1 + i * slot, top, slot, self.height() - top), tip))
+            p.setPen(text)
+            cx = 1 + i * slot
+            p.drawText(QRectF(cx, rect.top() - value_h, slot, line), Qt.AlignmentFlag.AlignHCenter,
+                       f"{v * 100 / total:.0f}%")
+            p.drawText(QRectF(cx, rect.top() - value_h + line, slot, line), Qt.AlignmentFlag.AlignHCenter,
+                       fm.elidedText(fmt_money(v), Qt.TextElideMode.ElideRight, int(slot) - 4))
+            words, lines, cur = name.split(), [], ""
+            for w_ in words:
+                trial = f"{cur} {w_}".strip()
+                if fm.horizontalAdvance(trial) <= slot - 6 or not cur:
+                    cur = trial
+                else:
+                    lines.append(cur)
+                    cur = w_
+            if cur:
+                lines.append(cur)
+            if len(lines) > 2:
+                lines = [lines[0], " ".join(lines[1:])]
+            for k, ln in enumerate(lines[:2]):
+                p.drawText(QRectF(cx, plot_bottom + 3 + k * line, slot, line), Qt.AlignmentFlag.AlignHCenter,
+                           fm.elidedText(ln, Qt.TextElideMode.ElideRight, int(slot) - 6))
+
+
 def _table(cols: list[str], stretch: int | None = None) -> QTableWidget:
     t = QTableWidget(0, len(cols))
     t.setHorizontalHeaderLabels(cols)
@@ -2046,6 +2133,31 @@ class ColumnBoxes(QStyledItemDelegate):
         painter.restore()
 
 
+def company_columns(t: QTableWidget) -> None:
+    """A table with one column per company (and the portfolio): each title on one line, the columns lined up at the
+    left with room between them, a thin box around each, and the table as tall as its rows (the page scrolls)."""
+    head = t.horizontalHeader()
+    for c in range(t.columnCount()):
+        head.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+    head.setStretchLastSection(False)
+    head.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    for c in range(t.columnCount()):
+        hi = t.horizontalHeaderItem(c)
+        if hi is not None:
+            hi.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    fit_name_columns(t, min_width=140, max_lines=1, pad=56)
+    if not isinstance(t.itemDelegate(), ColumnBoxes):
+        t.setItemDelegate(ColumnBoxes(t))
+        t.setShowGrid(False)
+    t.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    rows = sum(t.rowHeight(r) for r in range(t.rowCount()))
+    bar = t.horizontalScrollBar().sizeHint().height()
+    t.setFixedHeight(head.sizeHint().height() + rows + bar + 2 * t.frameWidth() + 4)
+    pinned = getattr(t, "_pinned", None)
+    if pinned is not None:                       # the portfolio column: kept at the right, beside the companies
+        pinned.sync()
+
+
 def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2, pad: int = 24) -> None:
     """Columns as wide as their numbers; each column's heading (a company name) wraps onto up to two lines and is
     cut with "…" if it still doesn't fit — the full name shows when you hover over it."""
@@ -2064,13 +2176,16 @@ def fit_name_columns(t: QTableWidget, min_width: int = 90, max_lines: int = 2, p
             t.setColumnWidth(0, max(widest + 24, 110))
             continue
         width = max(widest + pad, min_width)
-        t.setColumnWidth(c, width)
         if hi is None:
+            t.setColumnWidth(c, width)
             continue
         # the full name: kept from the last time, unless the heading was set afresh since (headings are reused when
         # the companies change, so an old name mustn't stick to the column)
         wrapped = hi.data(Qt.ItemDataRole.UserRole + 1)
         full = hi.data(Qt.ItemDataRole.UserRole) if wrapped is not None and wrapped == hi.text() else hi.text()
+        if max_lines == 1:                       # the title on one line: the column is as wide as it
+            width = max(width, hfm.horizontalAdvance(full) + pad)
+        t.setColumnWidth(c, width)
         hi.setData(Qt.ItemDataRole.UserRole, full)
         hi.setToolTip(full)
         room = width - 12
@@ -2260,18 +2375,13 @@ class AssetManagementView(QWidget):
         ol = QVBoxLayout(ov)
         self.grouped = GroupedSummary()
         ol.addWidget(self.grouped)
-        ol.addWidget(QLabel("<b>Allocation by type</b>"))
-        self.alloc_type = AllocationBar()
-        ol.addWidget(self.alloc_type)
-        ol.addWidget(QLabel("<b>Allocation by holding</b>"))
-        self.alloc_holding = AllocationBar()
-        ol.addWidget(self.alloc_holding)
         self.overview_table = _table([""], None)
         self.overview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
         self.overview_table.setToolTip("Double-click a company's column for its overview")
         self.overview_table.doubleClicked.connect(self._open_company_overview)
-        osplit = QSplitter(Qt.Orientation.Vertical)
-        osplit.addWidget(self.overview_table)
+        from .frozen import with_pinned_total
+
+        ol.addWidget(with_pinned_total(self.overview_table))   # full height; the portfolio column at the right
         su_box = QWidget()
         sl = QVBoxLayout(su_box)
         sl.setContentsMargins(0, 6, 0, 0)
@@ -2280,10 +2390,16 @@ class AssetManagementView(QWidget):
         self.su_table = _table([""], None)
         self.su_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
         self.su_table.doubleClicked.connect(self._edit_sources_uses)
-        sl.addWidget(self.su_table, 1)
-        osplit.addWidget(su_box)
-        osplit.setSizes([500, 380])
-        ol.addWidget(osplit, 1)
+        sl.addWidget(with_pinned_total(self.su_table))
+        ol.addWidget(su_box)
+        # allocation: two small bar charts side by side, under the tables
+        alloc = QHBoxLayout()
+        self.alloc_type = AllocationColumns("Allocation by type")
+        self.alloc_holding = AllocationColumns("Allocation by holding")
+        alloc.addWidget(self.alloc_type, 1)
+        alloc.addSpacing(24)
+        alloc.addWidget(self.alloc_holding, 1)
+        ol.addLayout(alloc)
         self.tabs.addTab(_scroll(ov), "Portfolio Summary")
         self.tabs.setTabVisible(0, False)  # opened with the Portfolio Summary button at the top, not a tab
         self.tabs.currentChanged.connect(lambda i: self.summary_btn.setChecked(i == 0))
@@ -2459,8 +2575,11 @@ class AssetManagementView(QWidget):
         cl.addWidget(note)
         self.cons_table = _table(["Company", "Own %", "Revenue LTM", "Net income LTM", "Cash", "Receivables",
                                   "Total assets", "Payables", "Debt", "Total liabilities", "Equity"], 0)
-        cl.addWidget(self.cons_table, 1)
-        self.tabs.addTab(cv, "Consolidated Financials")
+        from .frozen import with_pinned_total
+
+        cl.addWidget(with_pinned_total(self.cons_table))
+        cl.addStretch(1)
+        self.tabs.addTab(_scroll(cv), "Consolidated Financials")
 
         # Managed companies (asset managers)
         mv = QWidget()
@@ -3282,7 +3401,7 @@ class AssetManagementView(QWidget):
                 if label == "Basis":
                     cell.setForeground(MUTED)
                 t.setItem(r, ci + 1, cell)
-        fit_name_columns(t)
+        company_columns(t)
 
     def _edit_sources_uses(self, index) -> None:
         col = index.column() - 1
@@ -3355,10 +3474,7 @@ class AssetManagementView(QWidget):
                 if ci < len(perfs) and perfs[ci].holding.status == "exited":
                     cell.setForeground(MUTED)
                 t.setItem(r, ci + 1, cell)
-        fit_name_columns(t, min_width=140, pad=56)        # room between one company and the next
-        if not isinstance(t.itemDelegate(), ColumnBoxes):
-            t.setItemDelegate(ColumnBoxes(t))             # a thin box around each company
-            t.setShowGrid(False)
+        company_columns(t)                                # boxed, spaced, titles on one line, full height
         t.verticalHeader().setVisible(False)
 
     # -- customers & vendors of one company ------------------------------------
@@ -4242,8 +4358,8 @@ class AssetManagementView(QWidget):
                     f_.setBold(True)
                     cell.setFont(f_)
                 t.setItem(r_, c_ + 1, cell)
-        fit_name_columns(t)
         t.verticalHeader().setVisible(False)
+        company_columns(t)
 
     def _without_intercompany(self, rows, total):
         """The portfolio total with balances owed between the group's companies taken out (see intercompany.py);

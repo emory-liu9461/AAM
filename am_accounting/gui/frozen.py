@@ -92,3 +92,65 @@ def freeze_first_column(table: QAbstractItemView) -> QTableView:
     if f is None:
         f = table._frozen = _Frozen(table)
     return f.view
+
+
+class PinnedLast(QTableView):
+    """The table's last column (the portfolio total) shown on its own at the right, beside the table, so it stays in
+    the same spot when the companies scroll sideways. The table itself hides that column."""
+
+    def __init__(self, table: QTableView):
+        super().__init__()
+        self.table = t = table
+        self.setObjectName("pinnedColumn")
+        self.setModel(t.model())
+        self.setSelectionModel(t.selectionModel())
+        self.verticalHeader().hide()
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionBehavior(t.selectionBehavior())
+        self.setFrameShape(QTableView.Shape.NoFrame)
+        self.horizontalHeader().setDefaultAlignment(t.horizontalHeader().defaultAlignment())
+        self.doubleClicked.connect(t.doubleClicked.emit)
+        t.verticalScrollBar().valueChanged.connect(self.verticalScrollBar().setValue)
+        self.hide()
+
+    def sync(self) -> None:
+        t = self.table
+        n = t.model().columnCount()
+        last = n - 1
+        if n < 3:                          # nothing to pin (no companies yet)
+            for c in range(n):
+                t.setColumnHidden(c, False)
+            self.hide()
+            return
+        self.setItemDelegate(t.itemDelegate())
+        self.setShowGrid(t.showGrid())
+        t.setColumnHidden(last, False)                # measured while shown (a hidden column has no width)
+        width = max(t.columnWidth(last), 160)
+        for c in range(n):
+            t.setColumnHidden(c, c == last)
+            self.setColumnHidden(c, c != last)
+        self.setColumnWidth(last, width)
+        for r in range(t.model().rowCount()):
+            self.setRowHeight(r, t.rowHeight(r))
+        head = t.horizontalHeader().sizeHint().height()
+        t.horizontalHeader().setFixedHeight(head)
+        self.horizontalHeader().setFixedHeight(head)
+        self.setFixedWidth(width + 2)
+        self.setFixedHeight(t.height() if t.minimumHeight() == t.maximumHeight() else t.sizeHint().height())
+        self.show()
+
+
+def with_pinned_total(table: QTableView):
+    """``table`` beside its last column pinned at the right (see PinnedLast); returns the widget to lay out."""
+    from PySide6.QtWidgets import QHBoxLayout, QWidget
+
+    box = QWidget()
+    lay = QHBoxLayout(box)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    lay.addWidget(table, 1)
+    table._pinned = PinnedLast(table)
+    lay.addWidget(table._pinned, 0, Qt.AlignmentFlag.AlignTop)
+    return box
