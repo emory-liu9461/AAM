@@ -2102,6 +2102,12 @@ class AssetManagementView(QWidget):
                                       "budget, and the income you take from your businesses")
         self.net_worth_btn.clicked.connect(lambda *_: self.show_personal())
         bar.addWidget(self.net_worth_btn)
+        self.contacts_btn = QPushButton("Contacts")
+        self.contacts_btn.setCheckable(True)
+        self.contacts_btn.setObjectName("primary")
+        self.contacts_btn.setToolTip("Everyone you work with: contractors, investors, lenders, brokers, lawyers …")
+        self.contacts_btn.clicked.connect(lambda *_: self.show_contacts())
+        bar.addWidget(self.contacts_btn)
         # the portfolio's own controls: only with the portfolio (not over a company's pages, deals or net worth)
         self.portfolio_bar = QWidget()
         pbar = QHBoxLayout(self.portfolio_bar)
@@ -2545,6 +2551,19 @@ class AssetManagementView(QWidget):
         self.tabs.setCurrentWidget(self.personal_page)
         self._top_buttons()
 
+    def show_contacts(self) -> None:
+        """Contacts (beside Personal Finance): everyone you work with (see directory.py)."""
+        if getattr(self, "contacts_page", None) is None:
+            from .directory_page import DirectoryPage
+
+            self.contacts_page = DirectoryPage(self.pf)
+            i = self.tabs.addTab(self.contacts_page, "Contacts")
+            self.tabs.setTabVisible(i, False)          # opened with its button at the top
+        else:
+            self.contacts_page.refresh()
+        self.tabs.setCurrentWidget(self.contacts_page)
+        self._top_buttons()
+
     def show_net_worth(self) -> None:
         self.show_personal("net_worth")
 
@@ -2559,7 +2578,10 @@ class AssetManagementView(QWidget):
         portfolio = self.tabs.currentIndex() == 0
         deals = page is getattr(self, "deals_page", None)
         worth = page is not None and page is getattr(self, "personal_page", None)
-        other = portfolio or deals or worth
+        people = page is not None and page is getattr(self, "contacts_page", None)
+        other = portfolio or deals or worth or people
+        if hasattr(self, "contacts_btn"):
+            self.contacts_btn.setChecked(people)
         self.summary_btn.setChecked(portfolio)
         self.deals_btn.setChecked(deals)
         self.net_worth_btn.setChecked(worth)
@@ -3379,7 +3401,7 @@ class AssetManagementView(QWidget):
         """The holding the current company page shows (None on the portfolio / deal pipeline)."""
         w = self.tabs.currentWidget()
         if self.tabs.currentIndex() == 0 or w is getattr(self, "deals_page", None) or \
-                w is getattr(self, "personal_page", None):
+                w is getattr(self, "personal_page", None) or w is getattr(self, "contacts_page", None):
             return None
         pick = {getattr(self, "dash_page", None): getattr(getattr(self, "dash_page", None), "pick", None),
                 getattr(self, "ops_page", None): getattr(getattr(self, "ops_page", None), "pick", None),
