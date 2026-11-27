@@ -2121,7 +2121,7 @@ class AssetManagementView(QWidget):
         self.summary_btn.setCheckable(True)
         self.summary_btn.setObjectName("primary")
         self.summary_btn.setToolTip("The whole portfolio (or the group picked under Viewing) at a glance")
-        self.summary_btn.clicked.connect(self.show_summary)
+        self.summary_btn.clicked.connect(lambda *_: self.whole_portfolio())
         bar.addWidget(self.summary_btn)
         self.deals_btn = QPushButton("Deal Pipeline")
         self.deals_btn.setCheckable(True)
@@ -2135,7 +2135,6 @@ class AssetManagementView(QWidget):
         self.company_btn.setToolTip("One company's pages: Dashboard, Rent Roll & Operations, Cash Flow, CapEx, "
                                     "Financing & Cap Table, Waterfall, Projections")
         self.company_btn.clicked.connect(self.show_company_pages)
-        bar.addWidget(self.company_btn)
         self.net_worth_btn = QPushButton("Personal Finance")
         self.net_worth_btn.setCheckable(True)
         self.net_worth_btn.setObjectName("primary")
@@ -2189,6 +2188,19 @@ class AssetManagementView(QWidget):
             bar.addWidget(b)
         bar = outer_bar
         bar.addWidget(self.portfolio_bar, 1)
+        # a company's own pages: a section of their own, at the right of the row
+        bar.addStretch(0)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        bar.addSpacing(8)
+        bar.addWidget(sep)
+        bar.addSpacing(8)
+        self.company_title = QLabel("Companies")
+        self.company_title.setFont(title.font())
+        bar.addWidget(self.company_title)
+        bar.addSpacing(10)
+        bar.addWidget(self.company_btn)
         lay.addLayout(bar)
 
         # what needs attention for the company shown (rent roll, expenses, capex) — like Accounting's dashboard
@@ -2564,6 +2576,13 @@ class AssetManagementView(QWidget):
 
     def show_summary(self) -> None:
         self.show_portfolio(self.summary_page)
+
+    def whole_portfolio(self) -> None:
+        """Portfolio Summary clicked: the entire portfolio (Viewing back to all, not the company last looked at)."""
+        if self.viewing.currentIndex() != 0:
+            self.viewing.setCurrentIndex(0)
+            self.refresh()
+        self.show_summary()
 
     def show_deals(self) -> None:
         """The deal pipeline (beside Portfolio Summary)."""

@@ -938,6 +938,12 @@ def test_asset_management_mode(app, tmp_path, monkeypatch):
     w.set_mode("assets")
     v = w.asset_view
     assert w.stack.currentWidget() is v and w.mode_tabs.tabText(w.mode_tabs.currentIndex()) == "Asset Management"
+    # Accounting shows beside Asset Management only with a company's pages
+    v.whole_portfolio()
+    assert not w.mode_tabs.isTabVisible(1) and v.viewing.currentIndex() == 0      # the entire portfolio
+    v.show_company_pages()
+    assert w.mode_tabs.isTabVisible(1)
+    v.whole_portfolio()
     auto = v.pf.holdings()                    # the operating company was pulled in automatically
     assert [(x.name, x.company_path) for x in auto] == [("Northwind OpCo Inc", str(op))]
     hd = HoldingDialog(v.pf, v.companies_fn())

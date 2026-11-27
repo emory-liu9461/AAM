@@ -424,7 +424,8 @@ class PersonalFinancePage(QWidget):
         self.tabs.addTab(self.net_worth, "Net Worth")
         self.tabs.addTab(self.budget, "Budget")
         self.tabs.addTab(self.income, "Income from Businesses")
-        self.tabs.addTab(self.loans, "Shareholder Loans")
+        # shareholder loans are kept in the companies' books (Accounting); they still show on your net worth, so
+        # there's no tab of their own here
         self.loans.on_change = self.net_worth.refresh
         self.statements = StatementsTab(pf)
         self.statements.on_change = lambda: (self.budget.fill(), self.net_worth.refresh())

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGroupBox, QHBox
 from .. import longpath as lpth
 from .. import personal as pers
 from ..money import fmt_money, parse_money
-from .common import ALIGN_RIGHT, NEGATIVE, POSITIVE, error, info
+from .common import ALIGN_RIGHT, MUTED, NEGATIVE, POSITIVE, error, info
 
 ROLE = Qt.ItemDataRole.UserRole
 
@@ -38,7 +38,11 @@ class _Entries(QGroupBox):
                 head.addWidget(b)
             lay.addLayout(head)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["What", "Description", "Amount", "Yours"])
+        self.table.setHorizontalHeaderLabels([title, "Description", "Amount", "Yours"])
+        left, right = Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignRight
+        for c in range(4):                    # headings over text at the left, over amounts at the right
+            self.table.horizontalHeaderItem(c).setTextAlignment((left if c < 2 else right)
+                                                                | Qt.AlignmentFlag.AlignVCenter)
         self.table.setColumnWidth(3, 70)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 250)
@@ -46,7 +50,18 @@ class _Entries(QGroupBox):
         self.table.verticalHeader().hide()
         self.table.itemChanged.connect(self._edited)
         self.table.cellDoubleClicked.connect(self._double)
+        # as tall as its lines (the page scrolls, not the table), so nothing is cut off
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.model().rowsInserted.connect(lambda *_: self.fit())
+        self.table.model().rowsRemoved.connect(lambda *_: self.fit())
         lay.addWidget(self.table)
+        self.fit()
+
+    def fit(self) -> None:
+        t = self.table
+        rows = sum(t.rowHeight(r) for r in range(t.rowCount())) or t.verticalHeader().defaultSectionSize()
+        sb = t.horizontalScrollBar().sizeHint().height() if t.horizontalScrollBar().isVisible() else 0
+        t.setFixedHeight(t.horizontalHeader().sizeHint().height() + rows + 2 * t.frameWidth() + sb + 2)
 
     def set_auto(self, rows: list[tuple]) -> None:
         """The rows filled in for you — (what, description, amount, tooltip, key) — at the top, not editable here
@@ -181,28 +196,42 @@ class NetWorthPage(QWidget):
             cards.addWidget(c)
         lay.addLayout(cards)
         # projected (the budget) against actual: this week, month and year
-        self.plan = QTableWidget(4, 7)
-        self.plan.setHorizontalHeaderLabels(["", "Week — projected", "Week — actual", "Month — projected",
-                                             "Month — actual", "Year — projected", "Year — actual"])
+        # two heading rows of its own: This week / This month / This year, each over Projected and Actual
+        self.plan = QTableWidget(2 + 4, 7)
+        self.plan.horizontalHeader().hide()
         self.plan.verticalHeader().hide()
+        for i, period in enumerate(("This week", "This month", "This year")):
+            c = 1 + 2 * i
+            self.plan.setSpan(0, c, 1, 2)
+            g = QTableWidgetItem(period)
+            g.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            f = g.font()
+            f.setBold(True)
+            g.setFont(f)
+            self.plan.setItem(0, c, g)
+            for k, word in enumerate(("Projected", "Actual")):
+                h = QTableWidgetItem(word)
+                h.setTextAlignment(ALIGN_RIGHT)
+                h.setForeground(MUTED)
+                self.plan.setItem(1, c + k, h)
+        for r in (0, 1):
+            self.plan.setItem(r, 0, QTableWidgetItem(""))
         self.plan.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.plan.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.plan.setToolTip("Projected = your budget (a week is 12/52 of a month; the year is the whole year's "
                              "budget); actual = so far, from your statements and what you entered. Cash projected = "
                              "your cash at the start (as kept that day) plus what the budget says you'd save.")
-        for c in range(1, 7):                 # headings over their numbers: right-aligned like them
-            self.plan.horizontalHeaderItem(c).setTextAlignment(ALIGN_RIGHT)
-        self.plan.horizontalHeaderItem(0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         rh = self.plan.verticalHeader().defaultSectionSize()
-        self.plan.setFixedHeight(rh * 4 + self.plan.horizontalHeader().sizeHint().height() + 4)
+        self.plan.setFixedHeight(rh * 6 + 2 * self.plan.frameWidth() + 2)
         plan_box = QGroupBox("Projected (your budget) vs actual — this week, month and year")
         pv = QVBoxLayout(plan_box)
         pv.addWidget(self.plan)
         lay.addWidget(plan_box)
         split = QSplitter(Qt.Orientation.Horizontal)
-        left = QWidget()
-        ll = QVBoxLayout(left)
+        left_box = QWidget()
+        ll = QVBoxLayout(left_box)
         ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)    # grows with its lines (then scrolls)
         addrow = QHBoxLayout()
         addrow.addStretch(1)
         add = QPushButton("Add…")
@@ -218,10 +247,10 @@ class NetWorthPage(QWidget):
         ll.addLayout(addrow)
         self.assets = _Entries("Assets", pers.TYPED_ASSET_KINDS, self._preview, on_auto=self._auto_clicked,
                                buttons=False)
-        ll.addWidget(self.assets, 3)
+        ll.addWidget(self.assets)
         self.liabs = _Entries("Liabilities", pers.TYPED_LIABILITY_KINDS, self._preview, on_auto=self._auto_clicked,
                               buttons=False)
-        ll.addWidget(self.liabs, 2)
+        ll.addWidget(self.liabs)
         self._last_box = self.assets
         for box in (self.assets, self.liabs):
             box.table.currentCellChanged.connect(lambda *_, b=box: setattr(self, "_last_box", b))
@@ -231,8 +260,17 @@ class NetWorthPage(QWidget):
         auto_hint.setObjectName("hint")
         auto_hint.setWordWrap(True)
         ll.addWidget(auto_hint)
-        split.addWidget(left)
+        ll.addStretch(1)
         from PySide6.QtWidgets import QScrollArea, QTabWidget
+
+        # assets and liabilities show every line; this side scrolls when there are more than fit
+        left = QScrollArea()
+        left.setWidget(left_box)
+        left.setWidgetResizable(True)
+        left.setFrameShape(QScrollArea.Shape.NoFrame)
+        left.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.left_scroll = left
+        split.addWidget(left)
 
         from .net_worth_charts import TimeChart
 
@@ -457,7 +495,7 @@ class NetWorthPage(QWidget):
             f = it.font()
             f.setBold(True)
             it.setFont(f)
-            t.setItem(r, 0, it)
+            t.setItem(2 + r, 0, it)
             for i, p in enumerate(ps):
                 proj, act = {0: (p.cash_proj, p.cash_now), 1: (p.income_proj, p.income),
                              2: (p.spend_proj, p.spend), 3: (p.saved_proj, p.saved)}[r]
@@ -471,7 +509,7 @@ class NetWorthPage(QWidget):
                     if r == 0 and c % 2 == 1 and v is None:
                         cell.setToolTip("Your cash at the start isn't known yet (it's kept each day you open "
                                         "Net Worth)")
-                    t.setItem(r, c, cell)
+                    t.setItem(2 + r, c, cell)
 
     def _show_budget(self) -> None:
         inc, out, binc, bout, inc_y, out_y = self._month()

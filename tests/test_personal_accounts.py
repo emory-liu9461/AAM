@@ -190,7 +190,8 @@ def test_projected_vs_actual(app, tmp_path):
     assert week.cash_start == 9_000_00 and year.cash_start is None
     page = NetWorthPage(pf)
     assert list(page.cards)[0] == "cash"                          # cash first
-    assert page.plan.item(0, 0).text() == "Cash" and page.plan.horizontalHeaderItem(3).text() == "Month — projected"
+    assert page.plan.item(2, 0).text() == "Cash" and page.plan.item(0, 3).text() == "This month"
+    assert page.plan.item(1, 3).text() == "Projected" and page.plan.item(1, 4).text() == "Actual"
     html = pers.html(page.statement())
     assert html.index("TD chequing") < html.index("Questrade")
     pf.close()
@@ -204,8 +205,10 @@ def test_plan_headings_right_aligned_in_a_box(app, tmp_path):
 
     pf = _pf(tmp_path)
     page = NetWorthPage(pf)
+    assert [page.plan.item(0, c).text() for c in (1, 3, 5)] == ["This week", "This month", "This year"]
+    assert all(page.plan.columnSpan(0, c) == 2 for c in (1, 3, 5))          # each over its two columns
     for c in range(1, 7):
-        assert page.plan.horizontalHeaderItem(c).textAlignment() & Qt.AlignmentFlag.AlignRight
+        assert page.plan.item(1, c).textAlignment() & Qt.AlignmentFlag.AlignRight
     box = page.plan.parent()
     assert isinstance(box, QGroupBox) and "Projected" in box.title()
     pf.close()

@@ -996,6 +996,8 @@ class MainWindow(QMainWindow):
         portfolio, the deal pipeline or personal finance."""
         for wdg in (self.company_label, self.switcher, self.company_role, self.type_btn):
             wdg.setVisible(show)
+        # Accounting (a company's books) beside Asset Management only with a company's pages (or while in it)
+        self.mode_tabs.setTabVisible(1, show or getattr(self, "mode", "accounting") == "accounting")
 
     def set_mode(self, mode: str) -> None:
         if mode == "assets":

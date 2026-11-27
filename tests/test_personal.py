@@ -172,8 +172,8 @@ def test_button_beside_portfolio_summary(app, tmp_path):
     assert pers.folder(v.pf) == f and (f / "Net Worth Statements").is_dir() and pers.load(v.pf).name == "Pat Lee"
     assert v.tabs.currentWidget() is v.personal_page and v.net_worth_btn.isChecked()
     assert v.personal_page.tabs.currentWidget() is v.net_worth_page
-    assert [v.personal_page.tabs.tabText(i) for i in range(6)] == [
-        "Net Worth", "Bank Accounts", "Investments", "Budget", "Income from Businesses", "Shareholder Loans"]
+    assert [v.personal_page.tabs.tabText(i) for i in range(v.personal_page.tabs.count())] == [
+        "Net Worth", "Bank Accounts", "Investments", "Budget", "Income from Businesses"]      # no Shareholder Loans
     assert not v.summary_btn.isChecked() and not v.company_btn.isChecked()
     assert not v.tabs.tabBar().isVisibleTo(v) and not v.portfolio_bar.isVisibleTo(v)
     assert v._company_shown() is None
@@ -241,4 +241,32 @@ def test_short_property_names(tmp_path):
     assert pers.short_name(pf, other) == "Aedalus Asset Management Inc"  # no street: its name
     sec = dict(pers.statement_sections(pers.statement(pf, pers.Saved("Pat"), date(2026, 6, 30))))
     assert ("286-296 Saguenay", "100%") in [(r[0], r[4]) for r in sec["Real estate"]]
+    pf.close()
+
+
+def test_net_worth_lines_never_cut_off(app, tmp_path):
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf, _h = _pf(tmp_path)
+    page = NetWorthPage(pf, as_of=date(2026, 11, 1))
+    for i in range(12):
+        page.liabs.add(pers.Entry("Other loans", f"Loan {i}", 1000_00))
+    t = page.liabs.table
+    needed = sum(t.rowHeight(r) for r in range(t.rowCount())) + t.horizontalHeader().sizeHint().height()
+    assert t.height() >= needed                      # every line shows; the page scrolls instead
+    assert page.left_scroll.widget() is not None
+    pf.close()
+
+
+def test_entries_headings(app, tmp_path):
+    from PySide6.QtCore import Qt
+
+    from am_accounting.gui.net_worth_page import NetWorthPage
+
+    pf, _h = _pf(tmp_path)
+    page = NetWorthPage(pf, as_of=date(2026, 11, 1))
+    for box, word in ((page.assets, "Assets"), (page.liabs, "Liabilities")):
+        heads = [box.table.horizontalHeaderItem(c) for c in range(4)]
+        assert [h.text() for h in heads] == [word, "Description", "Amount", "Yours"]
+        assert all(h.textAlignment() & Qt.AlignmentFlag.AlignLeft for h in heads[:2])
     pf.close()

@@ -87,7 +87,7 @@ def test_tab(app, tmp_path):
     pf, hold, op, loan = _setup(tmp_path)
     page = PersonalFinancePage(pf)
     tab = page.loans
-    assert page.tabs.tabText(5) == "Shareholder Loans"
+    assert "Shareholder Loans" not in [page.tabs.tabText(i) for i in range(page.tabs.count())]   # books only
     assert tab.cards["to_you"].value.text() == "$25,000.00"
     r = next(i for i, p in enumerate(tab.positions) if p.path == str(hold))
     tab.table.setCurrentCell(r, 0)
