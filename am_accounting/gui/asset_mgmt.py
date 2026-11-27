@@ -2533,6 +2533,14 @@ class AssetManagementView(QWidget):
 
         self.ic_page = IntercompanyPage(self._companies, self._as_of_date, open_books=self.open_company.emit)
         self.portfolio_tabs.addTab(self.ic_page, "Intercompany")
+        from .master_cash_flow_page import MasterCashFlowPage
+
+        # the next 12 months of the businesses and your own money together
+        self.master_cf_page = MasterCashFlowPage(self.pf, lambda: self.summary.performances if self.summary else None)
+        self.portfolio_tabs.insertTab(3, self.master_cf_page, "Master Cash Flow")
+        self.portfolio_tabs.currentChanged.connect(
+            lambda *_: self.master_cf_page.fill() if self.portfolio_tabs.currentWidget() is self.master_cf_page
+            else None)
         self.portfolio_tabs.currentChanged.connect(
             lambda *_: self.ic_page.fill() if self.portfolio_tabs.currentWidget() is self.ic_page else None)
         self.portfolio_tabs.currentChanged.connect(lambda *_: self._left_align_portfolio())

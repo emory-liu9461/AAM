@@ -1173,7 +1173,8 @@ def test_portfolio_summary_and_company_overview(app, tmp_path, monkeypatch):
     assert not v.tabs.tabBar().isHidden() and v.company_btn.isChecked() and v.tabs.currentWidget() is v.dash_page
     v.show_summary()
     assert [v.portfolio_tabs.tabText(i) for i in range(v.portfolio_tabs.count())] == [
-        "Summary", "Holdings", "Consolidated Financials", "Managed Companies", "Intercompany"]   # behind the button
+        "Summary", "Holdings", "Consolidated Financials", "Master Cash Flow", "Managed Companies",
+        "Intercompany"]   # behind the button
     assert not v.tabs.isTabVisible(0)                     # a button at the top, not a tab
     v.tabs.setCurrentIndex(1)
     assert not v.summary_btn.isChecked()

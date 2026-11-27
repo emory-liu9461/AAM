@@ -69,10 +69,41 @@ class FromHolding:
     distributions: int = 0        # yours, in the year
     capital: int = 0              # capital returned to you (not income)
     by_month: dict[int, int] = field(default_factory=dict)   # distributions by month
+    source: str = ""              # where the distributions came from: "recorded" / "company books" / ""
+
+
+def paid_from_books(company_path: str, year: int, end: date | None = None) -> dict[int, int]:
+    """Distributions / dividends a company paid in the year, by month (100%): what went into its equity draw
+    accounts (Dividends Paid, Member Distributions, Draws …) in its own books."""
+    import sqlite3
+    from pathlib import Path
+
+    if not company_path or not Path(company_path).exists():
+        return {}
+    end = end or date(year, 12, 31)
+    out: dict[int, int] = {}
+    try:
+        conn = sqlite3.connect(f"file:{Path(company_path)}?mode=ro", uri=True)
+        try:
+            for d, net in conn.execute(
+                    "SELECT e.date, l.debit_cents - l.credit_cents FROM journal_lines l "
+                    "JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.id = l.account_id "
+                    "WHERE a.type = 'equity' AND a.subtype = 'draw' AND e.date BETWEEN ? AND ?",
+                    (f"{year}-01-01", end.isoformat())):
+                if net:
+                    m = int(d[5:7])
+                    out[m] = out.get(m, 0) + net
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    return {m: v for m, v in out.items() if v > 0}
 
 
 def from_portfolio(pf, year: int) -> list[FromHolding]:
-    """Each holding's distributions and capital returned in the year, at your share."""
+    """Each holding's distributions and capital returned in the year, at your share: as recorded on the portfolio
+    (its flows, or the holding company's books); a company with none recorded that year, but whose own books show
+    distributions / dividends paid, counts those (at your share of the company) — so they're added by themselves."""
     from . import portfolio as pfm
 
     saved = pers.load(pf)
@@ -96,6 +127,17 @@ def from_portfolio(pf, year: int) -> list[FromHolding]:
                 row.by_month[m] = row.by_month.get(m, 0) + amt
             elif f.kind in CAPITAL_KINDS:
                 row.capital += amt
+        if row.distributions:
+            row.source = "recorded"
+        elif h.company_path:                   # nothing recorded: what the company's own books show it paid
+            paid = paid_from_books(h.company_path, year, end)
+            for m, v in paid.items():
+                amt = round(v * share / 100)
+                if amt:
+                    row.by_month[m] = row.by_month.get(m, 0) + amt
+                    row.distributions += amt
+            if row.distributions:
+                row.source = "company books"
         if row.distributions or row.capital or h.status == "active":
             out.append(row)
     return out

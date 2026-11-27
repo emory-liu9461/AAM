@@ -96,7 +96,10 @@ def test_page(app, tmp_path):
     assert bt.cards["spent"].value.text() == "$750.00"
     inc = page.income
     page.tabs.setCurrentWidget(inc)
-    assert inc.port.item(0, 2).text() == "$12,000.00" and inc.port.item(0, 3).text() == "$5,000.00"
+    cols = inc.PORT_COLS
+    assert inc.port.item(0, cols.index("Distributions to you")).text() == "$12,000.00"
+    assert inc.port.item(0, cols.index("Capital returned")).text() == "$5,000.00"
+    assert inc.port.item(0, cols.index("From")).text() == "recorded"
     inc.add()
     assert inc.mine.item(0, 0).text() == f"{YEAR}-12-31"         # a past year: dated its last day
     inc.mine.item(0, 3).setText("2500")
@@ -209,4 +212,31 @@ def test_budget_view_toggle(app, tmp_path):
     tab.view_btns["actual"].click()
     assert shown() == ["Category", "Actual to date"] and t.item(row, 3).text() == "$1,600.00"
     assert t.item(row, tab.JAN).text() == "$900.00" and t.item(row, tab.JAN).flags() & Qt.ItemFlag.ItemIsEditable
+    pf.close()
+
+
+def test_distributions_paid_in_the_company_books_count_by_themselves(app, tmp_path):
+    """No distributions recorded on the holding, but the company's books show dividends paid: they're income."""
+    from am_accounting.books import Books, CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    op = reg.create(CompanyProfile("Maple Court Ltd"))
+    b = Books.open(op)
+    draw = next(a for a in b.accounts() if a.type == "equity" and a.subtype == "draw")
+    cash = b.account_by_code("1000")
+    b.add_journal_entry("2025-03-31", "Dividend", [(draw.id, 10_000_00, 0), (cash.id, 0, 10_000_00)])
+    b.add_journal_entry("2025-09-30", "Dividend", [(draw.id, 6_000_00, 0), (cash.id, 0, 6_000_00)])
+    b.close()
+    pf = pfm.Portfolio(tmp_path / "p.ampf")
+    h = pfm.Holding("Maple Court", "Real estate", ownership_pct=100, company_path=str(op))
+    pf.save_holding(h)
+    pfm.save_shareholder(pf, h.id, pfm.Shareholder("Pat Lee", "", 50_000_00, link="me"))
+    pfm.save_shareholder(pf, h.id, pfm.Shareholder("Sam Roe", "", 50_000_00))
+    assert pfi.paid_from_books(str(op), 2025) == {3: 10_000_00, 9: 6_000_00}
+    row = next(x for x in pfi.from_portfolio(pf, 2025) if x.holding_id == h.id)
+    assert row.source == "company books" and row.distributions == 8_000_00          # your half
+    assert row.by_month == {3: 5_000_00, 9: 3_000_00}
+    biz = next(r for r in pfi.budget(pf, 2025).rows if r.line.category == pfi.BUSINESS)
+    assert biz.actual == 8_000_00                                                  # on the Budget by itself
     pf.close()

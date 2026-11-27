@@ -350,16 +350,23 @@ class IncomeTab(QWidget):
         for c in self.cards.values():
             cards.addWidget(c)
         lay.addLayout(cards)
-        box = _group("From your companies — distributions recorded on each holding, at your ownership (from their "
-                     "cap tables)", lay, 2)
-        self.port = QTableWidget(0, 5)
-        self.port.setHorizontalHeaderLabels(["Company", "Your share", "Distributions to you", "Capital returned",
-                                             "Months paid"])
-        self.port.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        box = _group("Distribution schedule — each company's distributions to you by month, at your ownership (from "
+                     "their cap tables); this is the Business income on your Budget", lay, 2)
+        self.port = QTableWidget(0, len(self.PORT_COLS))
+        self.port.setHorizontalHeaderLabels(self.PORT_COLS)
         self.port.verticalHeader().hide()
         self.port.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.port.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         box.addWidget(self.port)
+        from .frozen import freeze_first_column
+
+        freeze_first_column(self.port)
+        src = QLabel("<b>From</b>: <i>recorded</i> = distributions entered on the holding (or read from your holding "
+                     "company's books); <i>company books</i> = nothing recorded, so what the company's own books show "
+                     "it paid out (Dividends Paid / Distributions) — added by themselves.")
+        src.setObjectName("hint")
+        src.setWordWrap(True)
+        box.addWidget(src)
         box = _group("Other income from your businesses — salary, management fees, bonuses …", lay, 2)
         head = QHBoxLayout()
         head.addStretch(1)
@@ -380,6 +387,8 @@ class IncomeTab(QWidget):
         self._loading = False
         self.fill()
 
+    PORT_COLS = ["Company", "Your share", "From"] + MONTHS + ["Distributions to you", "Capital returned"]
+
     def _companies(self) -> list[str]:
         return [h.name for h in self.pf.holdings()]
 
@@ -388,14 +397,22 @@ class IncomeTab(QWidget):
         bi = self.data = pfi.business_income(self.pf, self.year.value())
         t = self.port
         rows = [h for h in bi.holdings]
-        t.setRowCount(len(rows))
+        t.setRowCount(len(rows) + (1 if rows else 0))
         for i, h in enumerate(rows):
-            vals = [h.name, f"{h.share_pct:g}%", fmt_money(h.distributions), fmt_money(h.capital),
-                    ", ".join(MONTHS[m - 1] for m in sorted(h.by_month)) or "—"]
+            vals = [h.name, f"{h.share_pct:g}%", h.source or "—"] + \
+                   [fmt_money(h.by_month[m]) if h.by_month.get(m) else "" for m in range(1, 13)] + \
+                   [fmt_money(h.distributions), fmt_money(h.capital)]
             for c, v in enumerate(vals):
-                t.setItem(i, c, _cell(v, right=c in (1, 2, 3), colour=MUTED if c == 4 else None))
+                t.setItem(i, c, _cell(v, right=c != 0 and c != 2, colour=MUTED if c == 2 else None,
+                                      bold=c == len(vals) - 2))
+        if rows:
+            biz = {m: sum(h.by_month.get(m, 0) for h in rows) for m in range(1, 13)}
+            vals = ["Total", "", ""] + [fmt_money(biz[m]) if biz[m] else "" for m in range(1, 13)] + \
+                   [fmt_money(bi.distributions), fmt_money(bi.capital)]
+            for c, v in enumerate(vals):
+                t.setItem(len(rows), c, _cell(v, right=c > 0, bold=True))
         t.resizeColumnsToContents()
-        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        t.setColumnWidth(0, max(t.columnWidth(0), 200))
         m = self.mine
         m.blockSignals(True)
         m.setRowCount(0)

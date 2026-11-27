@@ -296,7 +296,20 @@ class NetWorthPage(QWidget):
         area.setWidgetResizable(True)
         area.setFrameShape(QScrollArea.Shape.NoFrame)
         self.right.addTab(area, "Trends")
-        split.addWidget(self.right)
+        # a few plain sentences: this month against the budget, and what's coming
+        right_col = QWidget()
+        rc = QVBoxLayout(right_col)
+        rc.setContentsMargins(0, 0, 0, 0)
+        notes = QGroupBox("Commentary")
+        nl = QVBoxLayout(notes)
+        self.commentary = QLabel()
+        self.commentary.setTextFormat(Qt.TextFormat.RichText)
+        self.commentary.setWordWrap(True)
+        self.commentary.setAlignment(Qt.AlignmentFlag.AlignTop)
+        nl.addWidget(self.commentary)
+        rc.addWidget(notes)
+        rc.addWidget(self.right, 1)
+        split.addWidget(right_col)
         split.setSizes([680, 500])
         lay.addWidget(split, 1)
         hint = QLabel("What you enter is kept as you type. Real estate comes from the portfolio (market value from "
@@ -314,6 +327,7 @@ class NetWorthPage(QWidget):
         for e in self.saved.liabilities:
             self.liabs.add(e)
         self._show_folder()
+        self._fill_commentary()
         self._loading = False
         self._preview()
 
@@ -334,8 +348,17 @@ class NetWorthPage(QWidget):
         self.holdco = pers.holdco_part(self.pf, self.saved, self.as_of)
         self._fill_auto()
         self._show_folder()
+        self._fill_commentary()
         self._loading = False
         self._preview()
+
+    def _fill_commentary(self) -> None:
+        from .. import personal_commentary as pc
+
+        try:
+            self.commentary.setText(pc.html(pc.commentary(self.pf)))
+        except Exception as e:  # noqa: BLE001 - never in the way of the page
+            self.commentary.setText(f"<i>Couldn't work out the commentary: {e}</i>")
 
     # ---- your holding company (picked in Personal → Your Name & Folders) ----
     def _holdco_setting(self) -> tuple[str, float]:
@@ -571,6 +594,7 @@ class NetWorthPage(QWidget):
             return []
         self.made = [pdf, xlsx]
         self._show_folder()
+        self._fill_commentary()
         if not quiet:
             info(self, "Net worth statement", f"Saved in {out}:\n\n• {pdf.name}\n• {xlsx.name}\n\n"
                                               "Earlier statements are in its Archive.")
