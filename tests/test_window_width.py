@@ -330,3 +330,53 @@ def test_portfolio_pages_aligned_left(app, tmp_path):
                     n += 1
     assert n > 0
     w.close()
+
+
+def test_click_again_unselects_a_column_or_many_lines(app, tmp_path):
+    """A heading clicked (the whole column blue): click it, or anything blue in it, again and it all goes off —
+    also in a table you type into (like the Budget)."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidget, QTableWidgetItem
+
+    from am_accounting.books import CompanyProfile
+    from am_accounting.companies import CompanyRegistry
+    from am_accounting.gui.main_window import MainWindow
+
+    reg = CompanyRegistry(tmp_path / "companies.json", tmp_path / "Companies")
+    w = MainWindow(str(reg.create(CompanyProfile("Alder Court Ltd"))), registry=reg)    # (installs the click filter)
+    t = QTableWidget(4, 2)
+    t.setHorizontalHeaderLabels(["Category", "Budget / month"])
+    for r in range(4):
+        t.setItem(r, 0, QTableWidgetItem(f"cat {r}"))
+        t.setItem(r, 1, QTableWidgetItem("0"))
+    t.show()
+    QApplication.processEvents()
+    head = t.horizontalHeader()
+    col0 = QPoint(head.sectionViewportPosition(0) + 10, head.height() // 2)
+
+    def wait():
+        QTest.qWait(QApplication.doubleClickInterval() + 80)
+
+    QTest.mouseClick(head.viewport(), Qt.MouseButton.LeftButton, pos=col0)
+    wait()
+    assert len(t.selectionModel().selectedIndexes()) == 4                    # the whole column
+    QTest.mouseClick(head.viewport(), Qt.MouseButton.LeftButton, pos=col0)   # the heading again: off
+    wait()
+    assert t.selectionModel().selectedIndexes() == []
+    QTest.mouseClick(head.viewport(), Qt.MouseButton.LeftButton, pos=col0)
+    wait()
+    cell = t.visualItemRect(t.item(2, 0)).center()
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=cell)      # a blue cell in it: all off
+    wait()
+    assert t.selectionModel().selectedIndexes() == []
+    # many lines selected in a list: clicking one of them turns them all off
+    t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    t.selectRow(0)
+    t.selectionModel().select(t.model().index(1, 0), t.selectionModel().SelectionFlag.Select
+                              | t.selectionModel().SelectionFlag.Rows)
+    QTest.mouseClick(t.viewport(), Qt.MouseButton.LeftButton, pos=t.visualItemRect(t.item(1, 0)).center())
+    wait()
+    assert t.selectionModel().selectedIndexes() == []
+    t.close()
+    w.close()
